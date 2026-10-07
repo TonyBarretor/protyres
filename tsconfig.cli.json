@@ -1,0 +1,10 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "jsx": "react-jsx",
+    "plugins": [],
+    "incremental": false
+  },
+  "include": ["src/**/*.ts", "src/**/*.tsx", "drizzle.config.ts", "vitest.config.mts"],
+  "exclude": ["node_modules", ".next", "out", "data", "src/app/**"]
+}

@@ -1,0 +1,19 @@
+{
+  "sources": [
+    { "match": "^STOCK PROTYRES", "provider": "Protyres", "kind": "stock" },
+    { "match": "^SourceOwnProvider|LISTA DE PRECIOS", "provider": "Protyres", "kind": "own", "priceIncludesTax": false, "maxDiscountPct": 20, "currency": "USD" },
+    {
+      "match": "jch|j\\.ch",
+      "provider": "JCH",
+      "kind": "provider",
+      "priceIncludesTax": false,
+      "currency": "USD",
+      "columns": { "code": "B", "description": "C", "model": "D", "brand": "E", "price": "F", "stock": "G,H,I" }
+    },
+    { "match": "steel", "provider": "Steel", "kind": "provider", "priceIncludesTax": false, "currency": "USD" }
+  ],
+  "providers": {
+    "JCH": { "kind": "provider", "priceIncludesTax": false, "currency": "USD", "columns": { "code": "B", "description": "C", "model": "D", "brand": "E", "price": "F", "stock": "G,H,I" } },
+    "Steel": { "kind": "provider", "priceIncludesTax": false, "currency": "USD" }
+  }
+}

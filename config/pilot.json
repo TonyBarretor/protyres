@@ -1,0 +1,89 @@
+{
+  "company": {
+    "name": "Professional Tyres",
+    "tradeName": "360° Tyres",
+    "signatureName": "360 by Professional Tyres",
+    "taxId": "RUC: 20565716396",
+    "address": "Cal. Lopez de Ayala 1098 int. 301 - San Borja - Lima",
+    "phone": "",
+    "email": "",
+    "website": "",
+    "logoPath": "config/branding/logo.png",
+    "headerImagePath": "config/branding/header.png",
+    "footerImagePath": "config/branding/footer.png"
+  },
+  "pricing": {
+    "currency": "USD",
+    "taxPct": 18,
+    "taxLabel": "IGV",
+    "own": { "pricesIncludeTax": false, "maxDiscountPct": 20, "defaultDiscountPct": 0 },
+    "provider": { "marginPct": 15, "pricesIncludeTax": false },
+    "showPricesWithTax": false,
+    "roundTo": 0.01,
+    "quoteValidityDays": 7,
+    "stalePriceDays": 30,
+    "exchangeRates": { "PEN": 3.4 }
+  },
+  "quote": {
+    "language": "es",
+    "numberFormat": "{MES} {YYYY} - {NNN}",
+    "counterStart": 16,
+    "validityDays": 7,
+    "deliveryTerm": "48 hrs post OC",
+    "paymentType": "Factura crédito",
+    "paymentTerm": "30 días",
+    "exchangeRate": 3.4,
+    "notes": "",
+    "providerItemNote": "Producto a pedido: entrega sujeta a disponibilidad del proveedor.",
+    "brandOrigin": {
+      "Fenixway": "CHINA PREMIUM",
+      "Aonaite": "CHINA",
+      "Terrex": "CHINA",
+      "Tesche": "CHINA",
+      "Linglong": "CHINA",
+      "Triangle": "CHINA",
+      "Westlake": "CHINA",
+      "Chaoyang": "CHINA",
+      "Compasal": "CHINA",
+      "Hifly": "CHINA",
+      "Sunfull": "CHINA",
+      "Steel": "CHINA",
+      "BKT": "INDIA",
+      "MRL": "INDIA",
+      "Ceat": "INDIA",
+      "JK": "INDIA",
+      "Apollo": "INDIA",
+      "Marshal": "KOREA",
+      "Kumho": "KOREA",
+      "Hankook": "KOREA",
+      "Continental": "ALEMANIA",
+      "General": "USA",
+      "Goodyear": "USA",
+      "Michelin": "FRANCIA",
+      "Bridgestone": "JAPÓN",
+      "Yokohama": "JAPÓN",
+      "Dunlop": "JAPÓN",
+      "Pirelli": "ITALIA",
+      "Mitas": "REP. CHECA",
+      "Petlas": "TURQUÍA",
+      "Starmaxx": "TURQUÍA"
+    }
+  },
+  "salespeople": {
+    "default": "51955344340",
+    "51955344340": {
+      "name": "Frank Melek Rodríguez Mirano",
+      "title": "Key Account Manager",
+      "address": "Cal Lopez de Ayala 1098 int. 301 - San Borja - Lima",
+      "phone": "955 344 340",
+      "email": "frank.rodriguez@360tyres.pe"
+    },
+    "51903162116": {
+      "name": "Jaime Luis Moncada Perales",
+      "title": "Asesor Comercial",
+      "address": "Av. San Luis 875 Urb. Las Moras - San Luis",
+      "phone": "903 162 116",
+      "email": "jaime.moncada@360tyres.pe"
+    }
+  }
+}
