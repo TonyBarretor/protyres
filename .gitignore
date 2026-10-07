@@ -11,3 +11,5 @@ next-env.d.ts
 secrets/
 .DS_Store
 clientdata/
+scratch/
+_to_delete/
