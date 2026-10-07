@@ -468,8 +468,13 @@ export class BotHandler {
   private async sendQuote(from: string, state: ConversationState): Promise<void> {
     const quote = state.quoteNumber ? await this.store.getQuote(state.quoteNumber) : null;
     if (!quote || !quote.emailDraft) return this.reply(from, "No encuentro la cotización; escribe el pedido de nuevo.");
-    const pdf = await renderQuotePdf(quote, this.settings);
-    const res = await sendQuoteEmail(quote, pdf, quote.emailDraft);
+    let res: Awaited<ReturnType<typeof sendQuoteEmail>>;
+    try {
+      const pdf = await renderQuotePdf(quote, this.settings);
+      res = await sendQuoteEmail(quote, pdf, quote.emailDraft);
+    } catch (err) {
+      res = { sent: false, error: (err as Error).message };
+    }
     if (res.sent || res.dryRunPath) {
       quote.status = "sent";
       quote.sentAt = now();

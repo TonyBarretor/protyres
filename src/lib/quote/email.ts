@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import type { Settings } from "../settings";
 import { displayTotal, displayUnit } from "./build";
@@ -66,11 +67,20 @@ export async function sendQuoteEmail(quote: Quote, pdf: Buffer, draft: EmailDraf
   const from = process.env.EMAIL_FROM || "Cotizaciones <onboarding@resend.dev>";
   const fileName = `Cotización ${quote.number.replace(/[\\/:*?"<>|]+/g, "-")}.pdf`;
   if (!process.env.RESEND_API_KEY) {
-    const outDir = opts.outDir ?? path.join(process.cwd(), "out");
-    fs.mkdirSync(outDir, { recursive: true });
-    const p = path.join(outDir, `${safeName(quote.number)}.email.txt`);
-    fs.writeFileSync(p, `From: ${from}\nTo: ${to}\nSubject: ${draft.subject}\nAttachment: ${fileName}\n\n${draft.body}\n`);
-    return { sent: false, dryRunPath: p };
+    // dry run: keep a copy on disk (falls back to the temp dir on read-only deployments)
+    const body = `From: ${from}\nTo: ${to}\nSubject: ${draft.subject}\nAttachment: ${fileName}\n\n${draft.body}\n`;
+    const name = `${safeName(quote.number)}.email.txt`;
+    for (const dir of [opts.outDir ?? path.join(process.cwd(), "out"), path.join(os.tmpdir(), "protyres-out")]) {
+      try {
+        fs.mkdirSync(dir, { recursive: true });
+        const p = path.join(dir, name);
+        fs.writeFileSync(p, body);
+        return { sent: false, dryRunPath: p };
+      } catch {
+        // try the next location
+      }
+    }
+    return { sent: false, error: "sin RESEND_API_KEY y sin carpeta donde guardar el borrador" };
   }
   const { Resend } = await import("resend");
   const resend = new Resend(process.env.RESEND_API_KEY);
