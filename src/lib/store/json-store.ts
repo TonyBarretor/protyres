@@ -5,6 +5,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { gunzipSync } from "node:zlib";
 import type { PriceRow } from "../ingest/types";
 import type { Quote } from "../quote/types";
 import type { ConversationState, PriceStore, ProviderSummary, ReplaceScope } from "./types";
@@ -35,13 +36,18 @@ export class JsonStore implements PriceStore {
     const candidates = [tmp, file, seed].filter((f): f is string => !!f && fs.existsSync(f));
     for (const f of candidates) {
       try {
-        this.data = { ...structuredClone(EMPTY), ...JSON.parse(fs.readFileSync(f, "utf8")) };
+        this.data = { ...structuredClone(EMPTY), ...JSON.parse(JsonStore.readMaybeGz(f)) };
         if (f === tmp) this.file = tmp;
         return;
       } catch {
         if (f !== seed) fs.copyFileSync(f, `${f}.corrupt-${Date.now()}`); // corrupt file: keep a backup, try the next
       }
     }
+  }
+
+  private static readMaybeGz(f: string): string {
+    const buf = fs.readFileSync(f);
+    return f.endsWith(".gz") ? gunzipSync(buf).toString("utf8") : buf.toString("utf8");
   }
 
   static tmpPathFor(file: string): string {

@@ -16,7 +16,7 @@ export async function getStore(): Promise<PriceStore> {
     const { PgStore } = await import("./pg-store");
     shared = await PgStore.connect(process.env.DATABASE_URL);
   } else {
-    shared = new JsonStore(process.env.STORE_PATH || path.resolve(process.cwd(), "data/store.json"), process.env.STORE_SEED_PATH || path.resolve(process.cwd(), "data/seed.json"));
+    shared = new JsonStore(process.env.STORE_PATH || path.resolve(process.cwd(), "data/store.json"), process.env.STORE_SEED_PATH || path.resolve(process.cwd(), "data/seed.json.gz"));
   }
   return shared;
 }
