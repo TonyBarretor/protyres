@@ -138,7 +138,7 @@ describe("bot conversation (synthetic lists)", () => {
     process.env.PHOTOS_DISABLED = "1";
     const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==", "base64");
     client.media.set("img1", { data: png, mimeType: "image/png" });
-    await bot.handle({ id: "wamid.img1", from: PHONE, timestamp: "1", type: "image", media: { id: "img1", mimeType: "image/png", caption: "foto Michelin XZE2+" } });
+    await bot.handle({ id: "wamid.img1", from: PHONE, timestamp: "1", type: "image", forwarded: false, media: { id: "img1", mimeType: "image/png", caption: "foto Michelin XZE2+" } });
     expect(client.last()?.body).toContain("Guardé la foto de *Michelin XZE2+*");
     expect(await store.getPhoto("michelin", "xze2+")).not.toBeNull();
 
