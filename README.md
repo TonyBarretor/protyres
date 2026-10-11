@@ -161,3 +161,13 @@ Variables de entorno: copiar `.env.example` a `.env`. Nada es obligatorio para e
 - Ítems que no son llantas (parches, aros, cámaras) solo se cotizan si están en la lista propia / stock, o con precio manual.
 - Audios no se procesan.
 - Número de prueba de Meta: máximo 5 números; el token temporal caduca a las 24 h (usar el de usuario del sistema).
+
+## Fotos y datos del cliente
+
+- **Fotos de producto**: Steel publica foto y ficha técnica por producto; se guardan al ingerir (`photoUrl` / `sheetUrl`) y se reutilizan por marca+modelo aunque el ítem cotizado venga del stock o de otro proveedor. El PDF añade una página anexa *FOTOS* cuando algún ítem tiene foto.
+  - `foto 1b` / `foto 2` → el bot manda la foto (y la ficha) de una opción o de un ítem de la cotización.
+  - Enviar una imagen con el texto `foto Fenixway Valor 87` → queda guardada para ese modelo (tabla `photos`).
+  - `foto buscar 2` → búsqueda en internet (Google Custom Search: `GOOGLE_CSE_KEY` + `GOOGLE_CSE_ID`); el bot propone y el vendedor responde `foto ok` / `foto otra` / `foto no`. Nunca se usa una foto de internet sin aprobación.
+  - `PHOTOS_DISABLED=1` evita descargar imágenes al renderizar (tests).
+- **Memoria de clientes**: al cotizar de nuevo al mismo cliente (correo o razón social) el bot reutiliza atención, dirección y condiciones de la última cotización y lo avisa; se cambian con `atención: …`, `dirección: …`, `pago: …`, `plazo: …`, `entrega: …`.
+- Antes de `enviar`, el bot avisa si faltan *atención* o *dirección* y muestra las condiciones vigentes.

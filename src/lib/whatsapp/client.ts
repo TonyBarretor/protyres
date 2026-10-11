@@ -4,8 +4,10 @@
 
 export interface OutboundMessage {
   to: string;
-  kind: "text" | "document";
+  kind: "text" | "document" | "image";
   body?: string;
+  /** image by public URL (no upload) */
+  link?: string;
   fileName?: string;
   caption?: string;
   file?: Buffer;
@@ -15,6 +17,8 @@ export interface OutboundMessage {
 export interface WhatsAppClient {
   sendText(to: string, body: string): Promise<void>;
   sendDocument(to: string, file: Buffer, fileName: string, caption?: string, mimeType?: string): Promise<void>;
+  /** Send a picture: a public URL, or bytes (uploaded first). */
+  sendImage(to: string, image: { link?: string; data?: Buffer; mimeType?: string }, caption?: string): Promise<void>;
   downloadMedia(mediaId: string): Promise<{ data: Buffer; mimeType: string; fileName?: string }>;
 }
 
@@ -87,6 +91,17 @@ export class GraphWhatsAppClient implements WhatsAppClient {
     });
   }
 
+  async sendImage(to: string, image: { link?: string; data?: Buffer; mimeType?: string }, caption?: string): Promise<void> {
+    const ref = image.data ? { id: await this.uploadMedia(image.data, "foto.jpg", image.mimeType ?? "image/jpeg") } : { link: image.link };
+    await this.post(`${this.cfg.phoneNumberId}/messages`, {
+      messaging_product: "whatsapp",
+      recipient_type: "individual",
+      to,
+      type: "image",
+      image: { ...ref, caption },
+    });
+  }
+
   async downloadMedia(mediaId: string): Promise<{ data: Buffer; mimeType: string; fileName?: string }> {
     const meta = await fetch(`${this.base}/${mediaId}`, { headers: { Authorization: `Bearer ${this.cfg.token}` } });
     const info = (await meta.json()) as { url?: string; mime_type?: string; error?: { message?: string } };
@@ -124,6 +139,11 @@ export class FakeWhatsAppClient implements WhatsAppClient {
   }
   async sendDocument(to: string, file: Buffer, fileName: string, caption?: string, mimeType?: string): Promise<void> {
     const m: OutboundMessage = { to, kind: "document", file, fileName, caption, mimeType };
+    this.sent.push(m);
+    this.onSend?.(m);
+  }
+  async sendImage(to: string, image: { link?: string; data?: Buffer; mimeType?: string }, caption?: string): Promise<void> {
+    const m: OutboundMessage = { to, kind: "image", link: image.link, file: image.data, mimeType: image.mimeType, caption };
     this.sent.push(m);
     this.onSend?.(m);
   }

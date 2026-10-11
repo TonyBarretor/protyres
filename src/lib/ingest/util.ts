@@ -107,6 +107,8 @@ export interface RowDraft {
   source: PriceSource;
   sourceRef: string;
   notes?: string;
+  photoUrl?: string;
+  sheetUrl?: string;
   raw?: string;
   defaultCurrency?: string;
   position?: Position | null;
@@ -170,6 +172,8 @@ export function buildRow(d: RowDraft): PriceRow | null {
     source: d.source,
     sourceRef: d.sourceRef,
     notes: d.notes,
+    photoUrl: d.photoUrl || undefined,
+    sheetUrl: d.sheetUrl || undefined,
     raw: d.raw,
   };
 }

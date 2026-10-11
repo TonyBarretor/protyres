@@ -134,6 +134,58 @@ describe("bot conversation (synthetic lists)", () => {
     expect(await store.getConversation(PHONE)).toBeNull();
   });
 
+  it("photos: upload with caption, 'foto 1a' sends it, PDF gets an annex page; missing attention is flagged", async () => {
+    process.env.PHOTOS_DISABLED = "1";
+    const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==", "base64");
+    client.media.set("img1", { data: png, mimeType: "image/png" });
+    await bot.handle({ id: "wamid.img1", from: PHONE, timestamp: "1", type: "image", media: { id: "img1", mimeType: "image/png", caption: "foto Michelin XZE2+" } });
+    expect(client.last()?.body).toContain("Guardé la foto de *Michelin XZE2+*");
+    expect(await store.getPhoto("michelin", "xze2+")).not.toBeNull();
+
+    await bot.handle(text("Michelin 11R22.5 XZE2+ x4 para Transportes ABC, juan@abc.com"));
+    await bot.handle(text("foto 1a"));
+    const img = client.sent.filter((m) => m.kind === "image").pop();
+    expect(img?.file?.equals(png)).toBe(true);
+    expect(img?.caption).toContain("Michelin XZE2+");
+
+    await bot.handle(text("ok"));
+    const quote = await store.getQuote("COT-0001");
+    expect(quote?.items[0].photoUrl?.startsWith("data:image/png;base64,")).toBe(true);
+    expect(quote?.items[0].photoSource).toBe("WhatsApp");
+    const doc = client.sent.find((m) => m.kind === "document");
+    expect(doc?.caption).toContain("📷 Fotos: 1/1");
+    expect(client.last()?.body).toContain("⚠️ Falta en el PDF: *atención: Sr. Pérez*");
+    expect(client.last()?.body).toContain("Validez: 7 días");
+
+    await bot.handle(text("atención: Sr. Juan Pérez"));
+    expect(client.last()?.body).not.toContain("Falta en el PDF: *atención");
+    await bot.handle(text("enviar"));
+
+    // the photo is now embedded in the PDF annex (rendered with photos enabled)
+    delete process.env.PHOTOS_DISABLED;
+    const { renderQuotePdf } = await import("../quote/pdf");
+    const pdf = await renderQuotePdf((await store.getQuote("COT-0001"))!, settings);
+    expect((pdf.toString("latin1").match(/\/Type\s*\/Page[^s]/g) ?? []).length).toBe(2); // quote page + photos annex
+  });
+
+  it("customer memory: contact, address and terms of the last quote are reused", async () => {
+    process.env.PHOTOS_DISABLED = "1";
+    await bot.handle(text("Michelin 11R22.5 XZE2+ x4 para Transportes ABC, juan@abc.com\natención: Sra. Karen Ordoñez\ndirección: Av. Argentina 1500, Callao\npago: letras 60 días"));
+    await bot.handle(text("ok"));
+    await bot.handle(text("enviar"));
+
+    await bot.handle(text("Michelin 11R22.5 XZE2+ x2, juan@abc.com"));
+    const options = client.last()?.body ?? "";
+    expect(options).toContain("📒 Datos de la última cotización a Transportes ABC");
+    expect(options).toContain("atención Sra. Karen Ordoñez");
+    await bot.handle(text("ok"));
+    const q = await store.getQuote("COT-0002");
+    expect(q?.customer.attention).toBe("Sra. Karen Ordoñez");
+    expect(q?.customer.address).toBe("Av. Argentina 1500, Callao");
+    expect(q?.paymentType).toBe("letras 60 días");
+    expect(client.last()?.body).not.toContain("Falta en el PDF");
+  });
+
   it("choosing option b with a bare number on a single line", async () => {
     await bot.handle(text("295/80R22.5 x2 cliente Pedro"));
     await bot.handle(text("2"));

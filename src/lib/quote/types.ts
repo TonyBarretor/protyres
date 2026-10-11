@@ -96,6 +96,12 @@ export interface QuoteItem {
   application?: string;
   /** ORIGEN column ("CHINA PREMIUM", "INDIA"...). */
   countryOfOrigin?: string;
+  /** Product photo (URL, or data: URI for uploaded photos) printed on the "Fotos" annex page. */
+  photoUrl?: string;
+  /** Technical sheet image printed next to the photo. */
+  sheetUrl?: string;
+  /** Where the photo came from ("Steel", "WhatsApp", "web"). */
+  photoSource?: string;
   // internal (not printed on the quote)
   provider: string;
   unitCost?: number;

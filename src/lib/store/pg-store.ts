@@ -7,7 +7,7 @@ import postgres from "postgres";
 import * as schema from "../../db/schema";
 import type { PriceRow, PriceSource } from "../ingest/types";
 import type { Quote } from "../quote/types";
-import type { ConversationState, PriceStore, ProviderSummary, ReplaceScope } from "./types";
+import { photoKey, type ConversationState, type PriceStore, type ProductPhoto, type ProviderSummary, type ReplaceScope } from "./types";
 
 type Db = PostgresJsDatabase<typeof schema>;
 
@@ -38,9 +38,13 @@ function toRow(r: typeof schema.prices.$inferSelect): PriceRow {
     source: r.source as PriceSource,
     sourceRef: r.sourceRef,
     notes: r.notes ?? undefined,
+    photoUrl: r.photoUrl ?? undefined,
+    sheetUrl: r.sheetUrl ?? undefined,
     raw: r.raw ?? undefined,
   };
 }
+
+const FOLD = (col: unknown) => sql`regexp_replace(lower(${col}), '[^a-z0-9]', '', 'g')`;
 
 export class PgStore implements PriceStore {
   private constructor(
@@ -93,6 +97,8 @@ export class PgStore implements PriceStore {
           source: r.source,
           sourceRef: r.sourceRef,
           notes: r.notes ?? null,
+          photoUrl: r.photoUrl ?? null,
+          sheetUrl: r.sheetUrl ?? null,
           raw: r.raw ?? null,
           updatedAt: new Date(),
         }));
@@ -123,6 +129,8 @@ export class PgStore implements PriceStore {
               position: sql`excluded.position`,
               tube: sql`excluded.tube`,
               notes: sql`excluded.notes`,
+              photoUrl: sql`excluded.photo_url`,
+              sheetUrl: sql`excluded.sheet_url`,
               raw: sql`excluded.raw`,
               updatedAt: sql`now()`,
             },
@@ -144,6 +152,52 @@ export class PgStore implements PriceStore {
   async getRows(ids: string[]): Promise<PriceRow[]> {
     if (ids.length === 0) return [];
     return (await this.db.select().from(schema.prices).where(inArray(schema.prices.id, ids))).map(toRow);
+  }
+
+  async rowsWithPhoto(brand: string, model: string): Promise<PriceRow[]> {
+    const [b, m] = photoKey(brand, model).split("|");
+    if (!b || !m) return [];
+    const rows = await this.db
+      .select()
+      .from(schema.prices)
+      .where(and(sql`${schema.prices.photoUrl} is not null`, sql`${FOLD(schema.prices.brand)} = ${b}`, sql`${FOLD(schema.prices.model)} = ${m}`))
+      .limit(5);
+    return rows.map(toRow);
+  }
+
+  async getPhoto(brand: string, model: string): Promise<ProductPhoto | null> {
+    const [row] = await this.db.select().from(schema.photos).where(eq(schema.photos.key, photoKey(brand, model))).limit(1);
+    if (!row) return null;
+    return {
+      key: row.key,
+      brand: row.brand,
+      model: row.model,
+      url: row.url ?? undefined,
+      data: row.data ?? undefined,
+      mimeType: row.mimeType ?? undefined,
+      sheetUrl: row.sheetUrl ?? undefined,
+      source: row.source as ProductPhoto["source"],
+      addedBy: row.addedBy ?? undefined,
+      createdAt: row.createdAt.toISOString(),
+    };
+  }
+
+  async setPhoto(p: ProductPhoto): Promise<void> {
+    const values = { key: p.key, brand: p.brand, model: p.model, url: p.url ?? null, data: p.data ?? null, mimeType: p.mimeType ?? null, sheetUrl: p.sheetUrl ?? null, source: p.source, addedBy: p.addedBy ?? null, createdAt: new Date(p.createdAt) };
+    await this.db
+      .insert(schema.photos)
+      .values(values)
+      .onConflictDoUpdate({ target: schema.photos.key, set: { ...values, createdAt: new Date() } });
+  }
+
+  async findLastQuoteForCustomer(opts: { email?: string; company?: string }): Promise<Quote | null> {
+    const conds = [];
+    if (opts.email) conds.push(sql`lower(${schema.quotes.customerEmail}) = ${opts.email.toLowerCase()}`);
+    if (opts.company) conds.push(sql`lower(${schema.quotes.data}->'customer'->>'company') = ${opts.company.toLowerCase()}`);
+    if (conds.length === 0) return null;
+    const where = conds.length === 1 ? conds[0] : sql`(${conds[0]}) or (${conds[1]})`;
+    const [row] = await this.db.select().from(schema.quotes).where(where).orderBy(desc(schema.quotes.createdAt)).limit(1);
+    return row ? (row.data as Quote) : null;
   }
 
   async providers(): Promise<ProviderSummary[]> {

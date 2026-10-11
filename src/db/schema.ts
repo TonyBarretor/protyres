@@ -26,8 +26,25 @@ export const prices = pgTable("prices", {
   source: text("source").notNull(),
   sourceRef: text("source_ref").notNull().default(""),
   notes: text("notes"),
+  photoUrl: text("photo_url"),
+  sheetUrl: text("sheet_url"),
   raw: text("raw"),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+/** Product photos keyed by brand+model (from provider catalogues, WhatsApp uploads or approved web results). */
+export const photos = pgTable("photos", {
+  key: text("key").primaryKey(),
+  brand: text("brand").notNull().default(""),
+  model: text("model").notNull().default(""),
+  url: text("url"),
+  /** base64 image bytes when the photo was uploaded (WhatsApp). */
+  data: text("data"),
+  mimeType: text("mime_type"),
+  sheetUrl: text("sheet_url"),
+  source: text("source").notNull().default("manual"),
+  addedBy: text("added_by"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
 export const quotes = pgTable("quotes", {

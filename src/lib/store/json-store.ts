@@ -8,7 +8,7 @@ import path from "node:path";
 import { gunzipSync } from "node:zlib";
 import type { PriceRow } from "../ingest/types";
 import type { Quote } from "../quote/types";
-import type { ConversationState, PriceStore, ProviderSummary, ReplaceScope } from "./types";
+import { photoKey, type ConversationState, type PriceStore, type ProductPhoto, type ProviderSummary, type ReplaceScope } from "./types";
 
 interface Data {
   prices: Record<string, PriceRow>;
@@ -17,9 +17,10 @@ interface Data {
   counters: { quote: number };
   processed: string[];
   syncMarks: Record<string, string>;
+  photos: Record<string, ProductPhoto>;
 }
 
-const EMPTY: Data = { prices: {}, quotes: {}, conversations: {}, counters: { quote: 0 }, processed: [], syncMarks: {} };
+const EMPTY: Data = { prices: {}, quotes: {}, conversations: {}, counters: { quote: 0 }, processed: [], syncMarks: {}, photos: {} };
 
 export class JsonStore implements PriceStore {
   private data: Data;
@@ -109,6 +110,35 @@ export class JsonStore implements PriceStore {
   findBySize(canonicals: string[]): Promise<PriceRow[]> {
     const set = new Set(canonicals);
     return this.run(() => Object.values(this.data.prices).filter((r) => set.has(r.size)));
+  }
+
+  rowsWithPhoto(brand: string, model: string): Promise<PriceRow[]> {
+    const key = photoKey(brand, model);
+    if (key.startsWith("|") || key.endsWith("|")) return Promise.resolve([]);
+    return this.run(() => Object.values(this.data.prices).filter((r) => r.photoUrl && photoKey(r.brand, r.model) === key).slice(0, 5));
+  }
+
+  getPhoto(brand: string, model: string): Promise<ProductPhoto | null> {
+    return this.run(() => this.data.photos[photoKey(brand, model)] ?? null);
+  }
+
+  setPhoto(photo: ProductPhoto): Promise<void> {
+    return this.run(() => {
+      this.data.photos[photo.key] = photo;
+      this.persist();
+    });
+  }
+
+  findLastQuoteForCustomer(opts: { email?: string; company?: string }): Promise<Quote | null> {
+    return this.run(() => {
+      const email = opts.email?.toLowerCase();
+      const company = opts.company?.toLowerCase();
+      if (!email && !company) return null;
+      const hits = Object.values(this.data.quotes)
+        .filter((q) => (email && q.customer.email?.toLowerCase() === email) || (company && q.customer.company?.toLowerCase() === company))
+        .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
+      return hits[0] ?? null;
+    });
   }
 
   getRows(ids: string[]): Promise<PriceRow[]> {

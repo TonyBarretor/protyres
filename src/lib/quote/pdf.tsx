@@ -10,8 +10,14 @@ import path from "node:path";
 import { Document, Image, Page, StyleSheet, Text, View, renderToBuffer } from "@react-pdf/renderer";
 import type { Settings } from "../settings";
 import { displayTotal, displayUnit } from "./build";
+import { loadImage } from "./photos";
 import { fmtMoney } from "./pricing";
 import type { Quote } from "./types";
+
+/** Pre-fetched images for the "Fotos" page, keyed by item index. */
+export interface PhotoAssets {
+  [itemIndex: number]: { photo?: Buffer; sheet?: Buffer };
+}
 
 const yellow = "#F5B400";
 const dark = "#2b2b2b";
@@ -48,6 +54,14 @@ const st = StyleSheet.create({
   sigName: { fontFamily: "Helvetica-Bold", fontSize: 8.5 },
   sigCompany: { fontFamily: "Helvetica-Bold" },
   logoSmall: { height: 48, objectFit: "contain" as const },
+  photosTitle: { marginTop: 10, fontSize: 12, fontFamily: "Helvetica-Bold", color: dark },
+  photoGrid: { flexDirection: "row", flexWrap: "wrap", marginTop: 6 },
+  photoCard: { width: "33.33%", paddingRight: 10, paddingBottom: 10 },
+  photoBox: { borderWidth: 1, borderColor: line, padding: 6, height: 215 },
+  photoCaption: { fontFamily: "Helvetica-Bold", fontSize: 8, marginBottom: 4 },
+  photoRow: { flexDirection: "row", height: 170 },
+  photoImg: { flex: 1, objectFit: "contain" as const },
+  photoSrc: { fontSize: 6.5, color: grey, marginTop: 3 },
 });
 
 // column widths (fractions of the table width)
@@ -64,7 +78,7 @@ function resolve(p: string): string | null {
   return fs.existsSync(/* turbopackIgnore: true */ abs) ? abs : null;
 }
 
-export function QuoteDocument({ quote, settings }: { quote: Quote; settings: Settings }) {
+export function QuoteDocument({ quote, settings, photos = {} }: { quote: Quote; settings: Settings; photos?: PhotoAssets }) {
   const c = settings.company;
   const cur = quote.currency;
   const curLabel = cur === "USD" ? "US $" : cur;
@@ -78,6 +92,7 @@ export function QuoteDocument({ quote, settings }: { quote: Quote; settings: Set
   const blank = Math.max(0, 6 - rows.length);
   const w = (f: number) => ({ width: `${f * 100}%` });
   const sp = quote.salesperson;
+  const photoItems = quote.items.map((it, i) => ({ it, i, a: photos[i] })).filter((x) => x.a?.photo || x.a?.sheet);
 
   return (
     <Document title={`Cotización ${quote.number}`} author={c.tradeName || c.name}>
@@ -217,11 +232,55 @@ export function QuoteDocument({ quote, settings }: { quote: Quote; settings: Set
           {sp.email ? <Text>{sp.email}</Text> : null}
         </View>
       </Page>
+      {photoItems.length > 0 ? (
+        <Page size="A4" orientation="landscape" style={st.page}>
+          {header ? <Image src={header} style={st.headerImg} /> : null}
+          <View style={st.numberBand}>
+            <Text style={st.numberText}>{quote.number} · FOTOS</Text>
+          </View>
+          <View style={st.photoGrid}>
+            {photoItems.map(({ it, i, a }) => (
+              <View key={i} style={st.photoCard} wrap={false}>
+                <View style={st.photoBox}>
+                  <Text style={st.photoCaption}>
+                    {i + 1}. {[it.brand, it.model].filter(Boolean).join(" ").toUpperCase()} {it.sizeDisplay}
+                    {it.ply ? ` ${it.ply}PR` : ""}
+                  </Text>
+                  <View style={st.photoRow}>
+                    {a?.photo ? <Image src={a.photo} style={st.photoImg} /> : null}
+                    {a?.sheet ? <Image src={a.sheet} style={[st.photoImg, { marginLeft: 6 }]} /> : null}
+                  </View>
+                  {it.photoSource ? <Text style={st.photoSrc}>Foto: {it.photoSource}</Text> : null}
+                </View>
+              </View>
+            ))}
+          </View>
+          {footer ? <Image src={footer} style={st.footerImg} fixed /> : null}
+          <View style={st.signature} fixed>
+            <Text style={st.sigName}>{sp.name}</Text>
+            <Text style={st.sigCompany}>{c.signatureName || c.tradeName || c.name}</Text>
+          </View>
+        </Page>
+      ) : null}
     </Document>
   );
 }
 
-export async function renderQuotePdf(quote: Quote, settings: Settings): Promise<Buffer> {
-  const buf = await renderToBuffer(<QuoteDocument quote={quote} settings={settings} />);
+/** Download every item photo / sheet (in parallel, failures skipped) so the PDF never depends on the network mid-render. */
+export async function fetchPhotoAssets(quote: Quote): Promise<PhotoAssets> {
+  const out: PhotoAssets = {};
+  await Promise.all(
+    quote.items.map(async (it, i) => {
+      if (!it.photoUrl && !it.sheetUrl) return;
+      const [photo, sheet] = await Promise.all([it.photoUrl ? loadImage(it.photoUrl) : null, it.sheetUrl ? loadImage(it.sheetUrl) : null]);
+      if (photo || sheet) out[i] = { photo: photo?.data, sheet: sheet?.data };
+    }),
+  );
+  return out;
+}
+
+export async function renderQuotePdf(quote: Quote, settings: Settings, opts: { photos?: boolean | PhotoAssets } = {}): Promise<Buffer> {
+  const photos = opts.photos === false ? {} : opts.photos === true || opts.photos === undefined ? await fetchPhotoAssets(quote) : opts.photos;
+  const buf = await renderToBuffer(<QuoteDocument quote={quote} settings={settings} photos={photos} />);
   return Buffer.from(buf);
 }

@@ -38,7 +38,15 @@ const HEADER_SYNONYMS: Record<ColumnKey, string[]> = {
   currency: ["moneda", "currency", "mon", "div", "divisa"],
   position: ["aplicacion", "tipo", "posicion", "eje", "uso", "aplicacion eje", "position", "axle"],
   ply: ["ply", "pr", "lonas", "capas", "ply rating"],
+  photo: ["foto", "fotos", "photo", "imagen", "image", "picture", "img"],
+  sheet: ["ficha", "ficha tecnica", "datasheet", "spec", "especificaciones", "hoja tecnica"],
 };
+
+const URL_RE = /https?:\/\/\S+/i;
+function cellUrl(s: string): string | undefined {
+  const m = s.match(URL_RE);
+  return m ? m[0].replace(/[),.;]+$/, "") : undefined;
+}
 
 export function headerKey(cell: string): ColumnKey | null {
   const f = fold(cell).replace(/\b(de|del|la|el|en|por)\b/g, " ").replace(/\s+/g, " ").trim();
@@ -165,6 +173,8 @@ export function rowsFromSheet(sheet: SheetData, opts: IngestOptions & { source: 
     const code = cell("code");
     const positionText = cell("position");
     const plyText = cell("ply");
+    const photoUrl = cellUrl(cell("photo"));
+    const sheetUrl = cellUrl(cell("sheet"));
 
     if (!hasMapping) {
       // cell-scan: size = first cell with a size; price = the most price-looking number in the row
@@ -220,6 +230,8 @@ export function rowsFromSheet(sheet: SheetData, opts: IngestOptions & { source: 
       defaultCurrency: opts.defaultCurrency,
       position: positionText ? (extractPosition(positionText) ?? null) : undefined,
       ply: plyText ? parseInt(plyText, 10) || null : undefined,
+      photoUrl,
+      sheetUrl,
       keepNonTyre,
       allowNoPrice: kind === "stock",
     });

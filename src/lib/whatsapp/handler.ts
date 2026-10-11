@@ -21,11 +21,12 @@ import type { IngestResult } from "../ingest/types";
 import { fold, findBrandInText } from "../tyre/brands";
 import { findTyreSizes, parseTyreSize } from "../tyre/spec";
 import type { Settings } from "../settings";
-import type { ConversationState, PendingLine, PriceStore } from "../store/types";
+import { photoKey, type ConversationState, type PendingLine, type PriceStore } from "../store/types";
 import { buildQuote, displayTotal, formatQuoteNumber, itemFromCandidate, manualItem } from "../quote/build";
 import { buildEmailDraft, safeName, sendQuoteEmail } from "../quote/email";
 import { findCandidates } from "../quote/match";
 import { renderQuotePdf } from "../quote/pdf";
+import { attachPhotos, findPhoto, itemsWithoutPhoto, loadImage, searchWebPhotos, webSearchAvailable } from "../quote/photos";
 import { fmtMoney } from "../quote/pricing";
 import { describeLine, describeRequest, parseEmail, parseRequest } from "../quote/request";
 import type { Candidate, LineCandidates, Quote, QuoteItem, QuoteRequest } from "../quote/types";
@@ -52,6 +53,8 @@ const HELP = [
   "Luego revisas el PDF y escribes *enviar*.",
   "",
   "Para cargar precios: reenvíame la lista del proveedor (mensaje, PDF, Excel o foto) y te preguntaré de quién es.",
+  "",
+  "Fotos: *foto 1b* te manda la foto de una opción; para guardar una foto nueva envíame la imagen con el texto *foto Fenixway Valor 87*.",
   "",
   "Comandos: *ayuda*, *cancelar*, *proveedores*, *precios 11R22.5*, *stock 295/80R22.5*",
 ].join("\n");
@@ -107,6 +110,11 @@ export class BotHandler {
       }
       if (cmd === "proveedores" || cmd === "listas") return this.replyProviders(from);
       if (state.step !== "review_quote" && /^(precios?|stock)\s+/.test(cmd) && findTyreSizes(text).length > 0) return this.replyPrices(from, text.replace(/^(precios?|stock)\s+/i, ""));
+
+      // 0) Product photos: an image captioned "foto <marca> <modelo>" is stored; "foto 1b" / "foto ok" / "foto no" are commands
+      const photoCaption = (msg.media?.caption ?? "").match(/^foto\s+(.+)$/i);
+      if (msg.media && msg.type === "image" && photoCaption) return this.savePhotoFromMedia(from, msg, photoCaption[1]);
+      if (/^fotos?\b/.test(cmd)) return this.handlePhotoCommand(from, state, text);
 
       // 1) Provider price lists (files, photos, forwarded messages)
       if (msg.media && msg.type !== "audio" && msg.type !== "video") {
@@ -255,7 +263,7 @@ export class BotHandler {
     } else {
       price = `*${fmtMoney(c.unitNet, this.cur)}* (costo ${fmtMoney(c.costNet!, this.cur)} ${r.provider}, ${fmtDateShort(r.priceDate)})`;
     }
-    const tag = r.kind === "own" ? "🏭 STOCK" : `🚚 ${r.provider}`;
+    const tag = `${r.kind === "own" ? "🏭 STOCK" : `🚚 ${r.provider}`}${r.photoUrl ? " 📷" : ""}`;
     const notes = c.reasons.filter((x) => !/^(sin stock|solo \d+ en stock)$/.test(x)).join(", ");
     return `  *${letter})* ${tag}${stock} · ${name}${size}\n      ${price}${notes ? `\n      ⚠️ ${notes}` : ""}`;
   }
@@ -278,9 +286,16 @@ export class BotHandler {
   }
 
   private async startRequest(from: string, text: string, note?: string): Promise<void> {
-    const req = await parseRequest(text);
+    let req = await parseRequest(text);
     if (req.lines.length === 0) {
       return this.reply(from, `${note ? note + "\n" : ""}No encontré ninguna medida ni producto en el pedido. Escríbela como *11R22.5*, *295/80R22.5* o *1000R20*.\nEjemplo: _Fenixway 295/80R22.5 Valor 87 x4 para Transportes ABC, juan@abc.com_`);
+    }
+    // customer memory: reuse contact / address / terms from the last quote to the same customer
+    const remembered = await this.rememberCustomer(req);
+    if (remembered.lines.length) {
+      text = `${text}\n${remembered.lines.join("\n")}`;
+      req = await parseRequest(text);
+      note = `${note ? note + "\n" : ""}📒 Datos de la última cotización a ${remembered.who}: ${remembered.summary.join(" · ")} _(cámbialos con *atención: …*, *pago: …*, *dirección: …*)_`;
     }
     const lcs = await findCandidates(this.store, req, this.settings.pricing);
     const pending: PendingLine[] = lcs.map((lc) => ({ candidateIds: lc.candidates.map((c) => c.row.id), chosen: lc.candidates.length ? 0 : null, quantity: lc.line.quantity }));
@@ -432,19 +447,168 @@ export class BotHandler {
 
   private async presentQuote(from: string, quote: Quote): Promise<void> {
     quote.emailDraft = buildEmailDraft(quote, this.settings);
+    await attachPhotos(quote, this.store);
     await this.store.saveQuote(quote);
-    const pdf = await renderQuotePdf(quote, this.settings);
+    const pdf = await renderQuotePdf(quote, this.settings, { photos: !process.env.PHOTOS_DISABLED });
     await this.deps.onPdf?.(quote, pdf);
     const summary = quote.items.length === 1 ? `${quote.items[0].description} x${quote.items[0].quantity}` : `${quote.items.length} ítems`;
     const taxNote = quote.pricesIncludeTax ? `inc. ${quote.taxLabel}` : `sin ${quote.taxLabel}`;
-    await this.client.sendDocument(from, pdf, `Cotizacion ${safeName(quote.number)}.pdf`, `Cotización ${quote.number} · ${summary} · Total ${fmtMoney(displayTotal(quote), quote.currency)} (${taxNote})`);
+    const noPhoto = itemsWithoutPhoto(quote);
+    const photoNote =
+      quote.items.length - noPhoto.length > 0 || noPhoto.length > 0
+        ? `\n📷 Fotos: ${quote.items.length - noPhoto.length}/${quote.items.length}${noPhoto.length ? ` · sin foto: ${noPhoto.map((it) => [it.brand, it.model].filter(Boolean).join(" ") || it.description).join(", ")} → mándame la imagen con el texto *foto ${[noPhoto[0].brand, noPhoto[0].model].filter(Boolean).join(" ")}*${webSearchAvailable() ? ` o escribe *foto buscar ${quote.items.indexOf(noPhoto[0]) + 1}*` : ""}` : ""}`
+        : "";
+    await this.client.sendDocument(from, pdf, `Cotizacion ${safeName(quote.number)}.pdf`, `Cotización ${quote.number} · ${summary} · Total ${fmtMoney(displayTotal(quote), quote.currency)} (${taxNote})${photoNote}`);
     if (!quote.customer.email) {
       await this.store.setConversation(from, { phone: from, step: "need_email", quoteNumber: quote.number, updatedAt: now() });
       return this.reply(from, `El pedido no tiene correo del cliente. *¿A qué correo lo envío?* (o *cancelar*)`);
     }
     await this.store.setConversation(from, { phone: from, step: "review_quote", quoteNumber: quote.number, updatedAt: now() });
     const d = quote.emailDraft;
-    await this.reply(from, `📧 *Para:* ${d.to}\n*Asunto:* ${d.subject}\n\n${d.body}\n\n—\nResponde *enviar* para mandarlo, *precio 2 480* para cambiar un unitario, *correo x@y.com* para cambiar el destinatario, *con igv* / *sin igv*, *pago: letras 30 días*, *entrega: 48 hrs*, *atención: Sr. X*, o *cancelar*.`);
+    const missing: string[] = [];
+    if (!quote.customer.attention && !quote.customer.name) missing.push("*atención: Sr. Pérez*");
+    if (!quote.customer.address) missing.push("*dirección: Av. … , Lima*");
+    const terms = `Pago: ${quote.paymentType || "—"} · Plazo: ${quote.paymentTerm || "—"} · Entrega: ${quote.deliveryTerm || "—"} · Validez: ${quote.validityDays} días`;
+    const check = `${missing.length ? `\n⚠️ Falta en el PDF: ${missing.join(", ")}` : ""}\n📋 ${terms} _(cambia con *pago: letras*, *plazo: 45 días*, *entrega: inmediata*)_`;
+    await this.reply(from, `📧 *Para:* ${d.to}\n*Asunto:* ${d.subject}\n\n${d.body}\n${check}\n\n—\nResponde *enviar* para mandarlo, *precio 2 480* para cambiar un unitario, *correo x@y.com* para cambiar el destinatario, *con igv* / *sin igv*, *foto 1* para ver la foto de un ítem, o *cancelar*.`);
+  }
+
+  /** Contact, address and terms from the last quote to the same customer (email, else company), unless the request already sets them. */
+  private async rememberCustomer(req: QuoteRequest): Promise<{ lines: string[]; summary: string[]; who: string }> {
+    const out = { lines: [] as string[], summary: [] as string[], who: "" };
+    if (!req.customerEmail && !req.customerCompany) return out;
+    const last = await this.store.findLastQuoteForCustomer({ email: req.customerEmail, company: req.customerCompany });
+    if (!last) return out;
+    out.who = last.customer.company || last.customer.name || last.customer.email || "";
+    const add = (key: string, label: string, value: string | undefined, already: unknown) => {
+      if (!value || already) return;
+      out.lines.push(`${key}: ${value}`);
+      out.summary.push(`${label} ${value}`);
+    };
+    add("atención", "atención", last.customer.attention, req.attention);
+    add("dirección", "dirección", last.customer.address, req.address);
+    const defaults = this.settings.quote;
+    add("pago", "pago", last.paymentType !== defaults.paymentType ? last.paymentType : undefined, req.paymentType);
+    add("plazo", "plazo", last.paymentTerm !== defaults.paymentTerm ? last.paymentTerm : undefined, req.paymentTerm);
+    add("entrega", "entrega", last.deliveryTerm !== defaults.deliveryTerm ? last.deliveryTerm : undefined, req.deliveryTerm);
+    if (!req.customerEmail && last.customer.email) {
+      out.lines.push(`correo ${last.customer.email}`);
+      out.summary.push(`correo ${last.customer.email}`);
+    }
+    return out;
+  }
+
+  // ---------- product photos ----------
+
+  /** Image sent with the caption "foto <marca> <modelo>": stored for every future quote of that brand+model. */
+  private async savePhotoFromMedia(from: string, msg: InboundMessage, what: string): Promise<void> {
+    const { brand, model } = this.splitBrandModel(what);
+    if (!brand || !model) return this.reply(from, `Dime marca y modelo en el texto de la foto, p.ej. *foto Fenixway Valor 87*.`);
+    const { data, mimeType } = await this.client.downloadMedia(msg.media!.id);
+    if (data.length > 2_500_000) return this.reply(from, "La imagen es muy grande (máx. 2.5 MB). Envíala como foto normal, no como documento.");
+    await this.store.setPhoto({ key: photoKey(brand, model), brand, model, data: data.toString("base64"), mimeType: mimeType || msg.media!.mimeType, source: "whatsapp", addedBy: from, createdAt: now() });
+    await this.reply(from, `📷 Guardé la foto de *${brand} ${model}*. Se incluirá en las próximas cotizaciones de ese modelo.`);
+  }
+
+  private splitBrandModel(text: string): { brand: string; model: string } {
+    const clean = text.replace(/\s+/g, " ").trim();
+    const b = findBrandInText(clean);
+    if (b) {
+      const model = clean.replace(new RegExp(b.alias.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i"), "").replace(/\s+/g, " ").trim();
+      return { brand: b.brand, model };
+    }
+    const [brand, ...rest] = clean.split(" ");
+    return { brand: brand ?? "", model: rest.join(" ") };
+  }
+
+  /** "foto 1b" (option), "foto 2" (quote item), "foto Fenixway Valor 87", "foto buscar 2", "foto ok" / "foto no" / "foto otra". */
+  private async handlePhotoCommand(from: string, state: ConversationState, text: string): Promise<void> {
+    const arg = text.replace(/^fotos?\s*/i, "").trim();
+    const cmd = norm(arg);
+
+    // answers to a web candidate
+    if (state.pendingPhoto && ["ok", "si", "sí", "guardar", "guarda"].includes(cmd)) {
+      const p = state.pendingPhoto;
+      await this.store.setPhoto({ key: photoKey(p.brand, p.model), brand: p.brand, model: p.model, url: p.url, source: "web", addedBy: from, createdAt: now() });
+      await this.store.setConversation(from, { ...state, pendingPhoto: undefined, updatedAt: now() });
+      return this.reply(from, `📷 Guardada la foto de *${p.brand} ${p.model}*. Si la cotización ya está armada, escribe *ok* o repite el pedido para que la incluya.`);
+    }
+    if (state.pendingPhoto && ["no", "otra", "siguiente", "next"].includes(cmd)) {
+      const p = state.pendingPhoto;
+      const next = p.index + 1;
+      if (cmd === "no" || next >= p.candidates.length) {
+        await this.store.setConversation(from, { ...state, pendingPhoto: undefined, updatedAt: now() });
+        return this.reply(from, `Ok, descartada. Si tienes la foto correcta, envíamela con el texto *foto ${p.brand} ${p.model}*.`);
+      }
+      const url = p.candidates[next];
+      await this.store.setConversation(from, { ...state, pendingPhoto: { ...p, url, index: next }, updatedAt: now() });
+      return this.proposePhoto(from, p.brand, p.model, url, next, p.candidates.length);
+    }
+
+    // "foto buscar 2" / "foto buscar Fenixway Valor 87"
+    const search = arg.match(/^(?:buscar|busca|web)\s+(.+)$/i);
+    if (search) {
+      const target = await this.photoTarget(state, search[1]);
+      if (!target) return this.reply(from, "No sé de qué ítem. Escribe *foto buscar 2* (ítem de la cotización) o *foto buscar Marca Modelo*.");
+      return this.searchPhoto(from, state, target.brand, target.model);
+    }
+
+    const target = await this.photoTarget(state, arg);
+    if (!target) return this.reply(from, "Escribe *foto 1b* (opción), *foto 2* (ítem de la cotización) o *foto Marca Modelo*.");
+    const found = target.url ? { url: target.url, sheetUrl: target.sheetUrl, source: target.source ?? "" } : await findPhoto(this.store, target.brand, target.model);
+    if (!found) {
+      const hint = webSearchAvailable() ? ` Puedo buscarla en internet: *foto buscar ${arg}*.` : "";
+      return this.reply(from, `No tengo foto de *${target.brand} ${target.model}*. Envíamela con el texto *foto ${target.brand} ${target.model}*.${hint}`);
+    }
+    const caption = `${target.brand} ${target.model}${found.source ? ` · foto: ${found.source}` : ""}`;
+    if (found.data) await this.client.sendImage(from, { data: found.data, mimeType: found.mimeType }, caption);
+    else if (found.url) {
+      const img = await loadImage(found.url);
+      if (img) await this.client.sendImage(from, { data: img.data, mimeType: img.mimeType }, caption);
+      else await this.client.sendImage(from, { link: found.url }, caption);
+    }
+    if (found.sheetUrl) {
+      const sheet = await loadImage(found.sheetUrl);
+      if (sheet) await this.client.sendImage(from, { data: sheet.data, mimeType: sheet.mimeType }, `Ficha técnica ${target.brand} ${target.model}`);
+    }
+  }
+
+  /** Resolve "1b" (pending option), "2" (quote item) or "Marca Modelo" to a brand+model (+ the row's own photo when it has one). */
+  private async photoTarget(state: ConversationState, ref: string): Promise<{ brand: string; model: string; url?: string; sheetUrl?: string; source?: string } | null> {
+    const m = ref.match(/^(\d{1,2})\s*([a-j])?$/i);
+    if (m) {
+      const li = parseInt(m[1], 10) - 1;
+      if (state.step === "choose" && state.pending) {
+        const p = state.pending[li];
+        if (!p) return null;
+        const idx = m[2] ? LETTERS.indexOf(m[2].toLowerCase()) : (p.chosen ?? 0);
+        const [row] = await this.store.getRows([p.candidateIds[idx]].filter(Boolean));
+        return row ? { brand: row.brand, model: row.model, url: row.photoUrl, sheetUrl: row.sheetUrl, source: row.photoUrl ? row.provider : undefined } : null;
+      }
+      if (state.quoteNumber) {
+        const quote = await this.store.getQuote(state.quoteNumber);
+        const it = quote?.items[li];
+        return it ? { brand: it.brand, model: it.model, url: it.photoUrl, sheetUrl: it.sheetUrl, source: it.photoSource } : null;
+      }
+      return null;
+    }
+    const { brand, model } = this.splitBrandModel(ref);
+    return brand && model ? { brand, model } : null;
+  }
+
+  private async searchPhoto(from: string, state: ConversationState, brand: string, model: string): Promise<void> {
+    if (!webSearchAvailable()) return this.reply(from, "La búsqueda de fotos en internet no está configurada (GOOGLE_CSE_KEY / GOOGLE_CSE_ID).");
+    const candidates = await searchWebPhotos(brand, model);
+    if (candidates.length === 0) return this.reply(from, `No encontré fotos de *${brand} ${model}* en internet. Envíamela con el texto *foto ${brand} ${model}*.`);
+    await this.store.setConversation(from, { ...state, pendingPhoto: { brand, model, url: candidates[0], candidates, index: 0 }, updatedAt: now() });
+    return this.proposePhoto(from, brand, model, candidates[0], 0, candidates.length);
+  }
+
+  private async proposePhoto(from: string, brand: string, model: string, url: string, index: number, total: number): Promise<void> {
+    const img = await loadImage(url);
+    if (img) await this.client.sendImage(from, { data: img.data, mimeType: img.mimeType }, `${brand} ${model} (internet, ${index + 1}/${total})`);
+    else await this.client.sendImage(from, { link: url }, `${brand} ${model} (internet, ${index + 1}/${total})`);
+    await this.reply(from, `¿Es la foto correcta de *${brand} ${model}*? Responde *foto ok* para guardarla, *foto otra* para ver la siguiente o *foto no* para descartar.`);
   }
 
   private async rebuildQuote(from: string, state: ConversationState, change: { unitPrice?: number; lineIndex?: number; email?: string; pricesIncludeTax?: boolean; extraText?: string }): Promise<void> {

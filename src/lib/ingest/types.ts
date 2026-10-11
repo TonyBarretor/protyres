@@ -48,11 +48,15 @@ export interface PriceRow {
   /** File name, Drive file id, or WhatsApp message id. */
   sourceRef: string;
   notes?: string;
+  /** Product photo URL published by the provider (Steel's catalogue). */
+  photoUrl?: string;
+  /** Technical sheet image URL published by the provider. */
+  sheetUrl?: string;
   /** Original text (cell/line/message fragment) for debugging. */
   raw?: string;
 }
 
-export type ColumnKey = "code" | "size" | "brand" | "model" | "price" | "stock" | "description" | "index" | "currency" | "position" | "ply";
+export type ColumnKey = "code" | "size" | "brand" | "model" | "price" | "stock" | "description" | "index" | "currency" | "position" | "ply" | "photo" | "sheet";
 
 export interface IngestOptions {
   provider: string;

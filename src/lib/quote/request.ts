@@ -87,9 +87,11 @@ export function parseTaxMode(text: string): boolean | undefined {
  */
 export function parseTerms(text: string): Pick<QuoteRequest, "attention" | "address" | "paymentType" | "paymentTerm" | "deliveryTerm" | "validityDays" | "exchangeRate"> {
   const out: ReturnType<typeof parseTerms> = {};
+  // a value runs to the end of the line / ";" — or to a comma that starts another field ("key:", an email, "x4", "dscto", "con igv")
+  const STOP = String.raw`(?=\s*(?:[;\n]|$|,\s*(?:[\w.+-]+@|[\wáéíóú][\wáéíóú ]{0,24}:|x\s*\d|dscto\b|descuento\b|con igv\b|sin igv\b)))`;
   const grab = (keys: string): string | undefined => {
-    const m = text.match(new RegExp(`(?:^|[,;\\n]|\\s{2,})\\s*(?:${keys})\\s*:\\s*([^,;\\n]+)`, "i"));
-    return m ? m[1].trim() : undefined;
+    const m = text.match(new RegExp(`(?:^|[,;\\n]|\\s{2,})\\s*(?:${keys})\\s*:\\s*([^;\\n]+?)${STOP}`, "i"));
+    return m ? m[1].trim().replace(/,\s*$/, "") : undefined;
   };
   out.attention = grab("atenci[oó]n|atn|att|contacto");
   out.address = grab("direcci[oó]n|dir|lugar de entrega");
