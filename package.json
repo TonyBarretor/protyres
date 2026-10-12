@@ -16,6 +16,7 @@
     "prices": "tsx --tsconfig tsconfig.cli.json src/cli/prices.ts",
     "wa:simulate": "tsx --tsconfig tsconfig.cli.json src/cli/wa-simulate.ts",
     "db:push": "drizzle-kit push",
+    "db:migrate": "tsx --tsconfig tsconfig.cli.json src/cli/migrate.ts",
     "db:studio": "drizzle-kit studio"
   },
   "dependencies": {

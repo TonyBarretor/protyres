@@ -132,7 +132,7 @@ Variables de entorno: copiar `.env.example` a `.env`. Nada es obligatorio para e
 4. **Google Drive** – https://console.cloud.google.com → proyecto → habilitar **Google Drive API** → cuenta de
    servicio → clave JSON → `secrets/service-account.json` (`GOOGLE_SERVICE_ACCOUNT_FILE`). El cliente comparte su
    carpeta (solo lectura) con el correo de la cuenta de servicio; el ID de la carpeta va en `GOOGLE_DRIVE_FOLDER_ID`.
-5. **Supabase** – https://supabase.com → proyecto → cadena de conexión → `DATABASE_URL` → `npm run db:push`.
+5. **Supabase** – https://supabase.com → proyecto → cadena de conexión → `DATABASE_URL` → `npm run db:migrate` (o `npm run db:push`).
    Sin `DATABASE_URL` se usa `data/store.json` (bien en local; en Vercel el disco no persiste).
 6. **Despliegue** – Vercel (`vercel`) o Railway. Variables = las de `.env`. `curl https://<app>/api/health` debe
    mostrar `whatsapp: true`. Para refrescar Drive cada hora: cron que llame `GET /api/ingest/refresh` con
