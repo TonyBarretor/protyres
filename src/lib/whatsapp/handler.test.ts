@@ -161,11 +161,11 @@ describe("bot conversation (synthetic lists)", () => {
     expect(client.last()?.body).not.toContain("Falta en el PDF: *atención");
     await bot.handle(text("enviar"));
 
-    // the photo is now embedded in the PDF annex (rendered with photos enabled)
+    // the photo is embedded under the items, on the same single page (rendered with photos enabled)
     delete process.env.PHOTOS_DISABLED;
     const { renderQuotePdf } = await import("../quote/pdf");
     const pdf = await renderQuotePdf((await store.getQuote("COT-0001"))!, settings);
-    expect((pdf.toString("latin1").match(/\/Type\s*\/Page[^s]/g) ?? []).length).toBe(2); // quote page + photos annex
+    expect((pdf.toString("latin1").match(/\/Type\s*\/Page[^s]/g) ?? []).length).toBe(1); // one page: quote + photo strip
   });
 
   it("customer memory: contact, address and terms of the last quote are reused", async () => {

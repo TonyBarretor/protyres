@@ -13,3 +13,4 @@ secrets/
 clientdata/
 scratch/
 _to_delete/
+.cache/

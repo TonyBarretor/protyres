@@ -2,7 +2,9 @@
  * Quote PDF in the client's own layout (landscape, black/yellow 360° Tyres bands):
  *   header band (logo + "COTIZACIÓN") · yellow band with the quote number · two info boxes ·
  *   items table (ITEM, MEDIDA, MARCA, MODELO, APLICACIÓN, ORIGEN, CANTIDAD, PRECIO UNIT., PRECIO TOTAL) ·
- *   TOTAL row · notes · signature block over the footer band.
+ *   TOTAL row · photo strip (one cell per item, the tyre picture with "MARCA MODELO" under it) · notes ·
+ *   signature block over the footer band. Everything fits on ONE page: when photos are present the table shows fewer
+ *   blank rows and the pictures shrink to the room left; only if that room is too small do they go to an annex page.
  */
 import React from "react";
 import fs from "node:fs";
@@ -14,7 +16,7 @@ import { loadImage } from "./photos";
 import { fmtMoney } from "./pricing";
 import type { Quote } from "./types";
 
-/** Pre-fetched images for the "Fotos" page, keyed by item index. */
+/** Pre-fetched images for the photo strip under the items, keyed by item index. */
 export interface PhotoAssets {
   [itemIndex: number]: { photo?: Buffer; sheet?: Buffer };
 }
@@ -30,8 +32,8 @@ const MARGIN = 36;
 const CONTENT_W = PAGE_W - MARGIN * 2;
 
 const st = StyleSheet.create({
-  page: { paddingTop: 0, paddingBottom: 110, paddingHorizontal: MARGIN, fontSize: 8.5, fontFamily: "Helvetica", color: "#111" },
-  headerImg: { width: CONTENT_W, marginTop: 18 },
+  page: { paddingTop: 0, paddingBottom: 100, paddingHorizontal: MARGIN, fontSize: 8.5, fontFamily: "Helvetica", color: "#111" },
+  headerImg: { width: CONTENT_W, marginTop: 12 },
   headerFallback: { marginTop: 24, flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
   title: { fontSize: 30, fontFamily: "Helvetica-Bold", letterSpacing: 2, color: dark },
   numberBand: { backgroundColor: yellow, paddingVertical: 4, marginTop: 6, alignItems: "center" },
@@ -54,6 +56,10 @@ const st = StyleSheet.create({
   sigName: { fontFamily: "Helvetica-Bold", fontSize: 8.5 },
   sigCompany: { fontFamily: "Helvetica-Bold" },
   logoSmall: { height: 48, objectFit: "contain" as const },
+  photoStrip: { flexDirection: "row", marginTop: 8, borderWidth: 1, borderColor: dark, paddingVertical: 4, paddingHorizontal: 2 },
+  photoCell: { alignItems: "center", paddingHorizontal: 3, borderRightWidth: 0.6, borderRightColor: line, borderStyle: "dashed" },
+  photoCellImg: { width: "100%", objectFit: "contain" as const },
+  photoCellCaption: { fontFamily: "Helvetica-Bold", fontSize: 7, marginTop: 3, textAlign: "center" },
   photosTitle: { marginTop: 10, fontSize: 12, fontFamily: "Helvetica-Bold", color: dark },
   photoGrid: { flexDirection: "row", flexWrap: "wrap", marginTop: 6 },
   photoCard: { width: "33.33%", paddingRight: 10, paddingBottom: 10 },
@@ -89,10 +95,22 @@ export function QuoteDocument({ quote, settings, photos = {} }: { quote: Quote; 
   const money = (n: number) => fmtMoney(n, cur).replace(/^US\$\s?/, "$");
   const total = displayTotal(quote);
   const rows = [...quote.items];
-  const blank = Math.max(0, 6 - rows.length);
   const w = (f: number) => ({ width: `${f * 100}%` });
   const sp = quote.salesperson;
   const photoItems = quote.items.map((it, i) => ({ it, i, a: photos[i] })).filter((x) => x.a?.photo || x.a?.sheet);
+  // One page: the items table always shows at least 6 rows, or 3 when a photo strip follows. The strip gets whatever
+  // height is left above the footer (≈ ROOM points for rows + photos); pictures shrink down to MIN_IMG before we give up
+  // and move them to an annex page instead.
+  const ROOM = 200;
+  const ROW_H = 15;
+  const MIN_IMG = 45;
+  const MAX_IMG = 95;
+  const minRows = photoItems.length ? 3 : 6;
+  const blank = Math.max(0, minRows - rows.length);
+  const imgH = Math.min(MAX_IMG, ROOM - (rows.length + blank) * ROW_H - 31 - (quote.pricesIncludeTax ? 0 : 14));
+  const inline = photoItems.length > 0 && imgH >= MIN_IMG;
+  const annex = photoItems.length > 0 && !inline;
+  const cellW = Math.max(CONTENT_W / Math.max(photoItems.length, 4), 90);
 
   return (
     <Document title={`Cotización ${quote.number}`} author={c.tradeName || c.name}>
@@ -219,6 +237,17 @@ export function QuoteDocument({ quote, settings, photos = {} }: { quote: Quote; 
           </View>
         ) : null}
 
+        {inline ? (
+          <View style={st.photoStrip} wrap={false}>
+            {photoItems.map(({ it, i, a }, k) => (
+              <View key={i} style={[st.photoCell, { width: cellW }, k === photoItems.length - 1 ? { borderRightWidth: 0 } : {}]}>
+                <Image src={a!.photo ?? a!.sheet!} style={[st.photoCellImg, { height: imgH }]} />
+                <Text style={st.photoCellCaption}>{[it.brand, it.model].filter(Boolean).join(" ").toUpperCase()}</Text>
+              </View>
+            ))}
+          </View>
+        ) : null}
+
         {quote.notes ? <Text style={st.notes}>{quote.notes}</Text> : null}
 
         {footer ? <Image src={footer} style={st.footerImg} fixed /> : null}
@@ -232,7 +261,7 @@ export function QuoteDocument({ quote, settings, photos = {} }: { quote: Quote; 
           {sp.email ? <Text>{sp.email}</Text> : null}
         </View>
       </Page>
-      {photoItems.length > 0 ? (
+      {annex ? (
         <Page size="A4" orientation="landscape" style={st.page}>
           {header ? <Image src={header} style={st.headerImg} /> : null}
           <View style={st.numberBand}>

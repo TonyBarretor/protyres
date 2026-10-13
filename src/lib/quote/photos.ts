@@ -33,8 +33,8 @@ function fromSaved(p: ProductPhoto): ResolvedPhoto {
     url: p.url,
     data: p.data ? Buffer.from(p.data, "base64") : undefined,
     mimeType: p.mimeType,
-    sheetUrl: p.sheetUrl,
-    source: p.source === "whatsapp" ? "WhatsApp" : p.source === "web" ? "web" : p.source === "provider" ? "proveedor" : "manual",
+    sheetUrl: p.sheetData ? `data:image/jpeg;base64,${p.sheetData}` : p.sheetUrl,
+    source: p.source === "whatsapp" ? "WhatsApp" : p.source === "web" ? "web" : p.origin ?? (p.source === "provider" ? "proveedor" : "manual"),
   };
 }
 

@@ -1,0 +1,21 @@
+{
+  "_comment": "Where product photos come from. `npm run photos -- --all` runs every source; add a new web shop here or pass it on the command line (--woocommerce URL --provider Name). \"browser\": true opens Google Chrome to download (for shops behind Cloudflare's browser check, which refuses plain downloads); without it Chrome is opened only if the shop blocks the direct download.",
+  "sources": [
+    {
+      "provider": "JCH",
+      "type": "woocommerce",
+      "url": "https://jchllantas.com.pe",
+      "note": "WooCommerce Store API; the product SKU equals the code in JCH's price list. Behind Cloudflare -> downloaded through Chrome",
+      "browser": true
+    },
+    {
+      "provider": "Steel",
+      "type": "price-list",
+      "note": "Steel's price list carries a FOTO and a FICHA URL per product (ingested as photoUrl / sheetUrl)"
+    }
+  ],
+  "image": {
+    "maxPx": 600,
+    "jpegQuality": 80
+  }
+}

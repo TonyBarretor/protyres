@@ -129,6 +129,10 @@ export class JsonStore implements PriceStore {
     });
   }
 
+  photoKeys(): Promise<Set<string>> {
+    return this.run(() => new Set(Object.keys(this.data.photos)));
+  }
+
   findLastQuoteForCustomer(opts: { email?: string; company?: string }): Promise<Quote | null> {
     return this.run(() => {
       const email = opts.email?.toLowerCase();

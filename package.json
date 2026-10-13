@@ -17,6 +17,7 @@
     "wa:simulate": "tsx --tsconfig tsconfig.cli.json src/cli/wa-simulate.ts",
     "db:push": "drizzle-kit push",
     "db:migrate": "tsx --tsconfig tsconfig.cli.json src/cli/migrate.ts",
+    "photos": "tsx --tsconfig tsconfig.cli.json src/cli/photos.ts",
     "db:studio": "drizzle-kit studio"
   },
   "dependencies": {
@@ -31,6 +32,7 @@
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
     "resend": "^6.32.1",
+    "sharp": "^0.35.5",
     "unpdf": "^1.8.1",
     "zod": "^4.1.0"
   },
@@ -41,6 +43,7 @@
     "@types/react-dom": "^19.2.0",
     "dotenv": "^17.0.0",
     "drizzle-kit": "^0.31.0",
+    "patchright": "^1.56.1",
     "tsx": "^4.20.0",
     "typescript": "^5.9.0",
     "vitest": "^5.0.3"

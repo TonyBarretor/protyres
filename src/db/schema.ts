@@ -42,7 +42,13 @@ export const photos = pgTable("photos", {
   data: text("data"),
   mimeType: text("mime_type"),
   sheetUrl: text("sheet_url"),
+  /** base64 bytes of the technical sheet image, when downloaded. */
+  sheetData: text("sheet_data"),
   source: text("source").notNull().default("manual"),
+  /** provider / web site the photo came from ("JCH", "Steel", "jchllantas.com.pe"). */
+  origin: text("origin"),
+  /** provider SKU the photo was matched by, when any. */
+  code: text("code"),
   addedBy: text("added_by"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });

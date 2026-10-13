@@ -82,12 +82,15 @@ const STATEMENTS = [
     added_by text,
     created_at timestamptz not null default now()
   )`,
+  `alter table photos add column if not exists sheet_data text`,
+  `alter table photos add column if not exists origin text`,
+  `alter table photos add column if not exists code text`,
 ];
 
 async function main() {
   const url = process.env.DATABASE_URL;
   if (!url) throw new Error("DATABASE_URL no está definida (ponla en .env)");
-  const sql = postgres(url, { prepare: false, max: 1, connect_timeout: 20 });
+  const sql = postgres(url, { prepare: false, max: 1, connect_timeout: 20, onnotice: () => undefined }); // "already exists, skipping" notices are expected
   try {
     for (const stmt of STATEMENTS) {
       const head = stmt.replace(/\s+/g, " ").slice(0, 70);

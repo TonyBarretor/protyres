@@ -176,18 +176,26 @@ export class PgStore implements PriceStore {
       data: row.data ?? undefined,
       mimeType: row.mimeType ?? undefined,
       sheetUrl: row.sheetUrl ?? undefined,
+      sheetData: row.sheetData ?? undefined,
       source: row.source as ProductPhoto["source"],
+      origin: row.origin ?? undefined,
+      code: row.code ?? undefined,
       addedBy: row.addedBy ?? undefined,
       createdAt: row.createdAt.toISOString(),
     };
   }
 
   async setPhoto(p: ProductPhoto): Promise<void> {
-    const values = { key: p.key, brand: p.brand, model: p.model, url: p.url ?? null, data: p.data ?? null, mimeType: p.mimeType ?? null, sheetUrl: p.sheetUrl ?? null, source: p.source, addedBy: p.addedBy ?? null, createdAt: new Date(p.createdAt) };
+    const values = { key: p.key, brand: p.brand, model: p.model, url: p.url ?? null, data: p.data ?? null, mimeType: p.mimeType ?? null, sheetUrl: p.sheetUrl ?? null, sheetData: p.sheetData ?? null, source: p.source, origin: p.origin ?? null, code: p.code ?? null, addedBy: p.addedBy ?? null, createdAt: new Date(p.createdAt) };
     await this.db
       .insert(schema.photos)
       .values(values)
       .onConflictDoUpdate({ target: schema.photos.key, set: { ...values, createdAt: new Date() } });
+  }
+
+  async photoKeys(): Promise<Set<string>> {
+    const rows = await this.db.select({ key: schema.photos.key }).from(schema.photos);
+    return new Set(rows.map((r) => r.key));
   }
 
   async findLastQuoteForCustomer(opts: { email?: string; company?: string }): Promise<Quote | null> {

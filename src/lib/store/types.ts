@@ -1,5 +1,6 @@
 import type { PriceRow, PriceSource } from "../ingest/types";
 import type { Quote, QuoteItem } from "../quote/types";
+import { knownBrand } from "../tyre/brands";
 
 export interface ProviderSummary {
   provider: string;
@@ -47,13 +48,20 @@ export interface ProductPhoto {
   data?: string;
   mimeType?: string;
   sheetUrl?: string;
+  /** base64 bytes of the technical sheet, when downloaded */
+  sheetData?: string;
   source: "provider" | "whatsapp" | "web" | "manual";
+  /** provider / site name ("JCH", "Steel") */
+  origin?: string;
+  /** provider SKU it was matched by */
+  code?: string;
   addedBy?: string;
   createdAt: string;
 }
 
-/** Normalised brand+model key ("fenixway|valor87"). */
+/** Normalised brand+model key ("fenixway|valor87"); brand aliases ("GT Radial" → Giti) collapse to one key. */
 export function photoKey(brand: string, model: string): string {
+  brand = knownBrand(brand) ?? brand;
   const f = (s: string) =>
     s
       .normalize("NFD")
@@ -80,6 +88,8 @@ export interface PriceStore {
   rowsWithPhoto(brand: string, model: string): Promise<PriceRow[]>;
   getPhoto(brand: string, model: string): Promise<ProductPhoto | null>;
   setPhoto(photo: ProductPhoto): Promise<void>;
+  /** Keys of every stored photo (to skip downloads already done). */
+  photoKeys(): Promise<Set<string>>;
   /** Most recent quote sent to this customer (by email, else by company name). */
   findLastQuoteForCustomer(opts: { email?: string; company?: string }): Promise<Quote | null>;
   providers(): Promise<ProviderSummary[]>;
