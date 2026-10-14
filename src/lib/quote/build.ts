@@ -51,19 +51,29 @@ export function countryOfOrigin(row: PriceRow, settings: Settings): string | und
   return key ? map[key] : undefined;
 }
 
-/** APLICACIÓN column: position words plus the tyre family. */
+/** The client's own short forms for the APLICACIÓN column (as on their quotes: MIXT, DEL, POST ON/OFF). */
+const APPLICATION_SHORT: Record<string, string> = { DEL: "DEL", TRAC: "POST", MIX: "MIXT", OTR: "OFF ROAD", TRL: "TRAILER" };
+
+/** APLICACIÓN column from the price row: position words plus the tyre family. */
 export function applicationLabel(row: PriceRow): string | undefined {
   const size = row.size;
   if (/^\d{3}-\d{1,2}$/.test(size)) return "MONTACARGAS";
-  if (row.position) {
-    const base = { DEL: "DELANTERA", TRAC: "TRACCIÓN", MIX: "MIXTA", OTR: "OFF ROAD", TRL: "TRAILER" }[row.position];
-    return base ?? POSITION_LABEL[row.position];
-  }
+  if (row.position) return APPLICATION_SHORT[row.position] ?? POSITION_LABEL[row.position];
   if (/L-|\/\d{2}-\d{2}$/.test(size) || /^\d{2}\.\d-\d{2}$/.test(size)) return "AGRÍCOLA";
   return undefined;
 }
 
-export function itemFromCandidate(c: Candidate, quantity: number, settings: Settings, unitPriceOverride?: number): QuoteItem {
+/** What the salesman wrote wins; else what the list says about the tyre; else the position word of the request. */
+function applicationFor(row: PriceRow | undefined, line?: RequestLine): string | undefined {
+  if (line?.application) return line.application;
+  if (row) {
+    const fromRow = applicationLabel(row);
+    if (fromRow) return fromRow;
+  }
+  return line?.position ? APPLICATION_SHORT[line.position] : undefined;
+}
+
+export function itemFromCandidate(c: Candidate, quantity: number, settings: Settings, unitPriceOverride?: number, line?: RequestLine): QuoteItem {
   const r = c.row;
   const inDesc = (x: string) => !!x && fold(r.description).includes(fold(x));
   const descParts =
@@ -87,7 +97,8 @@ export function itemFromCandidate(c: Candidate, quantity: number, settings: Sett
     discountPct: unitPriceOverride !== undefined && c.listNet ? r2((1 - unitPriceOverride / c.listNet) * 100) : c.discountPct,
     total: r2(unitPrice * quantity),
     origin: unitPriceOverride !== undefined && !c.listNet ? "manual" : r.kind === "own" ? "own" : "provider",
-    application: applicationLabel(r),
+    application: applicationFor(r, line),
+    plate: line?.plate,
     countryOfOrigin: countryOfOrigin(r, settings),
     photoUrl: r.photoUrl,
     sheetUrl: r.sheetUrl,
@@ -117,7 +128,8 @@ export function manualItem(line: RequestLine, unitPrice: number, description?: s
     discountPct: 0,
     total: r2(unitPrice * line.quantity),
     origin: "manual",
-    application: line.position ? { DEL: "DELANTERA", TRAC: "TRACCIÓN", MIX: "MIXTA", OTR: "OFF ROAD", TRL: "TRAILER" }[line.position] : undefined,
+    application: applicationFor(undefined, line),
+    plate: line.plate,
     provider: "manual",
     priceDate: new Date().toISOString().slice(0, 10),
     available: null,

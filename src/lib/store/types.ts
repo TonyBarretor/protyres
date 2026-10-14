@@ -17,6 +17,8 @@ export interface PendingLine {
   unitPriceOverride?: number;
   quantity: number;
   removed?: boolean;
+  /** APLICACIÓN typed by the salesman for this line ("aplicación 2 MIXT DEL"). */
+  application?: string;
   /** More options of the same line quoted as extra items ("opción a x2, opción b x8"). */
   extra?: { chosen: number; quantity: number }[];
 }

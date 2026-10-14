@@ -139,7 +139,7 @@ const QTY_MARKER = new RegExp(String.raw`\bx\s?\d{1,4}\b|\b\d{1,4}\s?x\b|\b\d{1,
  * -> one line per group, each repeating the common head ("Fenixway 295/80R22.5 Valor 18PR").
  */
 function splitPositionGroups(line: string): string[] {
-  const size = findTyreSizes(normalizeSizeText(line))[0];
+  const size = findTyreSizes(normalizeSizeText(withoutPlate(line)))[0];
   if (!size) return [line];
   const segs = line.split(/\s*(?:,|;|\+|\s+y\s+|\s+e\s+|\s+and\s+)\s*/i).filter(Boolean);
   if (segs.length < 2) return [line];
@@ -186,7 +186,7 @@ function candidateLines(text: string): string[] {
     const line = rawLine.replace(/^[\s•\-–*·]+/, "").replace(/\s+/g, " ").trim();
     if (!line || SKIP_LINE.test(line)) continue;
     // several sizes in one line separated by ; or "y" -> split
-    const sizes = findTyreSizes(line);
+    const sizes = findTyreSizes(withoutPlate(line));
     if (sizes.length > 1) {
       let last = 0;
       sizes.forEach((s, i) => {
@@ -204,23 +204,68 @@ function candidateLines(text: string): string[] {
   return out.map((l) => l.trim()).filter(Boolean);
 }
 
+/** Peruvian vehicle plate written next to an item ("BLM-923", "A1B-234", "placa BVV704"). */
+const PLATE = /(?:\bplaca\s*:?\s*)?\b((?:[A-Z]{3}|[A-Z]\d[A-Z])-?\d{3})\b(?![\w/.-])/i;
+export function extractPlate(text: string): string | undefined {
+  const m = text.match(PLATE);
+  if (!m) return undefined;
+  if (!/placa/i.test(m[0]) && !m[1].includes("-")) return undefined; // without a hyphen only "placa BVV704" counts (models look alike: AT557)
+  return m[1].toUpperCase().replace(/^([A-Z0-9]{3})(\d{3})$/, "$1-$2");
+}
+
+/** The line with its plate blanked out (same length), so "BVV704 x8" is never read as a tyre size. */
+function withoutPlate(line: string): string {
+  if (!extractPlate(line)) return line;
+  return line.replace(PLATE, (m) => " ".repeat(m.length));
+}
+
+/**
+ * APLICACIÓN as the salesman writes it: the run of application words in the line ("MIXT DEL", "POST ON/OFF",
+ * "mixta", "tracción", "montacargas"), kept in his own words (upper case).
+ */
+const APP_WORD = String.raw`(?:mixt[ao]?s?|mix|super\s?mixta|del(?:anter[ao]s?)?|direccional(?:es)?|post(?:erior(?:es)?)?|tracc?(?:i[oó]n(?:es)?)?|trac|on\s?/\s?off|off\s?road|otr|trailer|remolque|miner[ao]|agr[ií]cola|montacargas?|all\s?position|regional|urbano|carretera)`;
+const APP_RUN = new RegExp(String.raw`(?<![\w/-])${APP_WORD}(?:[\s/]+${APP_WORD})*(?![\w/-])`, "gi");
+export function extractApplication(text: string): string | undefined {
+  let best = "";
+  for (const m of text.matchAll(APP_RUN)) if (m[0].length > best.length) best = m[0];
+  return best ? best.toUpperCase().replace(/\s*\/\s*/g, "/").replace(/\s+/g, " ").trim() : undefined;
+}
+
 function lineFromText(line: string, explicitQty: number | null): RequestLine | null {
-  const norm = normalizeSizeText(line);
+  const norm = normalizeSizeText(withoutPlate(line));
   const size = findTyreSizes(norm)[0];
   const brandHit = findBrandInText(line);
   const position = extractPosition(line) ?? undefined;
-  if (size) {
+  const plate = extractPlate(line);
+  const application = extractApplication(line);
+  const isRim = /^\s*aros?\b/i.test(line);
+  if (size && !isRim) {
     const sizeRaw = norm.slice(size.index, size.index + size.length);
-    let model = stripToModel(norm, { sizeRaw, brandAlias: brandHit?.alias });
+    // plate, "placa", the application words and the LT prefix are not part of the model
+    let cleaned = norm.replace(/\bplaca\b\s*:?/gi, " ").replace(/\bLT(?=\d)/g, "  ");
+    if (plate) cleaned = cleaned.replace(new RegExp(`\\b${plate.replace("-", "[-\\s]?")}\\b`, "gi"), (m) => " ".repeat(m.length));
+    if (application) cleaned = cleaned.replace(new RegExp(`(?<![\\w/-])${application.replace(/[/ ]/g, "[\\s/]*")}(?![\\w/-])`, "gi"), (m) => " ".repeat(m.length));
+    let model = stripToModel(cleaned, { sizeRaw, brandAlias: brandHit?.alias });
     model = model
       .normalize("NFD")
       .replace(/[\u0300-\u036f]/g, "")
-      .replace(/\b(MOD|MODELO|MARCA|LLANTA|LLANTAS|NEUMATICO|NEUMATICOS|UND|UN|U|DE|DEL|DELANTERA|DELANTERAS|DELANTERO|DELANTEROS|POST|POSTERIOR|POSTERIORES|TRACC|TRACCION|TRACCIONES|MIX|MIXTA|MIXTAS|MIXTO|MIXTOS|DIRECCIONAL|DIRECCIONALES|DIRECCION|SET|TL|TT|TCF|PR|PLY)\b/g, " ")
+      .replace(/\b(MOD|MODELO|MARCA|LLANTA|LLANTAS|NEUMATICO|NEUMATICOS|UND|UN|U|DE|LT|DEL|DELANTERA|DELANTERAS|DELANTERO|DELANTEROS|POST|POSTERIOR|POSTERIORES|TRACC|TRACCION|TRACCIONES|MIX|MIXT|MIXTA|MIXTAS|MIXTO|MIXTOS|DIRECCIONAL|DIRECCIONALES|DIRECCION|ON\/OFF|OTR|PLACA|SET|TL|TT|TCF|PR|PLY)\b/g, " ")
       .replace(/\s+/g, " ")
       .trim();
     const quantity = explicitQty ?? parseTrailingQuantity(norm, size.index + size.length) ?? 1;
     const { index: _i, length: _l, ...sizeOnly } = size;
-    return { raw: line, size: sizeOnly, brand: brandHit?.brand, model: model || undefined, quantity, position, ply: extractPly(line) };
+    return { raw: line, size: sizeOnly, brand: brandHit?.brand, model: model || undefined, quantity, position, ply: extractPly(line), application, plate };
+  }
+  if (isRim) {
+    // "ARO 8.25x22.5 BFX-904 KUMA ACERO EJE EUROP 10H x1": a rim, kept as free text (the size is the rim's, not a tyre's)
+    const text = line
+      .replace(/\b(?:und|unidades|unidad|cant|cantidad|x)\s*\d{1,4}\b/gi, " ")
+      .replace(/\b\d{1,4}\s*(?:und|unidades|unidad|uds?|u)\b/gi, " ")
+      .replace(/\bplaca\s*:?\s*[A-Z0-9-]+/i, " ")
+      .replace(plate ? new RegExp(`\\b${plate.replace("-", "-?")}\\b`, "i") : /$^/, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+    return { raw: line, quantity: explicitQty ?? 1, text, brand: brandHit?.brand, application: "ARO", plate };
   }
   const item = line.match(NON_TYRE_ITEM);
   if (item && item.index !== undefined) {
@@ -237,7 +282,7 @@ function lineFromText(line: string, explicitQty: number | null): RequestLine | n
       .trim()
       .split(/[,;.]| y /)[0]
       .trim();
-    return { raw: line, quantity: qty, text, brand: brandHit?.brand, position };
+    return { raw: line, quantity: qty, text, brand: brandHit?.brand, position, application, plate };
   }
   return null;
 }
@@ -270,8 +315,9 @@ export function parseRequestRegex(text: string): QuoteRequest {
   // merge identical lines ("215/75R17.5 Posterior" x4 rows -> quantity 4)
   const merged: RequestLine[] = [];
   for (const l of lines) {
-    const key = [l.size?.canonical ?? fold(l.text ?? ""), fold(l.brand ?? ""), fold(l.model ?? ""), l.position ?? ""].join("|");
-    const prev = merged.find((m) => [m.size?.canonical ?? fold(m.text ?? ""), fold(m.brand ?? ""), fold(m.model ?? ""), m.position ?? ""].join("|") === key);
+    const keyOf = (x: RequestLine) => [x.size?.canonical ?? fold(x.text ?? ""), fold(x.brand ?? ""), fold(x.model ?? ""), x.position ?? "", x.application ?? "", x.plate ?? ""].join("|");
+    const key = keyOf(l);
+    const prev = merged.find((m) => keyOf(m) === key);
     if (prev) prev.quantity += l.quantity;
     else merged.push({ ...l });
   }
@@ -309,6 +355,8 @@ export async function parseRequest(text: string): Promise<QuoteRequest> {
       position: (l.position as RequestLine["position"]) ?? undefined,
       ply: l.ply ?? undefined,
       text: size ? undefined : l.description ?? undefined,
+      application: l.application?.trim().toUpperCase() || undefined,
+      plate: l.plate ? extractPlate(`placa ${l.plate}`) ?? l.plate.toUpperCase() : undefined,
     });
   }
   return {
@@ -332,11 +380,12 @@ export async function parseRequest(text: string): Promise<QuoteRequest> {
 
 export function describeLine(l: RequestLine): string {
   if (l.size) {
-    return [l.brand ?? "", l.size.display, l.model ?? "", l.ply ? `${l.ply}PR` : "", l.position === "DEL" ? "delantera" : l.position === "TRAC" ? "tracción/posterior" : l.position === "MIX" ? "mixta" : "", `x${l.quantity}`]
+    const app = l.application ? l.application : l.position === "DEL" ? "delantera" : l.position === "TRAC" ? "tracción/posterior" : l.position === "MIX" ? "mixta" : "";
+    return [l.brand ?? "", l.size.display, l.model ?? "", l.ply ? `${l.ply}PR` : "", app, l.plate ? `placa ${l.plate}` : "", `x${l.quantity}`]
       .filter(Boolean)
       .join(" ");
   }
-  return `${l.text ?? l.raw} x${l.quantity}`;
+  return `${l.text ?? l.raw}${l.plate ? ` placa ${l.plate}` : ""} x${l.quantity}`;
 }
 
 /** Human-readable summary of what was understood (sent back to the salesman). */

@@ -8,6 +8,8 @@ const LineSchema = z.object({
   model: z.string().nullable().optional(),
   quantity: z.number().int().positive().nullable().optional(),
   position: z.enum(["DEL", "TRAC", "MIX", "OTR", "TRL"]).nullable().optional(),
+  application: z.string().nullable().optional(),
+  plate: z.string().nullable().optional(),
   ply: z.number().int().nullable().optional(),
   description: z.string().nullable().optional(),
 });
@@ -45,6 +47,8 @@ const TOOL_SCHEMA = {
           quantity: { type: ["integer", "null"], description: "Units requested; null if not stated (means 1)." },
           position: { type: ["string", "null"], enum: ["DEL", "TRAC", "MIX", "OTR", "TRL", null], description: "DEL = delantera/direccional, TRAC = posterior/tracción, MIX = mixta, OTR = off-road/minera, TRL = trailer." },
           ply: { type: ["integer", "null"], description: "Ply rating if stated (12 PLY, 16PR)." },
+          application: { type: ["string", "null"], description: "The application/use words exactly as the salesman wrote them, upper case ('MIXT DEL', 'POST ON/OFF', 'MIXTA', 'MONTACARGAS', 'ARO' for a rim); null if none." },
+          plate: { type: ["string", "null"], description: "Vehicle plate given for this line ('BLM-923'), or null." },
           description: { type: ["string", "null"], description: "For non-tyre items (parches, cámaras, aros, válvulas): the item description." },
         },
       },

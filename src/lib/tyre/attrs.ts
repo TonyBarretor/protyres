@@ -44,10 +44,12 @@ export function extractLoadIndex(text: string): { loadIndex: string; speedIndex?
 export function extractPosition(text: string): Position | undefined {
   // accents first ("TRACCIÓN" must read as TRACCION), then anything else becomes a space
   const t = ` ${text.normalize("NFD").replace(/[̀-ͯ]/g, "").toUpperCase().replace(/[^A-Z0-9/ ]+/g, " ")} `;
-  if (/\b(OTR|OFF THE ROAD|ON\/OFF|MINERA|MINERO)\b/.test(t)) return "OTR";
-  if (/\b(DEL|DELANTERA|DELANTERAS|DELANTERO|DIRECCIONAL|DIRECCION|STEER|FRONT)\b/.test(t)) return "DEL";
-  if (/\b(MIX|MIXTA|MIXTO|MIXTAS|ALL POSITION|AP|REGIONAL)\b/.test(t)) return "MIX";
-  if (/\b(POST|POSTERIOR|POSTERIORES|TRACC|TRACCION|TRAC|TRACTION|DRIVE|LUG|REAR)\b/.test(t)) return "TRAC";
+  if (/\b(OTR|OFF THE ROAD|MINERA|MINERO)\b/.test(t)) return "OTR";
+  // an axle word wins over "on/off": "POST ON/OFF" is a drive tyre for on/off-road use
+  if (/\b(DEL|DELANTERA|DELANTERAS|DELANTERO|DELANTEROS|DIRECCIONAL|DIRECCIONALES|DIRECCION|STEER|FRONT)\b/.test(t)) return "DEL";
+  if (/\b(MIX|MIXT|MIXTA|MIXTO|MIXTAS|MIXTOS|SUPERMIXTA|SUPER MIXTA|ALL POSITION|AP|REGIONAL)\b/.test(t)) return "MIX";
+  if (/\b(POST|POSTERIOR|POSTERIORES|TRACC|TRACCION|TRACCIONES|TRAC|TRACTION|DRIVE|LUG|REAR)\b/.test(t)) return "TRAC";
+  if (/\b(ON\/OFF|OFF ROAD)\b/.test(t)) return "OTR";
   if (/\b(TRAILER|TRL|REMOLQUE)\b/.test(t)) return "TRL";
   return undefined;
 }

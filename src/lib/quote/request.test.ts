@@ -49,6 +49,26 @@ describe("salesman one-liners", () => {
     expect(parseRequestRegex("FENIXWAY 295/80R22.5 VALOR 18PR X10").lines.map((l) => l.quantity)).toEqual([10]);
     expect(parseRequestRegex("295/80R22.5 x4 delanteras, dscto 5%").lines.map((l) => [l.position, l.quantity])).toEqual([["DEL", 4]]);
   });
+  it("a quote typed the way the client formats it: application words, plates, a rim", () => {
+    const r = parseRequestRegex(`LT7.50R16 14PR SET BLM-923 FENIXWAY VALOR 96 TCF x2
+ARO 8.25x22.5 BFX-904 KUMA ACERO EJE EUROP 10H x1
+11R22.5 18PR BVV-704 FENIXWAY VALOR 85 POST ON/OFF x8
+295/80R22.5 18PR AHN-988 FENIXWAY VALOR 99 MIXT DEL x4
+425/65R22.5 20PR ARA-986 WESTLAKE AT557 MIXT x2
+para ANCRO SRL, atención: Srta. Karina Quispe, pago: crédito, plazo: 60 días, con igv`);
+    expect(r.lines.map((l) => [l.size?.display ?? l.text, l.brand, l.model, l.ply, l.application, l.plate, l.position, l.quantity])).toEqual([
+      ["7.50R16", "Fenixway", "VALOR 96", 14, undefined, "BLM-923", undefined, 2],
+      ["ARO 8.25x22.5 KUMA ACERO EJE EUROP 10H", undefined, undefined, undefined, "ARO", "BFX-904", undefined, 1],
+      ["11R22.5", "Fenixway", "VALOR 85", 18, "POST ON/OFF", "BVV-704", "TRAC", 8],
+      ["295/80R22.5", "Fenixway", "VALOR 99", 18, "MIXT DEL", "AHN-988", "DEL", 4],
+      ["425/65R22.5", "Westlake", "AT557", 20, "MIXT", "ARA-986", "MIX", 2],
+    ]);
+    expect(r.customerCompany).toBe("ANCRO SRL");
+    expect(r.attention).toBe("Srta. Karina Quispe");
+    // model codes that look like plates are left alone
+    expect(parseRequestRegex("Westlake 425/65R22.5 AT557 x2").lines[0].plate).toBeUndefined();
+    expect(parseRequestRegex("11R22.5 placa BVV704 x8").lines[0].plate).toBe("BVV-704");
+  });
   it("helpers", () => {
     expect(parseQuantity("11R22.5 x6")).toBe(6);
     expect(parseQuantity("6 unidades 11R22.5")).toBe(6);

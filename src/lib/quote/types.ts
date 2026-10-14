@@ -13,6 +13,10 @@ export interface RequestLine {
   ply?: number;
   /** Free description for non-tyre items ("PARCHE RS-35 VIPAL"). */
   text?: string;
+  /** APLICACIÓN as the salesman wrote it ("MIXT DEL", "POST ON/OFF", "ARO"); overrides what the price list says. */
+  application?: string;
+  /** Vehicle plate the customer gave for this line ("BLM-923"); printed next to the size. */
+  plate?: string;
 }
 
 export interface QuoteRequest {
@@ -94,6 +98,8 @@ export interface QuoteItem {
   origin: "own" | "provider" | "manual";
   /** APLICACIÓN column ("DELANTERA", "MIXTA", "MONTACARGAS"...). */
   application?: string;
+  /** Vehicle plate given by the customer, printed after the size ("11R22.5 18PR BVV-704"). */
+  plate?: string;
   /** ORIGEN column ("CHINA PREMIUM", "INDIA"...). */
   countryOfOrigin?: string;
   /** Product photo (URL, or data: URI for uploaded photos) printed on the "Fotos" annex page. */

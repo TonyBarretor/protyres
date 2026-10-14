@@ -206,6 +206,21 @@ describe("bot conversation (synthetic lists)", () => {
     expect(q?.items[0].description).not.toBe(q?.items[1].description);
   });
 
+  it("APLICACIÓN and plate come from the salesman's words and can be changed per item", async () => {
+    await bot.handle(text("295/80R22.5 18PR AHN-988 mixt del x4 para Transportes ABC, juan@abc.com"));
+    expect(client.last()?.body).toContain("MIXT DEL placa AHN-988 x4");
+    await bot.handle(text("aplicación 1 MIXTA"));
+    expect(client.last()?.body).toContain("MIXTA placa AHN-988 x4");
+    await bot.handle(text("ok"));
+    let q = await store.getQuote("COT-0001");
+    expect(q?.items[0].application).toBe("MIXTA");
+    expect(q?.items[0].plate).toBe("AHN-988");
+    await bot.handle(text("aplicación 1 POST ON/OFF"));
+    q = await store.getQuote("COT-0001");
+    expect(q?.items[0].application).toBe("POST ON/OFF");
+    expect(client.last()?.body).toContain("*Para:* juan@abc.com");
+  });
+
   it("multi-line flow: pick per line, remove a line, manual price", async () => {
     await bot.handle(text("Michelin 295/80R22.5 X Multi Z x4; Bridgestone 11R22.5 R268 x2; PARCHE RS-35 VIPAL x25 para Minera Andes S.A.C., c@andes.pe"));
     let body = client.last()?.body ?? "";
@@ -306,7 +321,7 @@ para Cartavio S.A.A., jose.rodriguezp@azucarperu.com`;
     const body = client.last()?.body ?? "";
     expect(body).toContain("*1.* 12.5/80-18 R4 12PR x2");
     expect(body).toContain("*2.* PARCHE PARA LLANTA RS-35 VIPAL x25");
-    expect(body).toContain("*3.* 12R22.5 G377 tracción/posterior x19");
+    expect(body).toContain("*3.* 12R22.5 G377 TRACCION x19");
     expect(body).toMatch(/\*1\.\*[\s\S]*🚚 (JCH|Steel)/);
     expect(body).toContain("*2.* PARCHE PARA LLANTA RS-35 VIPAL x25\n  ❌ sin precio");
     await bot.handle(text("quitar 2"));

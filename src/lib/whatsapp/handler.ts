@@ -181,6 +181,8 @@ export class BotHandler {
         const price = text.match(/^(?:precio|price|unitario)\s*:?\s+(?:(\d{1,2})\s+)?([\d.,]+)\s*$/i);
         if (price) return this.rebuildQuote(from, state, { lineIndex: price[1] ? parseInt(price[1], 10) - 1 : 0, unitPrice: parseFloat(price[2].replace(",", ".")) });
         if (/^(con|sin)\s+igv$/.test(cmd)) return this.rebuildQuote(from, state, { pricesIncludeTax: cmd.startsWith("con") });
+        const app = text.match(/^(?:aplicaci[oó]n|aplic|app|uso)\s+(\d{1,2})\s+(\S.*)$/i);
+        if (app) return this.rebuildQuote(from, state, { lineIndex: parseInt(app[1], 10) - 1, application: app[2].trim().toUpperCase() });
         if (/^(atenci[oó]n|atn|att|direcci[oó]n|dir|pago|tipo de pago|plazo|entrega|validez|tc|tipo de cambio)\s*:?\s+\S/i.test(text)) return this.rebuildQuote(from, state, { extraText: text });
       }
       if (state.step === "need_email") {
@@ -313,7 +315,7 @@ export class BotHandler {
   private renderOptions(req: QuoteRequest, lcs: LineCandidates[], pending: PendingLine[]): string {
     const blocks = lcs.map((lc, i) => {
       const p = pending[i];
-      const head = `*${i + 1}.* ${describeLine(lc.line)}${p.removed ? " _(quitado)_" : ""}`;
+      const head = `*${i + 1}.* ${describeLine(p.application ? { ...lc.line, application: p.application } : lc.line)}${p.removed ? " _(quitado)_" : ""}`;
       if (p.removed) return head;
       if (lc.candidates.length === 0) {
         const manual = p.unitPriceOverride !== undefined ? `precio manual ${fmtMoney(p.unitPriceOverride, this.cur)}` : `sin precio en las listas → escribe *precio ${i + 1} 123.45* o *quitar ${i + 1}*`;
@@ -324,7 +326,7 @@ export class BotHandler {
       return `${head}${chosen}\n${opts}`;
     });
     const extras = [req.customerCompany ?? req.customerName ?? "", req.customerEmail ?? "", req.discountPct !== undefined ? `dscto ${req.discountPct}%` : "", req.showPricesWithTax === true ? "con IGV" : req.showPricesWithTax === false ? "sin IGV" : ""].filter(Boolean);
-    return `${blocks.join("\n\n")}${extras.length ? `\n\n${extras.join(" · ")}` : ""}\n\nResponde *ok* para cotizar con las opciones *a*, o elige: *1b* (ítem 1, opción b), *b x4* (opción b, 4 unidades), *a x2, b x8* (dos opciones del mismo ítem). También: *quitar 2*, *precio 3 4.50*, *dscto 15*, *con igv*, *cancelar*.`;
+    return `${blocks.join("\n\n")}${extras.length ? `\n\n${extras.join(" · ")}` : ""}\n\nResponde *ok* para cotizar con las opciones *a*, o elige: *1b* (ítem 1, opción b), *b x4* (opción b, 4 unidades), *a x2, b x8* (dos opciones del mismo ítem). También: *quitar 2*, *precio 3 4.50*, *aplicación 2 MIXT DEL*, *dscto 15*, *con igv*, *cancelar*.`;
   }
 
   private async startRequest(from: string, text: string, note?: string): Promise<void> {
@@ -406,6 +408,16 @@ export class BotHandler {
         return this.reshow(from, { ...state, pending }, requestText);
       }
     }
+    const app = text.match(/^(?:aplicaci[oó]n|aplic|app|uso)\s+(\d{1,2})\s+(\S.*)$/i);
+    if (app) {
+      const li = parseInt(app[1], 10) - 1;
+      if (!pending[li]) {
+        await this.reply(from, `No existe el ítem ${app[1]}; hay ${pending.length}.`);
+        return true;
+      }
+      pending[li].application = app[2].trim().toUpperCase();
+      return this.reshow(from, { ...state, pending }, requestText);
+    }
     const qty = text.match(/^(?:cantidad|cant|qty)\s+(\d{1,2})\s+(\d{1,4})/i);
     if (qty) {
       const li = parseInt(qty[1], 10) - 1;
@@ -445,7 +457,7 @@ export class BotHandler {
       const ids = lc.candidates.map((c) => c.row.id);
       const keep = prev?.chosen !== null && prev?.chosen !== undefined && prev.candidateIds[prev.chosen] ? ids.indexOf(prev.candidateIds[prev.chosen]) : -1;
       const extra = (prev?.extra ?? []).map((x) => ({ chosen: ids.indexOf(prev!.candidateIds[x.chosen]), quantity: x.quantity })).filter((x) => x.chosen >= 0);
-      return { candidateIds: ids, chosen: keep >= 0 ? keep : ids.length ? 0 : null, quantity: prev?.quantity ?? lc.line.quantity, unitPriceOverride: prev?.unitPriceOverride, removed: prev?.removed, extra: extra.length ? extra : undefined };
+      return { candidateIds: ids, chosen: keep >= 0 ? keep : ids.length ? 0 : null, quantity: prev?.quantity ?? lc.line.quantity, unitPriceOverride: prev?.unitPriceOverride, removed: prev?.removed, application: prev?.application, extra: extra.length ? extra : undefined };
     });
     await this.store.setConversation(from, { ...state, step: "choose", requestText, pending, updatedAt: now() });
     await this.reply(from, this.renderOptions(req, lcs, pending));
@@ -462,19 +474,20 @@ export class BotHandler {
       const lc = lcs[i];
       if (!lc) return;
       const quantity = p.quantity;
+      const line = p.application ? { ...lc.line, application: p.application } : lc.line; // "aplicación 2 MIXT DEL"
       if (p.chosen !== null && p.candidateIds[p.chosen]) {
         const cand = lc.candidates.find((c) => c.row.id === p.candidateIds[p.chosen!]);
         if (cand) {
-          items.push(itemFromCandidate(cand, quantity, this.settings, p.unitPriceOverride));
+          items.push(itemFromCandidate(cand, quantity, this.settings, p.unitPriceOverride, line));
           for (const x of p.extra ?? []) {
             const more = lc.candidates.find((c) => c.row.id === p.candidateIds[x.chosen]);
-            if (more) items.push(itemFromCandidate(more, x.quantity, this.settings));
+            if (more) items.push(itemFromCandidate(more, x.quantity, this.settings, undefined, line));
           }
           return;
         }
       }
       if (p.unitPriceOverride !== undefined) {
-        items.push(manualItem({ ...lc.line, quantity }, p.unitPriceOverride, undefined, this.settings));
+        items.push(manualItem({ ...line, quantity }, p.unitPriceOverride, undefined, this.settings));
         return;
       }
       unpriced.push(i + 1);
@@ -520,7 +533,7 @@ export class BotHandler {
     if (!quote.customer.address) missing.push("*dirección: Av. … , Lima*");
     const terms = `Pago: ${quote.paymentType || "—"} · Plazo: ${quote.paymentTerm || "—"} · Entrega: ${quote.deliveryTerm || "—"} · Validez: ${quote.validityDays} días`;
     const check = `${missing.length ? `\n⚠️ Falta en el PDF: ${missing.join(", ")}` : ""}\n📋 ${terms} _(cambia con *pago: letras*, *plazo: 45 días*, *entrega: inmediata*)_`;
-    await this.reply(from, `📧 *Para:* ${d.to}\n*Asunto:* ${d.subject}\n\n${d.body}\n${check}\n\n—\nResponde *enviar* para mandarlo, *precio 2 480* para cambiar un unitario, *correo x@y.com* para cambiar el destinatario, *con igv* / *sin igv*, *foto 1* para ver la foto de un ítem, o *cancelar*.`);
+    await this.reply(from, `📧 *Para:* ${d.to}\n*Asunto:* ${d.subject}\n\n${d.body}\n${check}\n\n—\nResponde *enviar* para mandarlo, *precio 2 480* para cambiar un unitario, *aplicación 2 POST ON/OFF* para la columna aplicación, *correo x@y.com* para cambiar el destinatario, *con igv* / *sin igv*, *foto 1* para ver la foto de un ítem, o *cancelar*.`);
   }
 
   /** Contact, address and terms from the last quote to the same customer (email, else company), unless the request already sets them. */
@@ -661,7 +674,7 @@ export class BotHandler {
     await this.reply(from, `¿Es la foto correcta de *${brand} ${model}*? Responde *foto ok* para guardarla, *foto otra* para ver la siguiente o *foto no* para descartar.`);
   }
 
-  private async rebuildQuote(from: string, state: ConversationState, change: { unitPrice?: number; lineIndex?: number; email?: string; pricesIncludeTax?: boolean; extraText?: string }): Promise<void> {
+  private async rebuildQuote(from: string, state: ConversationState, change: { unitPrice?: number; lineIndex?: number; email?: string; pricesIncludeTax?: boolean; extraText?: string; application?: string }): Promise<void> {
     const quote = state.quoteNumber ? await this.store.getQuote(state.quoteNumber) : null;
     if (!quote) return this.reply(from, "No encuentro la cotización; escribe el pedido de nuevo.");
     // terms typed after the quote ("pago: letras 30 días") are appended to the request text so they persist
@@ -669,6 +682,7 @@ export class BotHandler {
     const req = await parseRequest(requestText);
     req.customerEmail = change.email ?? quote.customer.email;
     const items = quote.items.map((it, i) => {
+      if (change.application !== undefined && i === (change.lineIndex ?? 0)) return { ...it, application: change.application };
       if (change.unitPrice === undefined || i !== (change.lineIndex ?? 0)) return it;
       const unitPrice = change.unitPrice;
       const discountPct = it.listPrice ? Math.round((1 - unitPrice / it.listPrice) * 10000) / 100 : it.discountPct;
