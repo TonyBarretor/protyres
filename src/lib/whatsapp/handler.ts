@@ -69,6 +69,48 @@ function now(): string {
   return new Date().toISOString();
 }
 
+export interface Pick {
+  line: number;
+  option: number;
+  quantity?: number;
+}
+
+/**
+ * The salesman's choice of options, however he types it: "1b", "1b 2a", "a", "2" (single line = option b),
+ * "opción a x 2 unds", "OPCION A X 2UNDS, OPCION B X 8 UNDS", "1 opción b x4, 2a". Returns null when the text is
+ * not a choice (a new request, a command…).
+ */
+export function parsePicks(text: string, lines: number): Pick[] | null {
+  const t = fold(text)
+    .replace(/(\d)\s*(?:unds?|unid|unidades|uds?|u|llantas?)\b/g, "$1") // "2unds", "8 llantas"
+    .replace(/\b(?:opcion|opciones|op|alternativa|item|items|la|el|las|los|de|del|con|y|e|unds?|unid|unidad|unidades|uds?|u|llantas?|neumaticos?|c\/u|cada\s+una)\b/g, " ")
+    .replace(/[.,;:\n]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!t) return null;
+  // tokens: [line] letter [x qty]   ·   or a bare number: option index (single line) / line with option a (several)
+  const picks: Pick[] = [];
+  const re = /(?:(\d{1,2})\s*)?([a-j])(?:\s*(?:x|por|\*)\s*(\d{1,4}))?|(\d{1,2})(?:\s*(?:x|por|\*)\s*(\d{1,4}))?/g;
+  let consumed = "";
+  for (const m of t.matchAll(re)) {
+    consumed += m[0] + " ";
+    if (m[2]) {
+      const letter = LETTERS.indexOf(m[2]);
+      const line = m[1] ? parseInt(m[1], 10) - 1 : lines === 1 ? 0 : -1;
+      if (line < 0 && lines > 1) return null; // "b" alone with several lines: ambiguous → not a choice
+      picks.push({ line, option: letter, quantity: m[3] ? parseInt(m[3], 10) : undefined });
+    } else if (m[4]) {
+      const n = parseInt(m[4], 10);
+      if (lines === 1) picks.push({ line: 0, option: n - 1, quantity: m[5] ? parseInt(m[5], 10) : undefined });
+      else if (m[5]) return null; // "2 x 4" with several lines: not a choice
+      else picks.push({ line: n - 1, option: 0 });
+    }
+  }
+  // everything in the text must have been understood as a pick
+  if (consumed.replace(/\s+/g, " ").trim() !== t) return null;
+  return picks.length ? picks : null;
+}
+
 function looksLikeRequest(text: string): boolean {
   return /\bx\s*\d{1,3}\b|\b\d{1,3}\s*(?:unidades|und|unid|llantas)\b|\b(?:para|cliente|cotiza|cotizar|cotización|cotizacion|necesito|pide|piden|me cotizas|und\b)\b|@|\bdscto\b|\bdescuento\b/i.test(text);
 }
@@ -278,11 +320,11 @@ export class BotHandler {
         return `${head}\n  ❌ ${manual}`;
       }
       const opts = lc.candidates.map((c, j) => this.optionLine(LETTERS[j], c)).join("\n");
-      const chosen = p.chosen !== null ? ` → elegido *${LETTERS[p.chosen]}*` : "";
+      const chosen = p.chosen !== null ? ` → elegido *${LETTERS[p.chosen]}*${p.extra?.length ? ` ×${p.quantity}, ${p.extra.map((x) => `*${LETTERS[x.chosen]}* ×${x.quantity}`).join(", ")}` : ""}` : "";
       return `${head}${chosen}\n${opts}`;
     });
     const extras = [req.customerCompany ?? req.customerName ?? "", req.customerEmail ?? "", req.discountPct !== undefined ? `dscto ${req.discountPct}%` : "", req.showPricesWithTax === true ? "con IGV" : req.showPricesWithTax === false ? "sin IGV" : ""].filter(Boolean);
-    return `${blocks.join("\n\n")}${extras.length ? `\n\n${extras.join(" · ")}` : ""}\n\nResponde *ok* para cotizar con las opciones *a*, o ajusta: *1b*, *quitar 2*, *precio 3 4.50*, *dscto 15*, *con igv*, *cancelar*.`;
+    return `${blocks.join("\n\n")}${extras.length ? `\n\n${extras.join(" · ")}` : ""}\n\nResponde *ok* para cotizar con las opciones *a*, o elige: *1b* (ítem 1, opción b), *b x4* (opción b, 4 unidades), *a x2, b x8* (dos opciones del mismo ítem). También: *quitar 2*, *precio 3 4.50*, *dscto 15*, *con igv*, *cancelar*.`;
   }
 
   private async startRequest(from: string, text: string, note?: string): Promise<void> {
@@ -314,27 +356,30 @@ export class BotHandler {
 
     if (["ok", "si", "sí", "dale", "listo", "cotizar", "confirmar"].includes(cmd)) return this.finishChoice(from, state);
 
-    const pick = /^\s*(\d{1,2})\s*([a-j])?(?:\s*[, ]\s*\d{1,2}\s*[a-j]?)*\s*$/i;
-    if (pick.test(text)) {
-      for (const m of text.matchAll(/(\d{1,2})\s*([a-j])?/gi)) {
-        let li = parseInt(m[1], 10) - 1;
-        let letter = m[2]?.toLowerCase();
-        if (!letter && pending.length === 1) {
-          // "2" on a single-line quote = option b
-          letter = LETTERS[li];
-          li = 0;
-        }
-        if (li < 0 || li >= pending.length) {
-          await this.reply(from, pending.length === 1 ? `Solo hay 1 ítem: responde con la letra de la opción (*a*, *b*, *c*…) o *ok*.` : `No existe el ítem ${li + 1}; hay ${pending.length}.`);
+    const picks = parsePicks(text, pending.length);
+    if (picks) {
+      const seen = new Set<number>();
+      for (const p of picks) {
+        if (p.line < 0 || p.line >= pending.length) {
+          await this.reply(from, pending.length === 1 ? `Solo hay 1 ítem: responde con la letra de la opción (*a*, *b*, *c*…) o *ok*.` : `No existe el ítem ${p.line + 1}; hay ${pending.length}.`);
           return true;
         }
-        const idx = letter ? LETTERS.indexOf(letter) : 0;
-        if (idx < 0 || idx >= pending[li].candidateIds.length) {
-          await this.reply(from, `El ítem ${li + 1} no tiene opción *${letter}*.`);
+        if (p.option < 0 || p.option >= pending[p.line].candidateIds.length) {
+          await this.reply(from, `El ítem ${p.line + 1} no tiene opción *${LETTERS[p.option] ?? "?"}*.`);
           return true;
         }
-        pending[li].chosen = idx;
-        pending[li].removed = false;
+        const pl = pending[p.line];
+        if (!seen.has(p.line)) {
+          // first pick for the line: the choice itself
+          seen.add(p.line);
+          pl.chosen = p.option;
+          pl.removed = false;
+          pl.extra = [];
+          if (p.quantity) pl.quantity = p.quantity;
+        } else {
+          // another option of the same line ("opción a x2, opción b x8") → an extra item
+          pl.extra!.push({ chosen: p.option, quantity: p.quantity ?? pl.quantity });
+        }
         touched = true;
       }
       if (touched) return this.finishChoice(from, { ...state, pending });
@@ -399,7 +444,8 @@ export class BotHandler {
       const prev = state.pending?.[i];
       const ids = lc.candidates.map((c) => c.row.id);
       const keep = prev?.chosen !== null && prev?.chosen !== undefined && prev.candidateIds[prev.chosen] ? ids.indexOf(prev.candidateIds[prev.chosen]) : -1;
-      return { candidateIds: ids, chosen: keep >= 0 ? keep : ids.length ? 0 : null, quantity: prev?.quantity ?? lc.line.quantity, unitPriceOverride: prev?.unitPriceOverride, removed: prev?.removed };
+      const extra = (prev?.extra ?? []).map((x) => ({ chosen: ids.indexOf(prev!.candidateIds[x.chosen]), quantity: x.quantity })).filter((x) => x.chosen >= 0);
+      return { candidateIds: ids, chosen: keep >= 0 ? keep : ids.length ? 0 : null, quantity: prev?.quantity ?? lc.line.quantity, unitPriceOverride: prev?.unitPriceOverride, removed: prev?.removed, extra: extra.length ? extra : undefined };
     });
     await this.store.setConversation(from, { ...state, step: "choose", requestText, pending, updatedAt: now() });
     await this.reply(from, this.renderOptions(req, lcs, pending));
@@ -420,6 +466,10 @@ export class BotHandler {
         const cand = lc.candidates.find((c) => c.row.id === p.candidateIds[p.chosen!]);
         if (cand) {
           items.push(itemFromCandidate(cand, quantity, this.settings, p.unitPriceOverride));
+          for (const x of p.extra ?? []) {
+            const more = lc.candidates.find((c) => c.row.id === p.candidateIds[x.chosen]);
+            if (more) items.push(itemFromCandidate(more, x.quantity, this.settings));
+          }
           return;
         }
       }

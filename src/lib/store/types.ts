@@ -17,6 +17,8 @@ export interface PendingLine {
   unitPriceOverride?: number;
   quantity: number;
   removed?: boolean;
+  /** More options of the same line quoted as extra items ("opción a x2, opción b x8"). */
+  extra?: { chosen: number; quantity: number }[];
 }
 
 /** Per-phone conversation state for the WhatsApp bot. */

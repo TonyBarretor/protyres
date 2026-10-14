@@ -194,6 +194,18 @@ describe("bot conversation (synthetic lists)", () => {
     expect(client.last()?.body).toContain("*Para:* pedro@mail.com");
   });
 
+  it("two options of the same line with quantities, written the salesman's way", async () => {
+    await bot.handle(text("295/80R22.5 x2 para Transportes ABC, juan@abc.com"));
+    const options = client.last()?.body ?? "";
+    expect(options).toMatch(/\*a\)\*[\s\S]*\*b\)\*/);
+    await bot.handle(text("OPCION A X 2UNDS\nOPCION B X 8 UNDS"));
+    expect(client.last()?.body).toContain("*Para:* juan@abc.com");
+    const q = await store.getQuote("COT-0001");
+    expect(q?.items.length).toBe(2);
+    expect(q?.items.map((i) => i.quantity)).toEqual([2, 8]);
+    expect(q?.items[0].description).not.toBe(q?.items[1].description);
+  });
+
   it("multi-line flow: pick per line, remove a line, manual price", async () => {
     await bot.handle(text("Michelin 295/80R22.5 X Multi Z x4; Bridgestone 11R22.5 R268 x2; PARCHE RS-35 VIPAL x25 para Minera Andes S.A.C., c@andes.pe"));
     let body = client.last()?.body ?? "";
