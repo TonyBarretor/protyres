@@ -31,6 +31,7 @@ export function parseQuantity(text: string): number | null {
     /\b(\d{1,4})\s*x(?!\s*r?\d)\b/, // "4x" but not "215/75 x R17.5"
     new RegExp(`\\b0*(\\d{1,4})\\s*(?:${UNIT_WORDS})\\b`),
     /\b(?:cantidad|cant|qty|quantity)\s*:?\s*(\d{1,4})\b/,
+    /\b(\d{1,4})\s+(?:de\s+)?(?:del|delanteras?|delanteros?|direccional(?:es)?|mixtas?|mixtos?|posterior(?:es)?|tracci[oó]n(?:es)?|trac)\b/, // "8 de tracción"
   ];
   for (const p of patterns) {
     const m = t.match(p);
@@ -129,6 +130,55 @@ function parseCustomer(text: string): { name?: string; company?: string; ref?: s
 const NON_TYRE_ITEM = /\b(parche|parches|c[aá]mara|camaras|c[aá]maras|guardac[aá]mara|aro|aros|v[aá]lvula|valvulas|protector|reencauche|sika|servicio|serv\.|kit|balanceo|alineamiento|enllante)\b/i;
 const SKIP_LINE = /^(?:material|descripci[oó]n|descripcion|um\b|cantidad|placa|medida de llanta|planta|ubicaci[oó]n|marcado|estimado|la presente|fecha|hora|buen d[ií]a|buenos d[ií]as|hola|gracias|saludos|atentamente|por favor|favor|cotizar|cotizaci[oó]n|re:|fwd?:|de:|para:|asunto:|atenci[oó]n\s*:|atn\s*:|att\s*:|direcci[oó]n\s*:|pago\s*:|tipo de pago|plazo|entrega\s*:|validez|vigencia|tipo de cambio|tc\s*:?\s*\d)/i;
 
+const POSITION_WORD = /\b(?:del|delanteras?|delanteros?|direccional(?:es)?|direcci[oó]n|mix|mixtas?|mixtos?|post|posterior(?:es)?|tracc|tracci[oó]n(?:es)?|trac|trailer|remolque|otr)\b/i;
+const QTY_MARKER = new RegExp(String.raw`\bx\s?\d{1,4}\b|\b\d{1,4}\s?x\b|\b\d{1,4}\s*(?:${UNIT_WORDS})\b|\b\d{1,4}\s+(?:de\s+)?(?=${POSITION_WORD.source.slice(2)})`, "i");
+
+/**
+ * One size, several positions with their own quantities, all in one line:
+ *   "Fenixway 295/80R22.5 Valor 18PR mixta x2 y tracción x8"  ·  "295/80R22.5 2 mixtas, 8 de tracción"
+ * -> one line per group, each repeating the common head ("Fenixway 295/80R22.5 Valor 18PR").
+ */
+function splitPositionGroups(line: string): string[] {
+  const size = findTyreSizes(normalizeSizeText(line))[0];
+  if (!size) return [line];
+  const segs = line.split(/\s*(?:,|;|\+|\s+y\s+|\s+e\s+|\s+and\s+)\s*/i).filter(Boolean);
+  if (segs.length < 2) return [line];
+  const isGroup = (s: string) => !/@|:/.test(s) && (QTY_MARKER.test(s) || POSITION_WORD.test(s)) && findTyreSizes(normalizeSizeText(s)).length === 0;
+  const TAIL = /\s*\b(?:para|cliente|client|empresa|correo|email)\b.*$/i;
+  // the first segment holds the size; its own group starts at the first position word / quantity after the size
+  const first = segs[0];
+  const sizeEnd = (() => {
+    const n = normalizeSizeText(first);
+    const s = findTyreSizes(n)[0];
+    return s ? Math.min(first.length, s.index + s.length) : 0;
+  })();
+  const tail = first.slice(sizeEnd);
+  const starts = [tail.search(POSITION_WORD), tail.search(QTY_MARKER)].filter((i) => i >= 0);
+  const cut = starts.length ? sizeEnd + Math.min(...starts) : first.length;
+  const head = first.slice(0, cut).trim();
+  const groups = [first.slice(cut).trim()].filter(Boolean);
+  let i = 1;
+  let rest = "";
+  for (; i < segs.length; i++) {
+    const seg = segs[i];
+    const tailAt = seg.search(TAIL);
+    const groupPart = tailAt >= 0 ? seg.slice(0, tailAt) : seg;
+    if (!groupPart.trim() || !isGroup(groupPart)) break;
+    groups.push(groupPart.trim());
+    if (tailAt >= 0) {
+      rest = seg.slice(tailAt).trim();
+      i++;
+      break;
+    }
+  }
+  rest = [rest, ...segs.slice(i)].filter(Boolean).join(", ");
+  // only a real split: at least two groups, each with a quantity or a position, and different positions / quantities
+  if (groups.length < 2 || !groups.every((g) => QTY_MARKER.test(g) || POSITION_WORD.test(g))) return [line];
+  const positions = groups.map((g) => extractPosition(g) ?? "");
+  if (new Set(positions).size < 2 && !groups.every((g) => QTY_MARKER.test(g))) return [line];
+  return groups.map((g, k) => `${head} ${g}${k === groups.length - 1 && rest ? `, ${rest}` : ""}`.trim());
+}
+
 /** Lines of the message that could each be one item. Table rows and bullet lines stay separate. */
 function candidateLines(text: string): string[] {
   const out: string[] = [];
@@ -149,7 +199,7 @@ function candidateLines(text: string): string[] {
         last = abs;
       });
       out.push(line.slice(last));
-    } else out.push(line);
+    } else out.push(...splitPositionGroups(line));
   }
   return out.map((l) => l.trim()).filter(Boolean);
 }
@@ -163,7 +213,9 @@ function lineFromText(line: string, explicitQty: number | null): RequestLine | n
     const sizeRaw = norm.slice(size.index, size.index + size.length);
     let model = stripToModel(norm, { sizeRaw, brandAlias: brandHit?.alias });
     model = model
-      .replace(/\b(MOD|MODELO|MARCA|LLANTA|LLANTAS|NEUMATICO|NEUMATICOS|UND|UN|U|DEL|DELANTERA|DELANTERAS|DELANTERO|POST|POSTERIOR|POSTERIORES|TRACC|TRACCION|MIX|MIXTA|DIRECCIONAL|SET|TL|TT|TCF|PR|PLY)\b/g, " ")
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .replace(/\b(MOD|MODELO|MARCA|LLANTA|LLANTAS|NEUMATICO|NEUMATICOS|UND|UN|U|DE|DEL|DELANTERA|DELANTERAS|DELANTERO|DELANTEROS|POST|POSTERIOR|POSTERIORES|TRACC|TRACCION|TRACCIONES|MIX|MIXTA|MIXTAS|MIXTO|MIXTOS|DIRECCIONAL|DIRECCIONALES|DIRECCION|SET|TL|TT|TCF|PR|PLY)\b/g, " ")
       .replace(/\s+/g, " ")
       .trim();
     const quantity = explicitQty ?? parseTrailingQuantity(norm, size.index + size.length) ?? 1;

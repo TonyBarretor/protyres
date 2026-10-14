@@ -42,7 +42,8 @@ export function extractLoadIndex(text: string): { loadIndex: string; speedIndex?
 
 /** DEL / POST / MIXTA / TRACCION ... -> normalized position. */
 export function extractPosition(text: string): Position | undefined {
-  const t = ` ${text.toUpperCase().replace(/[^A-Z0-9/ ]+/g, " ")} `;
+  // accents first ("TRACCIÓN" must read as TRACCION), then anything else becomes a space
+  const t = ` ${text.normalize("NFD").replace(/[̀-ͯ]/g, "").toUpperCase().replace(/[^A-Z0-9/ ]+/g, " ")} `;
   if (/\b(OTR|OFF THE ROAD|ON\/OFF|MINERA|MINERO)\b/.test(t)) return "OTR";
   if (/\b(DEL|DELANTERA|DELANTERAS|DELANTERO|DIRECCIONAL|DIRECCION|STEER|FRONT)\b/.test(t)) return "DEL";
   if (/\b(MIX|MIXTA|MIXTO|MIXTAS|ALL POSITION|AP|REGIONAL)\b/.test(t)) return "MIX";

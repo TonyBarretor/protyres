@@ -34,7 +34,7 @@ const TOOL_SCHEMA = {
   properties: {
     lines: {
       type: "array",
-      description: "One entry per product requested. Merge repeated identical rows into one entry with the summed quantity.",
+      description: "One entry per product requested. Merge only rows that are identical in every attribute (summing the quantity). Rows of the same size that differ in position (mixta vs tracción vs delantera), model or ply are DIFFERENT products: keep one entry each with its own quantity — never add them up ('2 mixtas y 8 de tracción' = two entries, 2 and 8).",
       items: {
         type: "object",
         properties: {
@@ -66,7 +66,7 @@ const TOOL_SCHEMA = {
 } as const;
 
 const SYSTEM = `You read tyre (llantas/neumáticos) purchase requests in Spanish or English: a salesman's short note, a customer's WhatsApp message (possibly with a photo or screenshot), or a formal RFQ email with a table.
-Extract every requested product as a line. Do not invent values: use null for anything not stated. "x4", "4 unidades", "02 llantas", "cuatro" all mean quantity 4. Keep sizes exactly as written. For photos of a tyre sidewall, read the size, brand and model if legible.`;
+Extract every requested product as a line. Do not invent values: use null for anything not stated. "x4", "4 unidades", "02 llantas", "cuatro" all mean quantity 4. A quantity before a position word is that group's quantity ("2 mixtas y 8 de tracción": 2 MIX + 8 TRAC, two lines). Keep sizes exactly as written. For photos of a tyre sidewall, read the size, brand and model if legible.`;
 
 export async function parseRequestWithLLM(text: string, extra: ContentBlock[] = []): Promise<LLMRequest | null> {
   try {

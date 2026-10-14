@@ -28,11 +28,32 @@ describe("salesman one-liners", () => {
     expect(r.lines[0].ply).toBe(16);
     expect(r.customerName).toBe("Jose Luis Muñoz");
   });
+  it("one size, two positions with their own quantities -> two lines (never summed)", () => {
+    const cases = [
+      "FENIXWAY 295/80R22.5 VALOR 18PR MIXTA X2 Y TRACCIÓN X8, ATN: SRTA. KARINA QUISPE, CON IGV",
+      "Fenixway 295/80R22.5 Valor 18PR x2 mixtas y x8 de tracción para Transportes ABC, juan@abc.com",
+      "FENIXWAY 295/80R22.5 VALOR 18PR MIXTA X2\nFENIXWAY 295/80R22.5 VALOR 18PR TRACCIÓN X8",
+    ];
+    for (const text of cases) {
+      const r = parseRequestRegex(text);
+      expect(r.lines.map((l) => [l.position, l.quantity, l.model])).toEqual([
+        ["MIX", 2, "VALOR"],
+        ["TRAC", 8, "VALOR"],
+      ]);
+      expect(r.lines.every((l) => l.brand === "Fenixway" && l.ply === 18 && l.size?.canonical === "295/80R22.5")).toBe(true);
+    }
+    expect(parseRequestRegex("295/80R22.5 2 mixtas, 8 de tracción").lines.map((l) => [l.position, l.quantity])).toEqual([
+      ["MIX", 2],
+      ["TRAC", 8],
+    ]);
+    expect(parseRequestRegex("FENIXWAY 295/80R22.5 VALOR 18PR X10").lines.map((l) => l.quantity)).toEqual([10]);
+    expect(parseRequestRegex("295/80R22.5 x4 delanteras, dscto 5%").lines.map((l) => [l.position, l.quantity])).toEqual([["DEL", 4]]);
+  });
   it("helpers", () => {
     expect(parseQuantity("11R22.5 x6")).toBe(6);
     expect(parseQuantity("6 unidades 11R22.5")).toBe(6);
     expect(parseQuantity("02 llantas")).toBe(2);
-    expect(parseQuantity("215/75 x R17.5 PIKIN 1 Posterior")).toBeNull();
+    expect(parseQuantity("215/75 x R17.5 PIKIN 1 Posterior")).toBe(1); // "1 posterior": a quantity before a position word
     expect(parseDiscount("dscto 15%")).toBe(15);
     expect(parseDiscount("con 12.5 % de descuento")).toBe(12.5);
     expect(parseDiscount("11R22.5 x2")).toBeUndefined();
