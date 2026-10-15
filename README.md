@@ -108,7 +108,15 @@ nombre no coincide con ninguna regla: `--provider "Nombre" --kind provider|own|s
 
 `config/providers.json` – reglas por nombre de archivo (`match` es una expresión regular) y opciones por proveedor:
 `kind` (own / stock / provider), `priceIncludesTax`, `maxDiscountPct`, `currency`, `columns` (letra o encabezado;
-`stock` acepta varias columnas separadas por coma, se suman).
+`stock` acepta varias columnas separadas por coma, se suman), `aliases` (otros nombres que el bot acepta, p.ej.
+"J.CH. Comercial" para JCH).
+
+`config/customers.json` – clientes con reglas propias (hoy Prosegur): `aliases` (cómo lo escribe el vendedor),
+`company` (lo que sale en la cotización), `email` (vacío = el del pedido o el de la última cotización), `defaults`
+(pago, plazo, entrega, validez, con/sin IGV cuando el vendedor no los escribe), `required` (lo que el bot pide antes
+de mostrar opciones: `unit`, `ub`, `requester`) y `excel` (plantilla del cliente, patrón del nombre del archivo
+`{DDMMYY}-{UB}-{UNIDAD}-{PROVEEDOR}-{N}` y los datos del proveedor). La plantilla de Prosegur está en
+`config/templates/prosegur-cotizacion.xlsx` (su "Formato Proveedores" oficial, FCRP 31/07/2023).
 
 Variables de entorno: copiar `.env.example` a `.env`. Nada es obligatorio para el modo local.
 
@@ -126,6 +134,8 @@ Variables de entorno: copiar `.env.example` a `.env`. Nada es obligatorio para e
    5. Con la app desplegada (o con `ngrok http 3000` en local): *WhatsApp → Configuration → Webhook* → URL
       `https://<app>/api/whatsapp/webhook`, verify token = el inventado → *Verify and save* → suscribirse a **messages**.
    6. `WHATSAPP_ALLOWED_NUMBERS=51999000111,51988000222` para que solo esos números usen el bot.
+   7. `ADMIN_NUMBERS=18605180534` (dígitos, separados por coma): los únicos que pueden registrar un proveedor nuevo
+      por WhatsApp (`proveedor nuevo: NOMBRE`) o borrarlo (`borrar proveedor NOMBRE`). Vacío = nadie.
 3. **Resend** – https://resend.com → API key → `RESEND_API_KEY`. `EMAIL_FROM` de un dominio verificado (para probar
    sirve `onboarding@resend.dev`, solo entrega a tu propio correo). `EMAIL_REDIRECT_TO=tu@correo` desvía todos los
    envíos a ti durante las pruebas.
@@ -133,7 +143,9 @@ Variables de entorno: copiar `.env.example` a `.env`. Nada es obligatorio para e
    servicio → clave JSON → `secrets/service-account.json` (`GOOGLE_SERVICE_ACCOUNT_FILE`). El cliente comparte su
    carpeta (solo lectura) con el correo de la cuenta de servicio; el ID de la carpeta va en `GOOGLE_DRIVE_FOLDER_ID`.
 5. **Supabase** – https://supabase.com → proyecto → cadena de conexión → `DATABASE_URL` → `npm run db:migrate` (o `npm run db:push`).
-   Sin `DATABASE_URL` se usa `data/store.json` (bien en local; en Vercel el disco no persiste).
+   Sin `DATABASE_URL` se usa `data/store.json` (bien en local; en Vercel el disco no persiste). `db:migrate` es
+   idempotente: correrlo después de cada actualización (la v14 crea `quote_files` —los archivos enviados de cada
+   cotización— y agrega `sync_marks.provider`) **antes** de desplegar.
 6. **Despliegue** – Vercel (`vercel`) o Railway. Variables = las de `.env`. `curl https://<app>/api/health` debe
    mostrar `whatsapp: true`. Para refrescar Drive cada hora: cron que llame `GET /api/ingest/refresh` con
    `Authorization: Bearer $CRON_SECRET`.
@@ -148,10 +160,28 @@ Variables de entorno: copiar `.env.example` a `.env`. Nada es obligatorio para e
 | `quitar 2` · `cantidad 2 6` · `precio 3 4.50` | quita una línea, cambia cantidad, pone precio manual |
 | `dscto 15` · `con igv` / `sin igv` · `correo x@y.com` | descuento, presentación, destinatario |
 | `atención: Sra. X` · `dirección: Lima` · `pago: letras 30 días` · `plazo: 45 días` · `entrega: 48 hrs post OC` · `validez: 5 días` · `tc 3.4` | datos de las cajas de la cotización |
-| `enviar` | manda el correo con el PDF |
-| mensaje reenviado / PDF / Excel / foto de lista | carga de precios (pregunta el proveedor si no lo reconoce) |
+| `unidad: Ayacucho` · `ub: 1830` (o `UB 1830` en la línea de la llanta) · `solicitante: Johann Castañeda` | unidad atendida, UB y solicitante (Prosegur) |
+| `número 451` (`numero`, `nro`, `n°`) · `número 451 confirmar` · `nombre: TEXTO` | fija el número ("OCTUBRE 2026 - 451", el siguiente del vendedor será 452); si ya existe pide confirmar; `nombre:` pone el número tal cual sin tocar el contador. En una cotización ya mostrada la renumera (solo borradores) |
+| `archivo: Nombre` · `archivo excel: Nombre` | nombre del PDF (por defecto "OCTUBRE 2026 - 451.pdf") y del Excel del cliente |
+| `enviar` | manda el correo con el PDF (y el Excel de Prosegur); los archivos enviados quedan guardados |
+| `cotizaciones` · `cotizaciones Prosegur` | tus últimas 10 / las últimas 10 de esa empresa (número · fecha · total · estado · ítems), en cualquier momento |
+| `reenviar 451` · `archivos 451` · `pdf 451` (o el número completo) | te reenvía los archivos guardados (o los genera de nuevo) |
+| mensaje reenviado / PDF / Excel / foto de lista | carga de precios: solo de proveedores conocidos (JCH, Steel, Protyres o los ya cargados); una cotización no se carga |
+| `proveedor nuevo: NOMBRE` · `borrar proveedor NOMBRE` | solo administradores (`ADMIN_NUMBERS`) |
 | `precios 11R22.5` · `stock 295/80R22.5` | todas las opciones para una medida |
 | `proveedores` · `ayuda` · `cancelar` | |
+
+### Prosegur (cliente con formato propio)
+
+- El pedido empieza con `prosegur` (o dice "para Prosegur"): el bot pone PROSEGUR SA y sus condiciones (FACTURA,
+  30 días, 48 HRS POST OC, validez 7 días, sin IGV) salvo lo que el vendedor escriba, y pide **unidad**, **UB** y
+  **solicitante** si faltan (`ok` sigue sin ellos). `prosegur` solo → mini guía de qué mandar.
+- Con `ok` llegan dos documentos: el PDF 360° (MEDIDA "215/75R17.5 18PR UB 1830") y el Excel "Formato Proveedores"
+  lleno (`151026-1830-AYACUCHO-PROFESSIONAL TYRES S.A.C.-451.xlsx`, precios sin IGV, máximo 11 ítems). `enviar` adjunta
+  ambos al correo.
+- La próxima cotización a Prosegur reutiliza unidad, UB, solicitante y correo de la anterior (se cambian igual).
+- Ejemplo y verificación visual del Excel: `npx tsx --tsconfig tsconfig.cli.json scripts/prosegur-sample.ts out`
+  (necesita LibreOffice `soffice` y `pdftoppm` para el PNG).
 
 ## Límites conocidos del piloto
 

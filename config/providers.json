@@ -13,7 +13,7 @@
     { "match": "steel", "provider": "Steel", "kind": "provider", "priceIncludesTax": false, "currency": "USD" }
   ],
   "providers": {
-    "JCH": { "kind": "provider", "priceIncludesTax": false, "currency": "USD", "columns": { "code": "B", "description": "C", "model": "D", "brand": "E", "price": "F", "stock": "G,H,I" } },
+    "JCH": { "aliases": ["J.CH. Comercial", "JCH Comercial"], "kind": "provider", "priceIncludesTax": false, "currency": "USD", "columns": { "code": "B", "description": "C", "model": "D", "brand": "E", "price": "F", "stock": "G,H,I" } },
     "Steel": { "kind": "provider", "priceIncludesTax": false, "currency": "USD" }
   }
 }

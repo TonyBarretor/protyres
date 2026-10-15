@@ -28,6 +28,23 @@ export function formatQuoteNumber(format: string, counter: number, dateIso: stri
     .replace("{N}", String(counter));
 }
 
+/**
+ * The counter inside a quote number: "OCTUBRE 2026 - 451" -> 451 (read through the number format; for numbers that
+ * do not follow it, e.g. a free "nombre: …", the last group of digits). undefined when there are no digits.
+ */
+export function quoteSerial(number: string, format = "{MES} {YYYY} - {NNN}"): number | undefined {
+  const parts = format.split(/(\{(?:MES|Mes|MM|YYYY|YY|NNNN|NNN|N)\})/);
+  if (parts.some((p) => /^\{N+\}$/.test(p))) {
+    const re = parts
+      .map((p) => (/^\{N+\}$/.test(p) ? "(\\d+)" : /^\{(?:MES|Mes)\}$/.test(p) ? "\\p{L}+" : /^\{(?:MM|YYYY|YY)\}$/.test(p) ? "\\d+" : p.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")))
+      .join("");
+    const m = number.trim().match(new RegExp(`^${re}$`, "iu"));
+    if (m) return parseInt(m[1], 10);
+  }
+  const last = number.match(/(\d+)\D*$/);
+  return last ? parseInt(last[1], 10) : undefined;
+}
+
 const ORIGIN_HINTS: [RegExp, string][] = [
   [/\b(INDIA)\b/, "INDIA"],
   [/\b(KOREA|COREA)\b/, "KOREA"],
@@ -99,6 +116,7 @@ export function itemFromCandidate(c: Candidate, quantity: number, settings: Sett
     origin: unitPriceOverride !== undefined && !c.listNet ? "manual" : r.kind === "own" ? "own" : "provider",
     application: applicationFor(r, line),
     plate: line?.plate,
+    ub: line?.ub,
     countryOfOrigin: countryOfOrigin(r, settings),
     photoUrl: r.photoUrl,
     sheetUrl: r.sheetUrl,
@@ -130,6 +148,7 @@ export function manualItem(line: RequestLine, unitPrice: number, description?: s
     origin: "manual",
     application: applicationFor(undefined, line),
     plate: line.plate,
+    ub: line.ub,
     provider: "manual",
     priceDate: new Date().toISOString().slice(0, 10),
     available: null,
@@ -144,6 +163,9 @@ export function buildQuote(params: {
   today?: string;
   requestedBy?: string;
   pricesIncludeTax?: boolean;
+  /** Customer profile id (config/customers.json), e.g. "prosegur". */
+  customerProfile?: string;
+  files?: Quote["files"];
 }): Quote {
   const { settings: s, request: req } = params;
   const date = params.today ?? new Date().toISOString().slice(0, 10);
@@ -177,6 +199,11 @@ export function buildQuote(params: {
     paymentTerm: req.paymentTerm ?? s.quote.paymentTerm,
     deliveryTerm: req.deliveryTerm ?? s.quote.deliveryTerm,
     exchangeRate: req.exchangeRate ?? s.quote.exchangeRate,
+    unit: req.unit,
+    ub: req.ub,
+    requester: req.requester,
+    customerProfile: params.customerProfile,
+    files: params.files,
     salesperson: { name: sp.name, title: sp.title, address: sp.address, email: sp.email, phone: sp.phone },
     status: "draft",
     requestText: req.raw,

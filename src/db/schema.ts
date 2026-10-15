@@ -85,6 +85,24 @@ export const syncMarks = pgTable("sync_marks", {
   fileId: text("file_id").primaryKey(),
   modifiedTime: text("modified_time").notNull(),
   ok: boolean("ok").notNull().default(true),
+  /** provider of the Drive file (deleting the provider clears its marks) */
+  provider: text("provider"),
 });
+
+/** Documents exactly as sent with a quote (PDF, the customer's Excel format), for "reenviar 451". */
+export const quoteFiles = pgTable(
+  "quote_files",
+  {
+    quoteNumber: text("quote_number").notNull(),
+    /** "pdf" | "xlsx" */
+    kind: text("kind").notNull(),
+    fileName: text("file_name").notNull(),
+    mimeType: text("mime_type").notNull(),
+    /** base64 bytes */
+    data: text("data").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [primaryKey({ columns: [t.quoteNumber, t.kind] })],
+);
 
 export const _pk = primaryKey;

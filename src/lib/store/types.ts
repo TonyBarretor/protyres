@@ -1,6 +1,11 @@
 import type { PriceRow, PriceSource } from "../ingest/types";
 import type { Quote, QuoteItem } from "../quote/types";
-import { knownBrand } from "../tyre/brands";
+import { fold, knownBrand } from "../tyre/brands";
+
+/** Case / accent / punctuation-insensitive key: "J.CH." -> "jch", "Prosegur S.A." -> "prosegursa". */
+export function foldKey(s: string | undefined | null): string {
+  return fold(s ?? "").replace(/\s+/g, "");
+}
 
 export interface ProviderSummary {
   provider: string;
@@ -26,9 +31,19 @@ export interface PendingLine {
 /** Per-phone conversation state for the WhatsApp bot. */
 export interface ConversationState {
   phone: string;
-  step: "idle" | "choose" | "need_provider" | "review_quote" | "need_email";
+  /** need_fields: a customer profile's required fields (unidad, ub, solicitante) are missing from the request. */
+  step: "idle" | "choose" | "need_provider" | "review_quote" | "need_email" | "need_fields";
   /** The salesman's original request text. */
   requestText?: string;
+  /** Customer profile of the request (config/customers.json id, e.g. "prosegur"); on "idle", the one the next request uses. */
+  profile?: string;
+  /**
+   * "número 451" / "nombre: …" typed while choosing options; `confirmed` reuses a number that already exists,
+   * `asked` = the bot warned about it after "ok" (so "número 451 confirmar" builds the quote right away).
+   */
+  numbering?: { counter?: number; name?: string; confirmed?: boolean; asked?: boolean };
+  /** "archivo: …" / "archivo excel: …" typed while choosing options. */
+  files?: { pdfName?: string; xlsxName?: string };
   /** Lines being quoted (same order as the parsed request). */
   pending?: PendingLine[];
   /** Quote number waiting for "enviar". */
@@ -82,6 +97,32 @@ export interface ReplaceScope {
   kind?: PriceRow["kind"];
 }
 
+/** A document exactly as it was sent with a quote (the PDF, the customer's Excel format), for resending later. */
+export interface QuoteFile {
+  quoteNumber: string;
+  /** "pdf" | "xlsx" */
+  kind: string;
+  fileName: string;
+  mimeType: string;
+  /** base64 bytes */
+  data: string;
+  createdAt?: string;
+}
+
+export interface ListQuotesOptions {
+  /** Customer company containing this text (case / accent / punctuation-insensitive): "prosegur" finds "PROSEGUR SA". */
+  company?: string;
+  /** WhatsApp number of the salesman who made the quote. */
+  requestedBy?: string;
+  /** Default 50. */
+  limit?: number;
+}
+
+/** Counter name of a salesman's own quote numbering ("quote:51955344340"). */
+export function quoteCounterKey(phone: string): string {
+  return `quote:${phone.replace(/\D/g, "")}`;
+}
+
 export interface PriceStore {
   upsertRows(rows: PriceRow[], opts?: { replace?: ReplaceScope }): Promise<{ inserted: number; removed: number }>;
   allRows(): Promise<PriceRow[]>;
@@ -97,18 +138,33 @@ export interface PriceStore {
   /** Most recent quote sent to this customer (by email, else by company name). */
   findLastQuoteForCustomer(opts: { email?: string; company?: string }): Promise<Quote | null>;
   providers(): Promise<ProviderSummary[]>;
-  /** Increments and returns the quote counter; `start` is used the first time (when the store has no counter yet). */
-  nextQuoteCounter(start?: number): Promise<number>;
+  /** Removes every price row of a provider (name matched case / accent-insensitively) and its Drive sync marks. */
+  deleteProvider(name: string): Promise<{ rows: number; syncMarks: number }>;
+  /**
+   * Increments and returns a quote counter; `start` is used the first time (when the store has no counter yet).
+   * `key` names a salesman's own counter (quoteCounterKey); a key with no counter yet takes the next global value.
+   */
+  nextQuoteCounter(start?: number, key?: string): Promise<number>;
+  /** Sets a counter so the next nextQuoteCounter(…, key) returns value + 1. */
+  setQuoteCounter(value: number, key?: string): Promise<void>;
   saveQuote(quote: Quote): Promise<void>;
   getQuote(number: string): Promise<Quote | null>;
-  listQuotes(limit?: number): Promise<Quote[]>;
+  /** Removes a quote and its stored files (a draft renumbered by the salesman). */
+  deleteQuote(number: string): Promise<void>;
+  /** Newest first. A number is the limit (kept for older callers). */
+  listQuotes(opts?: number | ListQuotesOptions): Promise<Quote[]>;
+  /** Stores a sent document (replaces the one of the same quote and kind). */
+  saveQuoteFile(file: QuoteFile): Promise<void>;
+  /** The documents stored for a quote (PDF first). */
+  getQuoteFiles(quoteNumber: string): Promise<QuoteFile[]>;
   getConversation(phone: string): Promise<ConversationState | null>;
   setConversation(phone: string, state: ConversationState | null): Promise<void>;
   /** Returns false when this message id was already processed (webhook retries). */
   markProcessed(messageId: string): Promise<boolean>;
   /** Drive file id -> modifiedTime of the last successful ingest. */
   getSyncMarks(): Promise<Record<string, string>>;
-  setSyncMark(fileId: string, modifiedTime: string): Promise<void>;
+  /** `provider` lets deleteProvider clear the marks of that provider's files. */
+  setSyncMark(fileId: string, modifiedTime: string, provider?: string): Promise<void>;
   close(): Promise<void>;
 }
 

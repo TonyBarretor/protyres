@@ -11,7 +11,7 @@ import { buildQuote, itemFromCandidate } from "../quote/build";
 import { rankLine } from "../quote/match";
 import { parseRequestRegex } from "../quote/request";
 import { JsonStore } from "./json-store";
-import type { PriceStore } from "./types";
+import { quoteCounterKey, type PriceStore } from "./types";
 
 const settings = SettingsSchema.parse({ company: { name: "X" }, pricing: {}, quote: {} });
 
@@ -76,6 +76,63 @@ function contract(name: string, make: () => Promise<PriceStore>) {
       await store.setSyncMark("f1", "2026-10-07T00:00:00Z");
       expect((await store.getSyncMarks()).f1).toBe("2026-10-07T00:00:00Z");
     });
+
+    it("per-salesman quote counters fall back to the global one, and can be set", async () => {
+      const g = await store.nextQuoteCounter(16); // global counter, whatever came before
+      const a1 = await store.nextQuoteCounter(16, quoteCounterKey("51955344340")); // no own counter yet: next global value
+      expect(a1).toBe(g + 1);
+      const b1 = await store.nextQuoteCounter(16, quoteCounterKey("51903162116")); // another salesman: takes the next global, no clash
+      expect(b1).toBe(g + 2);
+      expect(await store.nextQuoteCounter(16, quoteCounterKey("51955344340"))).toBe(a1 + 1); // own counter from now on
+      await store.setQuoteCounter(451, quoteCounterKey("51955344340"));
+      expect(await store.nextQuoteCounter(16, quoteCounterKey("51955344340"))).toBe(452);
+      expect(await store.nextQuoteCounter(16, quoteCounterKey("51903162116"))).toBe(b1 + 1); // untouched
+    });
+
+    it("lists quotes by company and salesman, stores sent files, deletes quotes", async () => {
+      const rows = await store.findBySize(["11R22.5"]);
+      const make = async (number: string, text: string, by: string, createdAt: string) => {
+        const req = parseRequestRegex(text);
+        const cands = rankLine(rows, req.lines[0], req, settings.pricing, { today: "2026-10-06" });
+        const q = buildQuote({ number, request: req, items: [itemFromCandidate(cands[0], 1, settings)], settings, today: "2026-10-06", requestedBy: by });
+        q.createdAt = createdAt;
+        await store.saveQuote(q);
+        return q;
+      };
+      await make("L-1", "11R22.5 x1 para PROSEGUR SA, a@prosegur.pe", "51955344340", "2026-10-10T10:00:00Z");
+      await make("L-2", "11R22.5 x1 para Transportes ABC SAC, b@abc.pe", "51955344340", "2026-10-11T10:00:00Z");
+      await make("L-3", "11R22.5 x1 para Prosegur S.A., c@prosegur.pe", "51903162116", "2026-10-12T10:00:00Z");
+      expect((await store.listQuotes({ company: "prosegur" })).map((q) => q.number)).toEqual(["L-3", "L-1"]);
+      expect((await store.listQuotes({ company: "PROSEGUR S.A." })).map((q) => q.number)).toEqual(["L-3", "L-1"]);
+      expect((await store.listQuotes({ requestedBy: "51955344340", limit: 1 })).map((q) => q.number)).toEqual(["L-2"]);
+      expect((await store.listQuotes({ company: "Prosegur", requestedBy: "51955344340" })).map((q) => q.number)).toEqual(["L-1"]);
+
+      await store.saveQuoteFile({ quoteNumber: "L-1", kind: "xlsx", fileName: "a.xlsx", mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", data: Buffer.from("x1").toString("base64") });
+      await store.saveQuoteFile({ quoteNumber: "L-1", kind: "pdf", fileName: "L-1.pdf", mimeType: "application/pdf", data: Buffer.from("p1").toString("base64") });
+      await store.saveQuoteFile({ quoteNumber: "L-1", kind: "pdf", fileName: "L-1 bis.pdf", mimeType: "application/pdf", data: Buffer.from("p2").toString("base64") }); // resend: replaced
+      const files = await store.getQuoteFiles("L-1");
+      expect(files.map((f) => [f.kind, f.fileName, Buffer.from(f.data, "base64").toString()])).toEqual([
+        ["pdf", "L-1 bis.pdf", "p2"],
+        ["xlsx", "a.xlsx", "x1"],
+      ]);
+      await store.deleteQuote("L-1");
+      expect(await store.getQuote("L-1")).toBeNull();
+      expect(await store.getQuoteFiles("L-1")).toEqual([]);
+    });
+
+    it("deletes a provider's rows (name matched loosely) and its Drive sync marks", async () => {
+      const res = await ingestExcel(fs.readFileSync(path.resolve(process.cwd(), "samples/proveedor-a-lista.xlsx")), { provider: "Llantas del Sur", sourceRef: "a.xlsx", priceDate: "2026-10-01" });
+      await store.upsertRows(res.rows, { replace: { provider: "Llantas del Sur", sourceRef: "a.xlsx" } });
+      await store.setSyncMark("drive-a", "2026-10-07T00:00:00Z", "Llantas del Sur");
+      await store.setSyncMark("drive-b", "2026-10-07T00:00:00Z", "JCH");
+      const out = await store.deleteProvider("llantas del sur");
+      expect(out).toEqual({ rows: res.rows.length, syncMarks: 1 });
+      expect((await store.providers()).some((p) => p.provider === "Llantas del Sur")).toBe(false);
+      const marks = await store.getSyncMarks();
+      expect(marks["drive-a"]).toBeUndefined();
+      expect(marks["drive-b"]).toBe("2026-10-07T00:00:00Z");
+      expect(await store.deleteProvider("Nadie")).toEqual({ rows: 0, syncMarks: 0 });
+    });
   });
 }
 
@@ -89,7 +146,7 @@ if (url) {
     // clean slate
     const postgres = (await import("postgres")).default;
     const c = postgres(url);
-    await c`truncate prices, quotes, conversations, counters, processed_messages, sync_marks`;
+    await c`truncate prices, quotes, conversations, counters, processed_messages, sync_marks, quote_files`;
     await c.end();
     return s;
   });

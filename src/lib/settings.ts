@@ -78,16 +78,66 @@ export const SalespersonSchema = z.object({
 });
 export type Salesperson = z.infer<typeof SalespersonSchema>;
 
+/** A customer with its own quote rules (config/customers.json), e.g. Prosegur and its "Formato Proveedores" Excel. */
+export const CustomerProfileSchema = z.object({
+  /** "Prosegur"; its folded form is the profile id ("prosegur"). */
+  name: z.string(),
+  /** How the salesman writes the customer ("prosegur", "prosegur s.a."), compared case / accent / punctuation-insensitively. */
+  aliases: z.array(z.string()).default([]),
+  /** Company printed on the quote ("PROSEGUR SA"). */
+  company: z.string().default(""),
+  /** Default recipient of the quote email ("" = the request's, the last quote's, or ask). */
+  email: z.string().default(""),
+  /** Extra document next to the 360° PDF: "prosegur" = the client's Excel "Formato Proveedores". */
+  format: z.string().default(""),
+  /** Terms used when the salesman does not write them. */
+  defaults: z
+    .object({
+      paymentType: z.string().optional(),
+      paymentTerm: z.string().optional(),
+      deliveryTerm: z.string().optional(),
+      validityDays: z.number().int().optional(),
+      pricesIncludeTax: z.boolean().optional(),
+    })
+    .default({}),
+  /** Asked for before showing options when missing: unit ("unidad:"), ub ("ub:" / "UB 1830" per item), requester ("solicitante:"). */
+  required: z.array(z.enum(["unit", "ub", "requester"])).default([]),
+  /** The customer's Excel template, file name pattern ({DDMMYY} {UB} {UNIDAD} {PROVEEDOR} {N}) and supplier box. */
+  excel: z
+    .object({
+      template: z.string(),
+      fileName: z.string().default("{DDMMYY}-{UB}-{UNIDAD}-{PROVEEDOR}-{N}"),
+      supplierName: z.string().default(""),
+      supplierRuc: z.string().default(""),
+    })
+    .optional(),
+});
+export type CustomerProfile = z.infer<typeof CustomerProfileSchema>;
+
 export const SettingsSchema = z.object({
   company: CompanySchema,
   pricing: PricingSchema,
   quote: QuoteSchema,
   /** WhatsApp number (digits) -> signature; "default" names the entry used by the CLI / unknown numbers. */
   salespeople: z.record(z.string(), z.union([SalespersonSchema, z.string()])).default({}),
+  /** Customer profiles, loaded from config/customers.json (CUSTOMERS_CONFIG) unless pilot.json has its own. */
+  customers: z.array(CustomerProfileSchema).default([]),
 });
 
 export type Settings = z.infer<typeof SettingsSchema>;
 export type PricingSettings = Settings["pricing"];
+
+export function customersPath(): string {
+  return process.env.CUSTOMERS_CONFIG || path.join(process.cwd(), "config", "customers.json");
+}
+
+/** config/customers.json → { "customers": [ … ] } (validated); [] when the file does not exist. */
+export function loadCustomerProfiles(file = customersPath()): CustomerProfile[] {
+  if (!fs.existsSync(/* turbopackIgnore: true */ file)) return [];
+  const parsed = z.object({ customers: z.array(CustomerProfileSchema).default([]) }).safeParse(JSON.parse(fs.readFileSync(/* turbopackIgnore: true */ file, "utf8")));
+  if (!parsed.success) throw new Error(`Invalid ${file}: ${parsed.error.message}`);
+  return parsed.data.customers;
+}
 
 /** The signature block for a WhatsApp number (digits only), or the default one. */
 export function salespersonFor(settings: Settings, phone?: string): Salesperson {
@@ -111,8 +161,9 @@ export function settingsPath(): string {
 export function loadSettings(force = false): Settings {
   if (cached && !force) return cached;
   const file = settingsPath();
-  let raw: unknown = {};
+  let raw: Record<string, unknown> = {};
   if (fs.existsSync(/* turbopackIgnore: true */ file)) raw = JSON.parse(fs.readFileSync(/* turbopackIgnore: true */ file, "utf8"));
+  if (raw.customers === undefined) raw = { ...raw, customers: loadCustomerProfiles() };
   const parsed = SettingsSchema.safeParse(raw);
   if (!parsed.success) throw new Error(`Invalid ${file}: ${parsed.error.message}`);
   const s = parsed.data;

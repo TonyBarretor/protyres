@@ -7,7 +7,7 @@ import postgres from "postgres";
 import * as schema from "../../db/schema";
 import type { PriceRow, PriceSource } from "../ingest/types";
 import type { Quote } from "../quote/types";
-import { photoKey, type ConversationState, type PriceStore, type ProductPhoto, type ProviderSummary, type ReplaceScope } from "./types";
+import { foldKey, photoKey, type ConversationState, type ListQuotesOptions, type PriceStore, type ProductPhoto, type ProviderSummary, type QuoteFile, type ReplaceScope } from "./types";
 
 type Db = PostgresJsDatabase<typeof schema>;
 
@@ -44,7 +44,14 @@ function toRow(r: typeof schema.prices.$inferSelect): PriceRow {
   };
 }
 
-const FOLD = (col: unknown) => sql`regexp_replace(lower(${col}), '[^a-z0-9]', '', 'g')`;
+/** SQL twin of foldKey(): lower case, accents removed, only a-z0-9 ("Prosegur S.A." -> "prosegursa"). */
+const FOLD = (col: unknown) => sql`regexp_replace(translate(lower(${col}), 'áàäâãéèëêíìïîóòöôõúùüûñç', 'aaaaaeeeeiiiiooooouuuunc'), '[^a-z0-9]', '', 'g')`;
+
+/** Postgres "undefined column" (a column added by `npm run db:migrate` that has not been applied yet); Drizzle wraps it in `cause`. */
+const isMissingColumn = (err: unknown) => {
+  const e = err as { code?: string; cause?: { code?: string } } | undefined;
+  return (e?.code ?? e?.cause?.code) === "42703";
+};
 
 export class PgStore implements PriceStore {
   private constructor(
@@ -222,13 +229,45 @@ export class PgStore implements PriceStore {
     return rows.map((r) => ({ provider: r.provider, kind: r.kind, rows: Number(r.rows), sources: r.sources ?? [], lastPriceDate: r.lastPriceDate ?? "" }));
   }
 
-  async nextQuoteCounter(start = 1): Promise<number> {
+  async deleteProvider(name: string): Promise<{ rows: number; syncMarks: number }> {
+    const key = foldKey(name);
+    if (!key) return { rows: 0, syncMarks: 0 };
+    const del = await this.db.delete(schema.prices).where(sql`${FOLD(schema.prices.provider)} = ${key}`).returning({ id: schema.prices.id });
+    let syncMarks = 0;
+    try {
+      const marks = await this.db.delete(schema.syncMarks).where(sql`${FOLD(schema.syncMarks.provider)} = ${key}`).returning({ fileId: schema.syncMarks.fileId });
+      syncMarks = marks.length;
+    } catch (err) {
+      if (!isMissingColumn(err)) throw err;
+    }
+    return { rows: del.length, syncMarks };
+  }
+
+  async nextQuoteCounter(start = 1, key?: string): Promise<number> {
+    const s = Math.max(1, start);
+    const bump = sql`greatest(${schema.counters.value}, ${s - 1}) + 1`;
+    if (key && key !== "quote") {
+      // the salesman's own counter, once it exists
+      const [own] = await this.db.update(schema.counters).set({ value: bump }).where(eq(schema.counters.name, key)).returning({ value: schema.counters.value });
+      if (own) return own.value;
+    }
     const [row] = await this.db
       .insert(schema.counters)
-      .values({ name: "quote", value: Math.max(1, start) })
-      .onConflictDoUpdate({ target: schema.counters.name, set: { value: sql`greatest(${schema.counters.value}, ${Math.max(1, start) - 1}) + 1` } })
+      .values({ name: "quote", value: s })
+      .onConflictDoUpdate({ target: schema.counters.name, set: { value: bump } })
       .returning({ value: schema.counters.value });
+    if (key && key !== "quote") {
+      // first quote of this salesman: his counter starts from the global value just taken
+      await this.db
+        .insert(schema.counters)
+        .values({ name: key, value: row.value })
+        .onConflictDoUpdate({ target: schema.counters.name, set: { value: sql`greatest(${schema.counters.value}, ${row.value})` } });
+    }
     return row.value;
+  }
+
+  async setQuoteCounter(value: number, key = "quote"): Promise<void> {
+    await this.db.insert(schema.counters).values({ name: key, value }).onConflictDoUpdate({ target: schema.counters.name, set: { value } });
   }
 
   async saveQuote(quote: Quote): Promise<void> {
@@ -256,9 +295,36 @@ export class PgStore implements PriceStore {
     return row ? (row.data as Quote) : null;
   }
 
-  async listQuotes(limit = 50): Promise<Quote[]> {
-    const rows = await this.db.select().from(schema.quotes).orderBy(desc(schema.quotes.createdAt)).limit(limit);
+  async deleteQuote(number: string): Promise<void> {
+    await this.db.delete(schema.quoteFiles).where(eq(schema.quoteFiles.quoteNumber, number));
+    await this.db.delete(schema.quotes).where(eq(schema.quotes.number, number));
+  }
+
+  async listQuotes(opts: number | ListQuotesOptions = {}): Promise<Quote[]> {
+    const o: ListQuotesOptions = typeof opts === "number" ? { limit: opts } : opts;
+    const conds = [];
+    if (o.company) conds.push(sql`${FOLD(sql`(${schema.quotes.data}->'customer'->>'company')`)} like ${`%${foldKey(o.company)}%`}`);
+    if (o.requestedBy) conds.push(sql`regexp_replace(coalesce(${schema.quotes.requestedBy}, ''), '[^0-9]', '', 'g') = ${o.requestedBy.replace(/\D/g, "")}`);
+    const rows = await this.db
+      .select()
+      .from(schema.quotes)
+      .where(conds.length ? and(...conds) : undefined)
+      .orderBy(desc(schema.quotes.createdAt))
+      .limit(o.limit ?? 50);
     return rows.map((r) => r.data as Quote);
+  }
+
+  async saveQuoteFile(f: QuoteFile): Promise<void> {
+    const createdAt = f.createdAt ? new Date(f.createdAt) : new Date();
+    await this.db
+      .insert(schema.quoteFiles)
+      .values({ quoteNumber: f.quoteNumber, kind: f.kind, fileName: f.fileName, mimeType: f.mimeType, data: f.data, createdAt })
+      .onConflictDoUpdate({ target: [schema.quoteFiles.quoteNumber, schema.quoteFiles.kind], set: { fileName: f.fileName, mimeType: f.mimeType, data: f.data, createdAt } });
+  }
+
+  async getQuoteFiles(quoteNumber: string): Promise<QuoteFile[]> {
+    const rows = await this.db.select().from(schema.quoteFiles).where(eq(schema.quoteFiles.quoteNumber, quoteNumber)).orderBy(schema.quoteFiles.kind);
+    return rows.map((r) => ({ quoteNumber: r.quoteNumber, kind: r.kind, fileName: r.fileName, mimeType: r.mimeType, data: r.data, createdAt: r.createdAt.toISOString() }));
   }
 
   async getConversation(phone: string): Promise<ConversationState | null> {
@@ -283,15 +349,21 @@ export class PgStore implements PriceStore {
   }
 
   async getSyncMarks(): Promise<Record<string, string>> {
-    const rows = await this.db.select().from(schema.syncMarks);
+    const rows = await this.db.select({ fileId: schema.syncMarks.fileId, modifiedTime: schema.syncMarks.modifiedTime }).from(schema.syncMarks);
     return Object.fromEntries(rows.map((r) => [r.fileId, r.modifiedTime]));
   }
 
-  async setSyncMark(fileId: string, modifiedTime: string): Promise<void> {
-    await this.db
-      .insert(schema.syncMarks)
-      .values({ fileId, modifiedTime })
-      .onConflictDoUpdate({ target: schema.syncMarks.fileId, set: { modifiedTime } });
+  async setSyncMark(fileId: string, modifiedTime: string, provider?: string): Promise<void> {
+    try {
+      await this.db
+        .insert(schema.syncMarks)
+        .values({ fileId, modifiedTime, provider: provider ?? null })
+        .onConflictDoUpdate({ target: schema.syncMarks.fileId, set: provider ? { modifiedTime, provider } : { modifiedTime } });
+    } catch (err) {
+      if (!isMissingColumn(err)) throw err;
+      // sync_marks.provider not migrated yet: keep the Drive sync working without it
+      await this.sqlClient`insert into sync_marks (file_id, modified_time) values (${fileId}, ${modifiedTime}) on conflict (file_id) do update set modified_time = excluded.modified_time`;
+    }
   }
 
   async close(): Promise<void> {

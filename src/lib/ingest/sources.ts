@@ -29,8 +29,8 @@ export interface SourceConfig {
 
 export interface ProvidersConfig {
   sources?: SourceConfig[];
-  /** provider -> defaults when a file is ingested with --provider but no `match` rule */
-  providers?: Record<string, Omit<SourceConfig, "match" | "provider">>;
+  /** provider -> defaults when a file is ingested with --provider but no `match` rule; `aliases` = other names the bot accepts */
+  providers?: Record<string, Omit<SourceConfig, "match" | "provider"> & { aliases?: string[] }>;
 }
 
 let cached: ProvidersConfig | null = null;
@@ -63,7 +63,7 @@ export function resolveSourceOptions(fileName: string, providerHint?: string, cf
   if (providerHint) {
     const key = Object.keys(cfg.providers ?? {}).find((k) => k.toLowerCase() === providerHint.toLowerCase());
     if (key) {
-      const d = cfg.providers![key];
+      const { aliases: _aliases, ...d } = cfg.providers![key];
       return { ...d, provider: providerHint, defaultCurrency: d.currency };
     }
   }

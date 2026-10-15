@@ -1,5 +1,5 @@
 import { beforeAll, describe, expect, it } from "vitest";
-import { describeRequest, parseDiscount, parseQuantity, parseRequestRegex, parseTaxMode } from "./request";
+import { describeRequest, extractUb, parseDiscount, parseQuantity, parseRequestRegex, parseTaxMode, parseTerms } from "./request";
 
 beforeAll(() => {
   process.env.LLM_DISABLED = "1";
@@ -80,6 +80,76 @@ para ANCRO SRL, atención: Srta. Karina Quispe, pago: crédito, plazo: 60 días,
     expect(parseTaxMode("precios con igv")).toBe(true);
     expect(parseTaxMode("mas igv")).toBe(false);
     expect(parseTaxMode("11R22.5")).toBeUndefined();
+  });
+});
+
+describe("Prosegur fields: UB, unidad, solicitante, número", () => {
+  it("UB per line is kept apart from the model and the quantity", () => {
+    const r = parseRequestRegex("215/75R17.5 18PR FENIXWAY VALOR 99 x2 UB 1830\n295/80R22.5 FENIXWAY VALOR 87 ub 1900 x4\n11R22.5 VALOR 96 u.b. 2105 mixta x8\nARO 8.25x22.5 KUMA x1 UB 1830");
+    expect(r.lines.map((l) => [l.size?.canonical ?? l.text, l.model, l.quantity, l.ub])).toEqual([
+      ["215/75R17.5", "VALOR 99", 2, "1830"],
+      ["295/80R22.5", "VALOR 87", 4, "1900"],
+      ["11R22.5", "VALOR 96", 8, "2105"],
+      ["ARO 8.25x22.5 KUMA", undefined, 1, "1830"],
+    ]);
+    expect(r.ub).toBeUndefined(); // UB written on an item line is that item's, not the quote's
+    expect(describeRequest(r)).toContain("1. Fenixway 215/75R17.5 VALOR 99 18PR UB 1830 x2");
+    // a 3-digit UB is not a quantity, a 4-digit one before a position word neither
+    expect(parseRequestRegex("Michelin 11R22.5 XZE2+ UB 451").lines[0]).toMatchObject({ quantity: 1, ub: "451", model: "XZE2+" });
+    expect(parseRequestRegex("Michelin 11R22.5 XZE2+ UB 1830 delantera").lines[0]).toMatchObject({ quantity: 1, ub: "1830", position: "DEL" });
+    // same tyre, two UBs: two lines (never merged)
+    expect(parseRequestRegex("215/75R17.5 VALOR 99 x2 UB 1830\n215/75R17.5 VALOR 99 x2 UB 1900").lines.map((l) => [l.quantity, l.ub])).toEqual([
+      [2, "1830"],
+      [2, "1900"],
+    ]);
+    // one UB for a line split by positions applies to every group
+    expect(parseRequestRegex("Fenixway 295/80R22.5 Valor 18PR mixta x2 y tracción x8 UB 1830").lines.map((l) => [l.position, l.quantity, l.ub])).toEqual([
+      ["MIX", 2, "1830"],
+      ["TRAC", 8, "1830"],
+    ]);
+    expect(extractUb("CLUB 1830")).toBeUndefined();
+    expect(extractUb("UB 18300")).toBe("18300");
+    expect(extractUb("UB 183001")).toBeUndefined();
+  });
+
+  it("unidad / ub / solicitante terms, the last value wins", () => {
+    const text = `prosegur
+215/75R17.5 FENIXWAY VALOR 99 x2
+unidad: Ayacucho
+ub: 1830
+solicitante: Sr. Johann Castañeda
+correo flota@prosegur.com.pe`;
+    const r = parseRequestRegex(text);
+    expect(r).toMatchObject({ unit: "Ayacucho", ub: "1830", requester: "Sr. Johann Castañeda", customerEmail: "flota@prosegur.com.pe" });
+    expect(r.customerName).toBeUndefined(); // "Sr. Johann" belongs to solicitante, not to the customer
+    expect(r.lines.length).toBe(1);
+    expect(r.lines[0]).toMatchObject({ model: "VALOR 99", quantity: 2 });
+    expect(describeRequest(r)).toContain("unidad Ayacucho · UB 1830 · solicitante Sr. Johann Castañeda");
+    expect(parseTerms("unidad atendida: Cusco, atención: Sr. Pérez")).toMatchObject({ unit: "Cusco", attention: "Sr. Pérez" });
+    expect(parseTerms("sede: Arequipa").unit).toBe("Arequipa");
+    expect(parseTerms("UB 1830").ub).toBe("1830");
+    expect(parseTerms("atención: Sr. Pérez, ub 1830").attention).toBe("Sr. Pérez");
+    // corrections appended later override the first value
+    expect(parseTerms("unidad: Ayacucho\nub: 1830\nunidad: Cusco\nub 1900\npago: contado\npago: letras")).toMatchObject({ unit: "Cusco", ub: "1900", paymentType: "letras" });
+  });
+
+  it("'número 451' sets the quote number and is neither a quantity nor a size", () => {
+    for (const n of ["número 451", "numero 451", "nro 451", "n° 451", "Nº 451", "nro. 451"]) {
+      const r = parseRequestRegex(`215/75R17.5 FENIXWAY VALOR 99 x2\n${n}`);
+      expect(r.quoteNumber).toBe(451);
+      expect(r.lines.map((l) => [l.size?.canonical, l.quantity, l.model])).toEqual([["215/75R17.5", 2, "VALOR 99"]]);
+    }
+    expect(parseRequestRegex("215/75R17.5 VALOR 99 x2, número 451").lines[0].quantity).toBe(2);
+    expect(parseRequestRegex("215/75R17.5 VALOR 99 x2, número 451").quoteNumber).toBe(451);
+    expect(parseRequestRegex("Orden N° 4500123\n215/75R17.5 x2").quoteNumber).toBeUndefined();
+    expect(parseRequestRegex("número 451").lines).toEqual([]);
+  });
+
+  it("a customer name ends with its line", () => {
+    const r = parseRequestRegex("215/75R17.5 VALOR 99 x2\npara PROSEGUR SA\nvalidez 7 días\nsin igv\nnúmero 451");
+    expect(r.customerCompany).toBe("PROSEGUR SA");
+    expect(r.validityDays).toBe(7);
+    expect(r.showPricesWithTax).toBe(false);
   });
 });
 

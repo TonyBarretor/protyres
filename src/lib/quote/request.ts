@@ -81,17 +81,45 @@ export function parseTaxMode(text: string): boolean | undefined {
   return undefined;
 }
 
+/** "UB 1830" / "ub: 1830" / "u.b. 1830": the customer's UB code (3–5 digits) written next to an item. */
+const UB = /(?<![\w.])u\.?\s?b\.?\s*:?\s*(\d{3,5})(?![\d.,/])/i;
+export function extractUb(text: string): string | undefined {
+  return text.match(UB)?.[1];
+}
+
+/** The line with its UB blanked out (same length), so "UB 1830" is never a quantity, a size or part of the model. */
+function withoutUb(line: string): string {
+  return line.replace(new RegExp(UB.source, "gi"), (m) => " ".repeat(m.length));
+}
+
+/** A standalone "ub: 1830" / "ub 1830" segment (own line, or between commas): the UB for items without their own. */
+const QUOTE_UB = /(?:^|[,;\n])[^\S\n]*(?:ub|u\.\s?b\.?)[^\S\n]*:?[^\S\n]*(\d{3,5})(?=[^\S\n]*(?:[,;\n]|$))/gi;
+
+/** "número 451" / "numero 451" / "nro 451" / "n° 451" as its own segment: the quote's counter. */
+export const QUOTE_NUMBER = /(?:^|[,;\n])[^\S\n]*(?:n[uú]mero|nro\.?|n[°º]\.?)[^\S\n]*:?[^\S\n]*(\d{1,6})(?:[^\S\n]+confirmar)?(?=[^\S\n]*(?:[,;\n]|$))/gi;
+
+/** Keys of the "clave: valor" fields (parseTerms); their segments are neither items nor customer names. */
+const TERM_KEYS = String.raw`atenci[oó]n|atn|att|contacto|direcci[oó]n|dir|lugar de entrega|tipo de pago|pago|forma de pago|plazo de pago|plazo|cr[eé]dito|plazo de entrega|entrega|validez|vigencia|tipo de cambio|tc|unidad atendida|unidad|sede|solicitante`;
+
+/** The last match of a global regex (fields typed later in the conversation override earlier ones). */
+function lastMatch(text: string, re: RegExp): RegExpMatchArray | undefined {
+  let last: RegExpMatchArray | undefined;
+  for (const m of text.matchAll(re)) last = m;
+  return last;
+}
+
 /**
  * Per-quote fields written as "clave: valor" (or "clave valor"), anywhere in the message:
  *   atención: Sra. Karen Ordoñez · dirección: Lima · pago: factura crédito · plazo: 45 días · entrega: 48 hrs post OC
- *   validez: 5 días · tc 3.4 / tipo de cambio 3.40
+ *   validez: 5 días · tc 3.4 / tipo de cambio 3.40 · unidad: Ayacucho · ub: 1830 · solicitante: Johann Castañeda
+ * When a key appears more than once the last value wins (corrections are appended to the request text).
  */
-export function parseTerms(text: string): Pick<QuoteRequest, "attention" | "address" | "paymentType" | "paymentTerm" | "deliveryTerm" | "validityDays" | "exchangeRate"> {
+export function parseTerms(text: string): Pick<QuoteRequest, "attention" | "address" | "paymentType" | "paymentTerm" | "deliveryTerm" | "validityDays" | "exchangeRate" | "unit" | "ub" | "requester"> {
   const out: ReturnType<typeof parseTerms> = {};
-  // a value runs to the end of the line / ";" — or to a comma that starts another field ("key:", an email, "x4", "dscto", "con igv")
-  const STOP = String.raw`(?=\s*(?:[;\n]|$|,\s*(?:[\w.+-]+@|[\wáéíóú][\wáéíóú ]{0,24}:|x\s*\d|dscto\b|descuento\b|con igv\b|sin igv\b)))`;
+  // a value runs to the end of the line / ";" — or to a comma that starts another field ("key:", an email, "x4", "dscto", "con igv", "ub 1830", "número 451")
+  const STOP = String.raw`(?=\s*(?:[;\n]|$|,\s*(?:[\w.+-]+@|[\wáéíóú][\wáéíóú ]{0,24}:|x\s*\d|dscto\b|descuento\b|con igv\b|sin igv\b|u\.?\s?b\.?\s*\d|n[uú]mero\s*\d|nro\.?\s*\d)))`;
   const grab = (keys: string): string | undefined => {
-    const m = text.match(new RegExp(`(?:^|[,;\\n]|\\s{2,})\\s*(?:${keys})\\s*:\\s*([^;\\n]+?)${STOP}`, "i"));
+    const m = lastMatch(text, new RegExp(`(?:^|[,;\\n]|\\s{2,})\\s*(?:${keys})\\s*:\\s*([^;\\n]+?)${STOP}`, "gi"));
     return m ? m[1].trim().replace(/,\s*$/, "") : undefined;
   };
   out.attention = grab("atenci[oó]n|atn|att|contacto");
@@ -99,21 +127,31 @@ export function parseTerms(text: string): Pick<QuoteRequest, "attention" | "addr
   out.paymentType = grab("tipo de pago|pago|forma de pago");
   out.paymentTerm = grab("plazo de pago|plazo|cr[eé]dito");
   out.deliveryTerm = grab("plazo de entrega|entrega");
-  const validity = text.match(/\b(?:validez|v[aá]lidez|vigencia)\s*:?\s*(\d{1,3})\s*d[ií]as?\b/i);
+  out.unit = grab("unidad atendida|unidad|sede");
+  out.requester = grab("solicitante");
+  out.ub = lastMatch(text, QUOTE_UB)?.[1];
+  const validity = lastMatch(text, /\b(?:validez|v[aá]lidez|vigencia)\s*:?\s*(\d{1,3})\s*d[ií]as?\b/gi);
   if (validity) out.validityDays = parseInt(validity[1], 10);
-  const tc = text.match(/\b(?:tc|t\.c\.|tipo de cambio)\s*:?\s*(?:s\/\.?\s*)?(\d(?:[.,]\d{1,3})?)\b/i);
+  const tc = lastMatch(text, /\b(?:tc|t\.c\.|tipo de cambio)\s*:?\s*(?:s\/\.?\s*)?(\d(?:[.,]\d{1,3})?)\b/gi);
   if (tc) out.exchangeRate = parseFloat(tc[1].replace(",", "."));
   for (const k of Object.keys(out) as (keyof typeof out)[]) if (out[k] === undefined) delete out[k];
   return out;
 }
 
+/** "número 451" written as a segment of the request (the last one wins). */
+export function parseQuoteNumber(text: string): number | undefined {
+  const m = lastMatch(text, QUOTE_NUMBER);
+  return m ? parseInt(m[1], 10) : undefined;
+}
+
 function parseCustomer(text: string): { name?: string; company?: string; ref?: string } {
-  const t = text.replace(/[\w.+-]+@[\w-]+(?:\.[\w-]+)+/g, " ").replace(/\s+/g, " ");
+  // a customer name ends with its line (lines appended later, like "para PROSEGUR SA\nunidad: …", stay apart)
+  const t = text.replace(/[\w.+-]+@[\w-]+(?:\.[\w-]+)+/g, " ").replace(/[^\S\n]+/g, " ");
   const out: { name?: string; company?: string; ref?: string } = {};
   // "para X" needs a capitalised name (so "para invitarle", "para llanta" are not customers); "cliente: x" does not
   const m =
-    t.match(/\b(?:cliente|client|empresa|company|customer|sr\.?|sra\.?|se[ñn]ores|atn|att)\b\s*:?\s+([^,;\n]+?)(?=\s*(?:,|;|$|\bx\s*\d|\bcantidad|\bemail|\bcorreo|\btel|\bdscto|\bdescuento|\bcon igv|\bsin igv))/i) ??
-    t.match(/\bpara\s+(?=[A-ZÁÉÍÓÚÑ])(?!(?:LLANTAS?|NEUM[AÁ]TICOS?|CAMI[OÓ]N|CAMIONETA|BUS|TRACTOR|AUTO|CARRO|MOTO|AROS?|COTIZAR|LA|EL|SU|LOS|LAS)\b)([^,;\n]+?)(?=\s*(?:,|;|$|\bx\s*\d|\bcantidad|\bemail|\bcorreo|\btel|\bdscto|\bdescuento|\bcon igv|\bsin igv|\bref\b))/);
+    t.match(/\b(?:cliente|client|empresa|company|customer|sr\.?|sra\.?|se[ñn]ores|atn|att)\b\s*:?\s+([^,;\n]+?)(?=\s*(?:,|;|$|\bx\s*\d|\bcantidad|\bemail|\bcorreo|\btel|\bdscto|\bdescuento|\bcon igv|\bsin igv))/im) ??
+    t.match(/\bpara\s+(?=[A-ZÁÉÍÓÚÑ])(?!(?:LLANTAS?|NEUM[AÁ]TICOS?|CAMI[OÓ]N|CAMIONETA|BUS|TRACTOR|AUTO|CARRO|MOTO|AROS?|COTIZAR|LA|EL|SU|LOS|LAS)\b)([^,;\n]+?)(?=\s*(?:,|;|$|\bx\s*\d|\bcantidad|\bemail|\bcorreo|\btel|\bdscto|\bdescuento|\bcon igv|\bsin igv|\bref\b))/m);
   if (m) {
     const who = m[1].trim().replace(/\s+(?:x\s*\d+|\d+\s*(?:und|unidades|llantas))$/i, "");
     if (who) {
@@ -139,7 +177,13 @@ const QTY_MARKER = new RegExp(String.raw`\bx\s?\d{1,4}\b|\b\d{1,4}\s?x\b|\b\d{1,
  * -> one line per group, each repeating the common head ("Fenixway 295/80R22.5 Valor 18PR").
  */
 function splitPositionGroups(line: string): string[] {
-  const size = findTyreSizes(normalizeSizeText(withoutPlate(line)))[0];
+  // a UB written once on the line belongs to every group of it
+  const ub = extractUb(line);
+  if (ub) {
+    const groups = splitPositionGroups(withoutUb(line).replace(/\s+/g, " ").trim());
+    return groups.length > 1 ? groups.map((g) => `${g} UB ${ub}`) : [line];
+  }
+  const size = findTyreSizes(normalizeSizeText(withoutRefs(line)))[0];
   if (!size) return [line];
   const segs = line.split(/\s*(?:,|;|\+|\s+y\s+|\s+e\s+|\s+and\s+)\s*/i).filter(Boolean);
   if (segs.length < 2) return [line];
@@ -186,7 +230,7 @@ function candidateLines(text: string): string[] {
     const line = rawLine.replace(/^[\s•\-–*·]+/, "").replace(/\s+/g, " ").trim();
     if (!line || SKIP_LINE.test(line)) continue;
     // several sizes in one line separated by ; or "y" -> split
-    const sizes = findTyreSizes(withoutPlate(line));
+    const sizes = findTyreSizes(withoutRefs(line));
     if (sizes.length > 1) {
       let last = 0;
       sizes.forEach((s, i) => {
@@ -217,6 +261,11 @@ export function extractPlate(text: string): string | undefined {
 function withoutPlate(line: string): string {
   if (!extractPlate(line)) return line;
   return line.replace(PLATE, (m) => " ".repeat(m.length));
+}
+
+/** Plate and UB blanked out (same length): references the customer writes next to an item, never part of its size. */
+function withoutRefs(line: string): string {
+  return withoutUb(withoutPlate(line));
 }
 
 /**
@@ -290,8 +339,13 @@ function lineFromText(line: string, explicitQty: number | null): RequestLine | n
 /** Regex-only parse (deterministic, no network). */
 export function parseRequestRegex(text: string): QuoteRequest {
   const terms = parseTerms(text);
-  // "clave: valor" segments are not items nor customer names
-  const stripped = text.replace(/(?:^|[,;\n]|\s{2,})\s*(?:atenci[oó]n|atn|att|contacto|direcci[oó]n|dir|lugar de entrega|tipo de pago|pago|forma de pago|plazo de pago|plazo|cr[eé]dito|plazo de entrega|entrega|validez|vigencia|tipo de cambio|tc)\s*:\s*[^,;\n]+/gi, (m) => (m.startsWith("\n") ? "\n" : " "));
+  const quoteNumber = parseQuoteNumber(text);
+  // "clave: valor" segments, a standalone "ub 1830" and "número 451" are not items nor customer names
+  const keep = (m: string) => (m.startsWith("\n") ? "\n" : " ");
+  const stripped = text
+    .replace(new RegExp(String.raw`(?:^|[,;\n]|\s{2,})\s*(?:${TERM_KEYS})\s*:\s*[^,;\n]+`, "gi"), keep)
+    .replace(QUOTE_UB, keep)
+    .replace(QUOTE_NUMBER, keep);
   const customer = parseCustomer(stripped);
   const customerEmail = parseEmail(text);
   const discountPct = parseDiscount(text);
@@ -308,14 +362,17 @@ export function parseRequestRegex(text: string): QuoteRequest {
       .replace(/\b(?:cotizar|cotizaci[oó]n|cotiza|cotizas|me cotizas|precio de|necesito|quiero|quiere|piden?|pedido|busco|me pide|requiere|requerimos|solicito|solicitamos)\b/gi, " ");
     const cut = head.search(/\b(?:para|cliente|client|empresa|customer|correo|email|tel|atn|att)\b(?!\s+(?:llantas?|neum[aá]ticos?|cami[oó]n|camioneta|bus|tractor|auto|carro|moto|aro))\s*:?\s+[A-Z]/i);
     const item = (cut > 0 ? head.slice(0, cut) : head).trim();
-    const parsed = lineFromText(item, parseQuantity(item));
-    if (parsed) lines.push(parsed);
+    // "UB 1830" is the line's UB: blanked before reading quantity / size / model
+    const ub = extractUb(item);
+    const itemText = ub ? withoutUb(item).replace(/\s+/g, " ").trim() : item;
+    const parsed = lineFromText(itemText, parseQuantity(itemText));
+    if (parsed) lines.push(ub ? { ...parsed, raw: item, ub } : parsed);
   }
 
   // merge identical lines ("215/75R17.5 Posterior" x4 rows -> quantity 4)
   const merged: RequestLine[] = [];
   for (const l of lines) {
-    const keyOf = (x: RequestLine) => [x.size?.canonical ?? fold(x.text ?? ""), fold(x.brand ?? ""), fold(x.model ?? ""), x.position ?? "", x.application ?? "", x.plate ?? ""].join("|");
+    const keyOf = (x: RequestLine) => [x.size?.canonical ?? fold(x.text ?? ""), fold(x.brand ?? ""), fold(x.model ?? ""), x.position ?? "", x.application ?? "", x.plate ?? "", x.ub ?? ""].join("|");
     const key = keyOf(l);
     const prev = merged.find((m) => keyOf(m) === key);
     if (prev) prev.quantity += l.quantity;
@@ -330,6 +387,7 @@ export function parseRequestRegex(text: string): QuoteRequest {
     customerEmail,
     customerRef: customer.ref,
     ...terms,
+    quoteNumber,
     discountPct,
     showPricesWithTax,
     parsedBy: "regex",
@@ -357,10 +415,15 @@ export async function parseRequest(text: string): Promise<QuoteRequest> {
       text: size ? undefined : l.description ?? undefined,
       application: l.application?.trim().toUpperCase() || undefined,
       plate: l.plate ? extractPlate(`placa ${l.plate}`) ?? l.plate.toUpperCase() : undefined,
+      ub: (l.raw ? extractUb(l.raw) : undefined) ?? (l.ub ? extractUb(`UB ${l.ub}`) : undefined),
     });
   }
   return {
     ...base,
+    // keyed fields typed by the salesman ("unidad: …") are read exactly by the regex; corrections appended later win
+    unit: base.unit ?? llm.unit ?? undefined,
+    ub: base.ub ?? (llm.ub ? extractUb(`UB ${llm.ub}`) : undefined),
+    requester: base.requester ?? llm.requester ?? undefined,
     lines: lines.length ? lines : base.lines,
     customerName: llm.customer_name ?? base.customerName,
     customerCompany: llm.customer_company ?? base.customerCompany,
@@ -381,11 +444,11 @@ export async function parseRequest(text: string): Promise<QuoteRequest> {
 export function describeLine(l: RequestLine): string {
   if (l.size) {
     const app = l.application ? l.application : l.position === "DEL" ? "delantera" : l.position === "TRAC" ? "tracción/posterior" : l.position === "MIX" ? "mixta" : "";
-    return [l.brand ?? "", l.size.display, l.model ?? "", l.ply ? `${l.ply}PR` : "", app, l.plate ? `placa ${l.plate}` : "", `x${l.quantity}`]
+    return [l.brand ?? "", l.size.display, l.model ?? "", l.ply ? `${l.ply}PR` : "", app, l.plate ? `placa ${l.plate}` : "", l.ub ? `UB ${l.ub}` : "", `x${l.quantity}`]
       .filter(Boolean)
       .join(" ");
   }
-  return `${l.text ?? l.raw}${l.plate ? ` placa ${l.plate}` : ""} x${l.quantity}`;
+  return `${l.text ?? l.raw}${l.plate ? ` placa ${l.plate}` : ""}${l.ub ? ` UB ${l.ub}` : ""} x${l.quantity}`;
 }
 
 /** Human-readable summary of what was understood (sent back to the salesman). */
@@ -402,6 +465,10 @@ export function describeRequest(r: QuoteRequest): string {
     r.deliveryTerm ? `entrega: ${r.deliveryTerm}` : "",
     r.validityDays ? `validez ${r.validityDays} días` : "",
     r.exchangeRate ? `tc ${r.exchangeRate}` : "",
+    r.unit ? `unidad ${r.unit}` : "",
+    r.ub ? `UB ${r.ub}` : "",
+    r.requester ? `solicitante ${r.requester}` : "",
+    r.quoteNumber ? `número ${r.quoteNumber}` : "",
   ].filter(Boolean);
   const items = r.lines.map((l, i) => (r.lines.length > 1 ? `${i + 1}. ${describeLine(l)}` : describeLine(l)));
   return `${items.join(r.lines.length > 1 ? "\n" : " ")}${extras.length ? `${r.lines.length > 1 ? "\n" : " · "}${extras.join(" · ")}` : ""}`;

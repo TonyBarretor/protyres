@@ -8,19 +8,26 @@ import path from "node:path";
 import { gunzipSync } from "node:zlib";
 import type { PriceRow } from "../ingest/types";
 import type { Quote } from "../quote/types";
-import { photoKey, type ConversationState, type PriceStore, type ProductPhoto, type ProviderSummary, type ReplaceScope } from "./types";
+import { foldKey, photoKey, type ConversationState, type ListQuotesOptions, type PriceStore, type ProductPhoto, type ProviderSummary, type QuoteFile, type ReplaceScope } from "./types";
 
 interface Data {
   prices: Record<string, PriceRow>;
   quotes: Record<string, Quote>;
   conversations: Record<string, ConversationState>;
-  counters: { quote: number };
+  /** "quote" (global) and "quote:<phone>" (per salesman) */
+  counters: Record<string, number>;
   processed: string[];
   syncMarks: Record<string, string>;
+  /** Drive file id -> provider of the file (to clear its mark when the provider is deleted). */
+  syncProviders: Record<string, string>;
   photos: Record<string, ProductPhoto>;
+  /** "<quote number>|<kind>" -> document */
+  quoteFiles: Record<string, QuoteFile>;
 }
 
-const EMPTY: Data = { prices: {}, quotes: {}, conversations: {}, counters: { quote: 0 }, processed: [], syncMarks: {}, photos: {} };
+const EMPTY: Data = { prices: {}, quotes: {}, conversations: {}, counters: { quote: 0 }, processed: [], syncMarks: {}, syncProviders: {}, photos: {}, quoteFiles: {} };
+
+const digits = (s: string | undefined) => (s ?? "").replace(/\D/g, "");
 
 export class JsonStore implements PriceStore {
   private data: Data;
@@ -164,12 +171,47 @@ export class JsonStore implements PriceStore {
     });
   }
 
-  nextQuoteCounter(start = 1): Promise<number> {
+  deleteProvider(name: string): Promise<{ rows: number; syncMarks: number }> {
+    const key = foldKey(name);
     return this.run(() => {
-      if (this.data.counters.quote < start - 1) this.data.counters.quote = start - 1;
-      this.data.counters.quote += 1;
+      let rows = 0;
+      let syncMarks = 0;
+      for (const [id, row] of Object.entries(this.data.prices)) {
+        if (foldKey(row.provider) !== key) continue;
+        delete this.data.prices[id];
+        rows++;
+      }
+      for (const [fileId, provider] of Object.entries(this.data.syncProviders)) {
+        if (foldKey(provider) !== key) continue;
+        delete this.data.syncProviders[fileId];
+        if (fileId in this.data.syncMarks) syncMarks++;
+        delete this.data.syncMarks[fileId];
+      }
+      if (rows || syncMarks) this.persist();
+      return { rows, syncMarks };
+    });
+  }
+
+  nextQuoteCounter(start = 1, key?: string): Promise<number> {
+    return this.run(() => {
+      const c = this.data.counters;
+      const bump = (name: string) => (c[name] = Math.max(c[name] ?? 0, start - 1) + 1);
+      let value: number;
+      if (key && key !== "quote" && c[key] !== undefined) value = bump(key);
+      else {
+        // first quote of this salesman: continue from the global counter (and advance it)
+        value = bump("quote");
+        if (key) c[key] = value;
+      }
       this.persist();
-      return this.data.counters.quote;
+      return value;
+    });
+  }
+
+  setQuoteCounter(value: number, key = "quote"): Promise<void> {
+    return this.run(() => {
+      this.data.counters[key] = value;
+      this.persist();
     });
   }
 
@@ -184,8 +226,39 @@ export class JsonStore implements PriceStore {
     return this.run(() => this.data.quotes[number] ?? null);
   }
 
-  listQuotes(limit = 50): Promise<Quote[]> {
-    return this.run(() => Object.values(this.data.quotes).sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1)).slice(0, limit));
+  deleteQuote(number: string): Promise<void> {
+    return this.run(() => {
+      delete this.data.quotes[number];
+      for (const k of Object.keys(this.data.quoteFiles)) if (this.data.quoteFiles[k].quoteNumber === number) delete this.data.quoteFiles[k];
+      this.persist();
+    });
+  }
+
+  listQuotes(opts: number | ListQuotesOptions = {}): Promise<Quote[]> {
+    const o: ListQuotesOptions = typeof opts === "number" ? { limit: opts } : opts;
+    const company = o.company ? foldKey(o.company) : "";
+    const by = o.requestedBy ? digits(o.requestedBy) : "";
+    return this.run(() =>
+      Object.values(this.data.quotes)
+        .filter((q) => (!company || foldKey(q.customer.company).includes(company)) && (!by || digits(q.requestedBy) === by))
+        .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1))
+        .slice(0, o.limit ?? 50),
+    );
+  }
+
+  saveQuoteFile(file: QuoteFile): Promise<void> {
+    return this.run(() => {
+      this.data.quoteFiles[`${file.quoteNumber}|${file.kind}`] = { ...file, createdAt: file.createdAt ?? new Date().toISOString() };
+      this.persist();
+    });
+  }
+
+  getQuoteFiles(quoteNumber: string): Promise<QuoteFile[]> {
+    return this.run(() =>
+      Object.values(this.data.quoteFiles)
+        .filter((f) => f.quoteNumber === quoteNumber)
+        .sort((a, b) => (a.kind < b.kind ? -1 : 1)),
+    );
   }
 
   getConversation(phone: string): Promise<ConversationState | null> {
@@ -214,9 +287,10 @@ export class JsonStore implements PriceStore {
     return this.run(() => ({ ...this.data.syncMarks }));
   }
 
-  setSyncMark(fileId: string, modifiedTime: string): Promise<void> {
+  setSyncMark(fileId: string, modifiedTime: string, provider?: string): Promise<void> {
     return this.run(() => {
       this.data.syncMarks[fileId] = modifiedTime;
+      if (provider) this.data.syncProviders[fileId] = provider;
       this.persist();
     });
   }

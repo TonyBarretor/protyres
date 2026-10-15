@@ -17,6 +17,8 @@ export interface RequestLine {
   application?: string;
   /** Vehicle plate the customer gave for this line ("BLM-923"); printed next to the size. */
   plate?: string;
+  /** The customer's UB code for this line ("UB 1830": Prosegur's cost-center / vehicle unit, 3–5 digits). */
+  ub?: string;
 }
 
 export interface QuoteRequest {
@@ -40,6 +42,14 @@ export interface QuoteRequest {
   deliveryTerm?: string;
   validityDays?: number;
   exchangeRate?: number;
+  /** "unidad: Ayacucho" / "unidad atendida:" / "sede:" (the customer's branch the quote is for). */
+  unit?: string;
+  /** "ub: 1830": UB for the items that have none of their own. */
+  ub?: string;
+  /** "solicitante: Johann Castañeda" (who asked for the quote at the customer). */
+  requester?: string;
+  /** "número 451" written as a line of the request: this quote's counter. */
+  quoteNumber?: number;
   notes?: string;
   /** which parser produced the fields */
   parsedBy: "regex" | "llm" | "llm+regex";
@@ -100,6 +110,8 @@ export interface QuoteItem {
   application?: string;
   /** Vehicle plate given by the customer, printed after the size ("11R22.5 18PR BVV-704"). */
   plate?: string;
+  /** The line's own UB ("1830"); items without one use the quote's `ub`. */
+  ub?: string;
   /** ORIGEN column ("CHINA PREMIUM", "INDIA"...). */
   countryOfOrigin?: string;
   /** Product photo (URL, or data: URI for uploaded photos) printed on the "Fotos" annex page. */
@@ -143,6 +155,14 @@ export interface Quote {
   paymentTerm: string;
   deliveryTerm: string;
   exchangeRate?: number;
+  /** Customer's branch ("AYACUCHO"), default UB and requester (Prosegur's "Formato Proveedores"). */
+  unit?: string;
+  ub?: string;
+  requester?: string;
+  /** Customer profile (config/customers.json) this quote follows, e.g. "prosegur" (adds its Excel format). */
+  customerProfile?: string;
+  /** File names chosen by the salesman ("archivo: …", "archivo excel: …"), without extension. */
+  files?: { pdfName?: string; xlsxName?: string };
   salesperson: { name: string; title: string; address: string; email: string; phone: string };
   status: "draft" | "sent" | "cancelled";
   emailDraft?: EmailDraft;

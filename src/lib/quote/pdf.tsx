@@ -203,7 +203,9 @@ export function QuoteDocument({ quote, settings, photos = {} }: { quote: Quote; 
           <Text style={[st.th, w(COLS.total), { borderRightWidth: 0 }]}>PRECIO TOTAL{"\n"}{curLabel}</Text>
         </View>
         {rows.map((it, i) => {
-          const measure = `${it.size ? `${it.sizeDisplay}${it.ply ? ` ${it.ply}PR` : ""}${it.loadIndex && !it.ply ? ` ${it.loadIndex}${it.speedIndex ?? ""}` : ""}` : it.description}${it.plate ? ` ${it.plate}` : ""}`;
+          // the customer's references after the size: plate, then UB (the item's own, else the quote's: "215/75R17.5 18PR UB 1830")
+          const ub = it.ub ?? quote.ub;
+          const measure = `${it.size ? `${it.sizeDisplay}${it.ply ? ` ${it.ply}PR` : ""}${it.loadIndex && !it.ply ? ` ${it.loadIndex}${it.speedIndex ?? ""}` : ""}` : it.description}${it.plate ? ` ${it.plate}` : ""}${ub ? ` UB ${ub}` : ""}`;
           return (
             <View key={i} style={st.row} wrap={false}>
               <Text style={[st.td, w(COLS.item)]}>{i + 1}</Text>

@@ -1,0 +1,19 @@
+{
+  "customers": [
+    {
+      "name": "Prosegur",
+      "aliases": ["prosegur", "prosegur sa", "prosegur s.a.", "prosegur s.a"],
+      "company": "PROSEGUR SA",
+      "email": "",
+      "format": "prosegur",
+      "defaults": { "paymentType": "FACTURA", "paymentTerm": "30 días", "deliveryTerm": "48 HRS POST OC", "validityDays": 7, "pricesIncludeTax": false },
+      "required": ["unit", "ub", "requester"],
+      "excel": {
+        "template": "config/templates/prosegur-cotizacion.xlsx",
+        "fileName": "{DDMMYY}-{UB}-{UNIDAD}-{PROVEEDOR}-{N}",
+        "supplierName": "PROFESSIONAL TYRES S.A.C.",
+        "supplierRuc": "20565716396"
+      }
+    }
+  ]
+}

@@ -85,6 +85,16 @@ const STATEMENTS = [
   `alter table photos add column if not exists sheet_data text`,
   `alter table photos add column if not exists origin text`,
   `alter table photos add column if not exists code text`,
+  `alter table sync_marks add column if not exists provider text`,
+  `create table if not exists quote_files (
+    quote_number text not null,
+    kind text not null,
+    file_name text not null,
+    mime_type text not null,
+    data text not null,
+    created_at timestamptz not null default now(),
+    primary key (quote_number, kind)
+  )`,
 ];
 
 async function main() {
@@ -99,7 +109,8 @@ async function main() {
     }
     const [{ photos }] = await sql`select count(*)::int as photos from prices where photo_url is not null`;
     const [{ rows }] = await sql`select count(*)::int as rows from prices`;
-    console.log(`\nListo. Filas de precios: ${rows} (con foto: ${photos}). Si las fotos están en 0, vuelve a ingerir la lista de Steel.`);
+    const [{ files }] = await sql`select count(*)::int as files from quote_files`;
+    console.log(`\nListo. Filas de precios: ${rows} (con foto: ${photos}). Archivos de cotizaciones enviadas: ${files}. Si las fotos están en 0, vuelve a ingerir la lista de Steel.`);
   } finally {
     await sql.end({ timeout: 5 });
   }

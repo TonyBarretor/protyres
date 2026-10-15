@@ -3,8 +3,17 @@ import os from "node:os";
 import path from "node:path";
 import type { Settings } from "../settings";
 import { displayTotal, displayUnit } from "./build";
+import { PDF_MIME, pdfFileName } from "./files";
 import { fmtMoney } from "./pricing";
+import { findProfile, hasExcelFormat } from "./profiles";
 import type { EmailDraft, Quote } from "./types";
+
+/** A file attached to the quote email (the PDF; the customer's Excel format when its profile has one). */
+export interface EmailAttachment {
+  filename: string;
+  content: Buffer;
+  contentType?: string;
+}
 
 export function buildEmailDraft(quote: Quote, settings: Settings): EmailDraft {
   const who = quote.customer.attention
@@ -21,10 +30,12 @@ export function buildEmailDraft(quote: Quote, settings: Settings): EmailDraft {
     .join(", ");
   const subject = `Cotización ${quote.number} – ${subjectItems}${quote.items.length > 3 ? ` y ${quote.items.length - 3} más` : ""}${quote.customer.ref ? ` (ref. ${quote.customer.ref})` : ""}`;
   const sp = quote.salesperson;
+  const profile = findProfile(settings, quote.customerProfile);
+  const formats = hasExcelFormat(profile) ? ` en PDF y en su formato Excel de cotización de proveedores` : "";
   const lines = [
     `${who},`,
     "",
-    `Gracias por su consulta. Adjunto la cotización ${quote.number} (${taxNote}):`,
+    `Gracias por su consulta. Adjunto la cotización ${quote.number}${formats} (${taxNote}):`,
     "",
     ...quote.items.map((i) => {
       const measure = i.size ? `${i.sizeDisplay}${i.ply ? ` ${i.ply}PR` : ""}` : "";
@@ -58,17 +69,18 @@ export interface SendResult {
 }
 
 /**
- * Send the quote email with the PDF attached via Resend.
+ * Send the quote email via Resend with its attachments: a PDF buffer (named after the quote, "OCTUBRE 2026 - 451.pdf"),
+ * or the full list (PDF + the customer's Excel).
  * Without RESEND_API_KEY it writes a .eml-like text file to ./out and reports dryRun.
  */
-export async function sendQuoteEmail(quote: Quote, pdf: Buffer, draft: EmailDraft, opts: { outDir?: string } = {}): Promise<SendResult> {
+export async function sendQuoteEmail(quote: Quote, pdfOrAttachments: Buffer | EmailAttachment[], draft: EmailDraft, opts: { outDir?: string } = {}): Promise<SendResult> {
   const to = process.env.EMAIL_REDIRECT_TO || draft.to;
   if (!to) return { sent: false, error: "no recipient email" };
   const from = process.env.EMAIL_FROM || "Cotizaciones <onboarding@resend.dev>";
-  const fileName = `Cotización ${quote.number.replace(/[\\/:*?"<>|]+/g, "-")}.pdf`;
+  const attachments: EmailAttachment[] = Buffer.isBuffer(pdfOrAttachments) ? [{ filename: pdfFileName(quote), content: pdfOrAttachments, contentType: PDF_MIME }] : pdfOrAttachments;
   if (!process.env.RESEND_API_KEY) {
     // dry run: keep a copy on disk (falls back to the temp dir on read-only deployments)
-    const body = `From: ${from}\nTo: ${to}\nSubject: ${draft.subject}\nAttachment: ${fileName}\n\n${draft.body}\n`;
+    const body = `From: ${from}\nTo: ${to}\nSubject: ${draft.subject}\n${attachments.map((a) => `Attachment: ${a.filename}\n`).join("")}\n${draft.body}\n`;
     const name = `${safeName(quote.number)}.email.txt`;
     for (const dir of [opts.outDir ?? path.join(process.cwd(), "out"), path.join(os.tmpdir(), "protyres-out")]) {
       try {
@@ -90,7 +102,7 @@ export async function sendQuoteEmail(quote: Quote, pdf: Buffer, draft: EmailDraf
     replyTo: quote.salesperson.email || undefined,
     subject: draft.subject,
     text: draft.body,
-    attachments: [{ filename: fileName, content: pdf.toString("base64") }],
+    attachments: attachments.map((a) => ({ filename: a.filename, content: a.content.toString("base64"), contentType: a.contentType })),
   });
   if (error) return { sent: false, error: error.message };
   return { sent: true, id: data?.id };

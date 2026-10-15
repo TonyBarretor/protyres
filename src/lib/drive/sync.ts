@@ -55,7 +55,7 @@ export async function syncDriveFolder(store: PriceStore, opts: { folderId?: stri
       continue;
     }
     await store.upsertRows(result.rows, { replace: { provider, sourceRef: result.stats.sourceRef, kind: kind ?? result.rows[0]?.kind } });
-    await store.setSyncMark(f.id, f.modifiedTime);
+    await store.setSyncMark(f.id, f.modifiedTime, provider);
     report.files.push({ name: f.name, provider, rows: result.rows.length, warnings: result.warnings });
   }
   return report;
