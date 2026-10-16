@@ -118,7 +118,7 @@ describe("bot conversation (synthetic lists)", () => {
 
     await bot.handle(text("ok"));
     const doc = client.sent.find((m) => m.kind === "document");
-    expect(doc?.fileName).toBe("COT-0001.pdf"); // named after the quote number
+    expect(doc?.fileName).toBe("Cotizacion 26 - 0001.pdf"); // named after the quote number
     expect(pdfs.length).toBe(1);
     const preview = client.last()?.body ?? "";
     expect(preview).toContain("*Para:* juan@abc.com");
@@ -363,7 +363,7 @@ describe("ingestion lock: known providers only, admins register and delete, quot
 
   it("a Prosegur-format Excel or one of our quotes is refused for ingestion", async () => {
     const pros = fs.readFileSync(path.resolve(process.cwd(), "samples/prosegur-451.xlsx"));
-    const name = "151026-1830-AYACUCHO-PROFESSIONAL TYRES S.A.C.-451.xlsx";
+    const name = "Cotizacion 451 Ayacucho - UB 1830.xlsx";
     client.media.set("m-pros", { data: pros, mimeType: XLSX_MIME, fileName: name });
     await bot.handle({ id: "wamid.p1", from: PHONE, timestamp: "1", type: "document", forwarded: false, media: { id: "m-pros", mimeType: XLSX_MIME, fileName: name, caption: "proveedor: JCH" } });
     expect(client.last()?.body).toBe("Esto parece una cotización, no una lista de precios, así que no la cargo. Escríbeme el pedido como texto (llantas con cantidad, cliente, correo…)");
@@ -404,10 +404,9 @@ describe("Prosegur quotes: profile, numbering, Excel, stored files, history", ()
   const docs = () => client.sent.filter((m) => m.kind === "document");
   const today = () => new Date().toISOString().slice(0, 10);
   const num = (n: number) => formatQuoteNumber(FMT, n, today());
-  const ddmmyy = () => {
-    const [y, m, d] = today().split("-");
-    return `${d}${m}${y.slice(2)}`;
-  };
+  /** The PDF's name ("Cotizacion 26 - 0451.pdf") and the Prosegur Excel's ("Cotizacion 451 Ayacucho - UB 1830.xlsx"). */
+  const pdfName = (n: number) => `Cotizacion ${today().slice(2, 4)} - ${String(n).padStart(4, "0")}.pdf`;
+  const xlsName = (n: number, unit = "Ayacucho", ub = "1830") => `Cotizacion ${n} ${unit} - UB ${ub}.xlsx`;
 
   beforeAll(() => {
     process.env.LLM_DISABLED = "1";
@@ -443,8 +442,8 @@ describe("Prosegur quotes: profile, numbering, Excel, stored files, history", ()
 
     await bot.handle(text("ok"));
     const [pdfDoc, xlsDoc] = docs();
-    expect(pdfDoc.fileName).toBe(`${num(451)}.pdf`); // "OCTUBRE 2026 - 451.pdf"
-    expect(xlsDoc.fileName).toBe(`${ddmmyy()}-1830-AYACUCHO-PROFESSIONAL TYRES S.A.C.-451.xlsx`);
+    expect(pdfDoc.fileName).toBe(pdfName(451)); // "Cotizacion 26 - 0451.pdf"
+    expect(xlsDoc.fileName).toBe(xlsName(451));
     expect(xlsDoc.caption).toBe(`Formato Prosegur · ${xlsDoc.fileName}`);
     expect(xlsDoc.mimeType).toBe(XLSX_MIME);
     const wb = new ExcelJS.Workbook();
@@ -497,7 +496,7 @@ describe("Prosegur quotes: profile, numbering, Excel, stored files, history", ()
     expect(body).toContain("📒 Datos de la última cotización a PROSEGUR SA");
     expect(body).toContain("unidad Ayacucho · UB 1830 · solicitante Johann Castañeda");
     await bot.handle(text("ok"));
-    expect(docs().slice(-2).map((d) => d.fileName)).toEqual([`${num(452)}.pdf`, `${ddmmyy()}-1830-AYACUCHO-PROFESSIONAL TYRES S.A.C.-452.xlsx`]);
+    expect(docs().slice(-2).map((d) => d.fileName)).toEqual([pdfName(452), xlsName(452)]);
   });
 
   it("a bare 'prosegur' gets a three-line guide and makes the next request Prosegur's", async () => {
@@ -520,7 +519,7 @@ describe("Prosegur quotes: profile, numbering, Excel, stored files, history", ()
     await bot.handle(text("Michelin 295/80R22.5 X Multi Z x2 para Transportes ABC, juan@abc.com"));
     expect((await store.getConversation(PHONE))?.profile).toBeUndefined();
     await bot.handle(text("ok"));
-    expect(docs().map((d) => d.fileName)).toEqual([`${num(16)}.pdf`]);
+    expect(docs().map((d) => d.fileName)).toEqual([pdfName(16)]);
   });
 
   it("renumbering a presented draft keeps the store consistent; 'archivo:' and 'nombre:' set names", async () => {
@@ -531,10 +530,10 @@ describe("Prosegur quotes: profile, numbering, Excel, stored files, history", ()
     expect(await store.getQuote(num(16))).toBeNull(); // the old draft is gone
     expect((await store.getQuote(num(460)))?.status).toBe("draft");
     expect((await store.getConversation(PHONE))?.quoteNumber).toBe(num(460));
-    expect(docs().slice(-2).map((d) => d.fileName)).toEqual([`${num(460)}.pdf`, `${ddmmyy()}-1830-AYACUCHO-PROFESSIONAL TYRES S.A.C.-460.xlsx`]);
+    expect(docs().slice(-2).map((d) => d.fileName)).toEqual([pdfName(460), xlsName(460)]);
 
     await bot.handle(text("archivo: Cotización Prosegur Ayacucho"));
-    expect(docs().slice(-2).map((d) => d.fileName)).toEqual(["Cotización Prosegur Ayacucho.pdf", `${ddmmyy()}-1830-AYACUCHO-PROFESSIONAL TYRES S.A.C.-460.xlsx`]);
+    expect(docs().slice(-2).map((d) => d.fileName)).toEqual(["Cotización Prosegur Ayacucho.pdf", xlsName(460)]);
     await bot.handle(text("archivo excel: Formato Ayacucho"));
     expect(docs().slice(-1)[0].fileName).toBe("Formato Ayacucho.xlsx");
     await bot.handle(text("nombre: PROSEGUR AYACUCHO 77"));
@@ -611,7 +610,7 @@ describe("Prosegur quotes: profile, numbering, Excel, stored files, history", ()
     await bot.handle(text("prosegur ayacucho 1830\n2 v99\n4 v89"));
     const replies = client.sent.slice(before);
     expect(replies.map((m) => m.kind)).toEqual(["document", "document", "text"]);
-    expect(replies.map((m) => m.fileName ?? "")).toEqual([`${num(17)}.pdf`, `${ddmmyy()}-1830-AYACUCHO-PROFESSIONAL TYRES S.A.C.-17.xlsx`, ""]);
+    expect(replies.map((m) => m.fileName ?? "")).toEqual([pdfName(17), xlsName(17), ""]);
     expect(replies[2].body).toBe(
       [
         "Prosegur · Ayacucho · UB 1830 · solicitante Johann Castañeda",
@@ -631,13 +630,13 @@ describe("Prosegur quotes: profile, numbering, Excel, stored files, history", ()
     expect(q).toMatchObject({ unit: "Ayacucho", ub: "1830", requester: "Johann Castañeda", customer: { company: "PROSEGUR SA", email: "compras@prosegur.com", attention: "Johann Castañeda", address: "Ayacucho" } }); // dirección = unidad when none was given
     await bot.handle(text("enviar"));
     expect(client.last()?.body).toBe(`Enviado ✔ Cotización ${num(17)} a compras@prosegur.com (PDF + Excel).`);
-    expect(emails[1].attachments.map((a) => a.filename)).toEqual([`${num(17)}.pdf`, `${ddmmyy()}-1830-AYACUCHO-PROFESSIONAL TYRES S.A.C.-17.xlsx`]);
+    expect(emails[1].attachments.map((a) => a.filename)).toEqual([pdfName(17), xlsName(17)]);
     expect((await store.getQuoteFiles(num(17))).map((f) => f.kind)).toEqual(["pdf", "xlsx"]);
 
     // the salesman's counter continues
     before = client.sent.length;
     await bot.handle(text("prosegur ayacucho 1830, 1 v99"));
-    expect(client.sent.slice(before).map((m) => m.fileName)).toEqual([`${num(18)}.pdf`, `${ddmmyy()}-1830-AYACUCHO-PROFESSIONAL TYRES S.A.C.-18.xlsx`, undefined]);
+    expect(client.sent.slice(before).map((m) => m.fileName)).toEqual([pdfName(18), xlsName(18), undefined]);
   });
 
   it("contract: solicitante and atención come from the last quote of the same unit; a new unit is asked once", async () => {
@@ -798,7 +797,7 @@ describe("Prosegur quotes: profile, numbering, Excel, stored files, history", ()
     // a unit the bot knows: the quote comes with the first item, the next ones are added to it
     await bot.handle(text("prosegur ayacucho 1830"));
     await bot.handle(text("2 v99"));
-    const files17 = [`${num(17)}.pdf`, `${ddmmyy()}-1830-AYACUCHO-PROFESSIONAL TYRES S.A.C.-17.xlsx`];
+    const files17 = [pdfName(17), xlsName(17)];
     expect(docs().slice(-2).map((d) => d.fileName)).toEqual(files17);
     await bot.handle(text("4 v89"));
     expect(docs().length).toBe(6);

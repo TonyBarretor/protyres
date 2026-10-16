@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import type { Settings } from "../settings";
 import { displayTotal, displayUnit } from "./build";
-import { PDF_MIME, pdfFileName } from "./files";
+import { PDF_MIME, withExtension } from "./files";
 import { fmtMoney } from "./pricing";
 import { findProfile, hasExcelFormat } from "./profiles";
 import type { EmailDraft, Quote } from "./types";
@@ -77,7 +77,7 @@ export async function sendQuoteEmail(quote: Quote, pdfOrAttachments: Buffer | Em
   const to = process.env.EMAIL_REDIRECT_TO || draft.to;
   if (!to) return { sent: false, error: "no recipient email" };
   const from = process.env.EMAIL_FROM || "Cotizaciones <onboarding@resend.dev>";
-  const attachments: EmailAttachment[] = Buffer.isBuffer(pdfOrAttachments) ? [{ filename: pdfFileName(quote), content: pdfOrAttachments, contentType: PDF_MIME }] : pdfOrAttachments;
+  const attachments: EmailAttachment[] = Buffer.isBuffer(pdfOrAttachments) ? [{ filename: withExtension(quote.files?.pdfName || quote.number, ".pdf"), content: pdfOrAttachments, contentType: PDF_MIME }] : pdfOrAttachments;
   if (!process.env.RESEND_API_KEY) {
     // dry run: keep a copy on disk (falls back to the temp dir on read-only deployments)
     const body = `From: ${from}\nTo: ${to}\nSubject: ${draft.subject}\n${attachments.map((a) => `Attachment: ${a.filename}\n`).join("")}\n${draft.body}\n`;

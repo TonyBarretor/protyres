@@ -25,7 +25,7 @@
       ],
       "excel": {
         "template": "config/templates/prosegur-cotizacion.xlsx",
-        "fileName": "{DDMMYY}-{UB}-{UNIDAD}-{PROVEEDOR}-{N}",
+        "fileName": "Cotizacion {N} {Unidad} - UB {UB}",
         "supplierName": "PROFESSIONAL TYRES S.A.C.",
         "supplierRuc": "20565716396"
       },

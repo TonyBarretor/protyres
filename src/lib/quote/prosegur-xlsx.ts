@@ -18,7 +18,7 @@ import ExcelJS from "exceljs";
 import sharp from "sharp";
 import type { CustomerProfile, Settings } from "../settings";
 import { quoteSerial } from "./build";
-import { cleanFileName, withExtension } from "./files";
+import { cleanFileName, fileNameFromPattern, withExtension } from "./files";
 import { r2 } from "./pricing";
 import type { Quote, QuoteItem } from "./types";
 
@@ -35,16 +35,7 @@ export function prosegurTooManyItems(count: number): string {
 /** "151026-1830-AYACUCHO-PROFESSIONAL TYRES S.A.C.-451.xlsx" (the profile's pattern), or the name set with "archivo excel: …". */
 export function prosegurFileName(quote: Quote, settings: Settings, profile: CustomerProfile): string {
   if (quote.files?.xlsxName) return withExtension(quote.files.xlsxName, ".xlsx");
-  const [y, m, d] = quote.date.split("-");
-  const serial = quoteSerial(quote.number, settings.quote.numberFormat);
-  const name = (profile.excel?.fileName ?? "{DDMMYY}-{UB}-{UNIDAD}-{PROVEEDOR}-{N}")
-    .replace("{DDMMYY}", `${d}${m}${y.slice(2)}`)
-    .replace("{UB}", quote.ub ?? quote.items.find((i) => i.ub)?.ub ?? "")
-    .replace("{UNIDAD}", (quote.unit ?? "").toUpperCase())
-    .replace("{PROVEEDOR}", supplierName(settings, profile))
-    .replace("{N}", serial !== undefined ? String(serial) : quote.number)
-    .replace(/-{2,}/g, "-") // a missing part leaves no empty slot
-    .replace(/^-+|-+$/g, "");
+  const name = fileNameFromPattern(profile.excel?.fileName ?? "Cotizacion {N} {Unidad} - UB {UB}", quote, settings, { PROVEEDOR: supplierName(settings, profile) });
   return withExtension(cleanFileName(name), ".xlsx");
 }
 

@@ -16,13 +16,22 @@
     "currency": "USD",
     "taxPct": 18,
     "taxLabel": "IGV",
-    "own": { "pricesIncludeTax": false, "maxDiscountPct": 20, "defaultDiscountPct": 0 },
-    "provider": { "marginPct": 15, "pricesIncludeTax": false },
+    "own": {
+      "pricesIncludeTax": false,
+      "maxDiscountPct": 20,
+      "defaultDiscountPct": 0
+    },
+    "provider": {
+      "marginPct": 15,
+      "pricesIncludeTax": false
+    },
     "showPricesWithTax": false,
     "roundTo": 0.01,
     "quoteValidityDays": 7,
     "stalePriceDays": 30,
-    "exchangeRates": { "PEN": 3.4 }
+    "exchangeRates": {
+      "PEN": 3.4
+    }
   },
   "quote": {
     "language": "es",
@@ -67,7 +76,8 @@
       "Mitas": "REP. CHECA",
       "Petlas": "TURQUÍA",
       "Starmaxx": "TURQUÍA"
-    }
+    },
+    "pdfFileName": "Cotizacion {YY} - {NNNN}"
   },
   "salespeople": {
     "default": "51955344340",

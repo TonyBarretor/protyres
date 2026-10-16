@@ -56,6 +56,8 @@ const QuoteSchema = z.object({
   numberFormat: z.string().default("{MES} {YYYY} - {NNN}"),
   /** First counter value used when the store has none yet. */
   counterStart: z.number().int().default(1),
+  /** Name of the PDF sent to the customer; tokens: {N} {NNN} {NNNN} {YY} {YYYY} {MES} {Mes} {NUMERO} {CLIENTE} {UNIDAD} {Unidad} {UB}. */
+  pdfFileName: z.string().default("Cotizacion {YY} - {NNNN}"),
   validityDays: z.number().default(7),
   deliveryTerm: z.string().default(""),
   paymentType: z.string().default(""),

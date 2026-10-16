@@ -115,7 +115,9 @@ nombre no coincide con ninguna regla: `--provider "Nombre" --kind provider|own|s
 `company` (lo que sale en la cotización), `email` (vacío = el del pedido o el de la última cotización), `defaults`
 (pago, plazo, entrega, validez, con/sin IGV cuando el vendedor no los escribe), `required` (lo que el bot pide antes
 de mostrar opciones: `unit`, `ub`, `requester`) y `excel` (plantilla del cliente, patrón del nombre del archivo
-`{DDMMYY}-{UB}-{UNIDAD}-{PROVEEDOR}-{N}` y los datos del proveedor). La plantilla de Prosegur está en
+`Cotizacion {N} {Unidad} - UB {UB}` — tokens: `{N}` `{NNNN}` `{YY}` `{YYYY}` `{MES}` `{NUMERO}` `{CLIENTE}` `{UNIDAD}`
+`{Unidad}` `{UB}` `{DDMMYY}` `{PROVEEDOR}` — y los datos del proveedor). El nombre del PDF sale de
+`quote.pdfFileName` en `config/pilot.json` (`Cotizacion {YY} - {NNNN}` → "Cotizacion 26 - 0456.pdf"). La plantilla de Prosegur está en
 `config/templates/prosegur-cotizacion.xlsx` (su "Formato Proveedores" oficial, FCRP 31/07/2023).
 
 Variables de entorno: copiar `.env.example` a `.env`. Nada es obligatorio para el modo local.
@@ -163,7 +165,7 @@ Variables de entorno: copiar `.env.example` a `.env`. Nada es obligatorio para e
 | `atención: Sra. X` · `dirección: Lima` · `pago: letras 30 días` · `plazo: 45 días` · `entrega: 48 hrs post OC` · `validez: 5 días` · `tc 3.4` | datos de las cajas de la cotización |
 | `unidad: Ayacucho` · `ub: 1830` (o `UB 1830` en la línea de la llanta) · `solicitante: Johann Castañeda` | unidad atendida, UB y solicitante (Prosegur) |
 | `número 451` (`numero`, `nro`, `n°`) · `número 451 confirmar` · `nombre: TEXTO` | fija el número ("OCTUBRE 2026 - 451", el siguiente del vendedor será 452); si ya existe pide confirmar; `nombre:` pone el número tal cual sin tocar el contador. En una cotización ya mostrada la renumera (solo borradores) |
-| `archivo: Nombre` · `archivo excel: Nombre` | nombre del PDF (por defecto "OCTUBRE 2026 - 451.pdf") y del Excel del cliente |
+| `archivo: Nombre` · `archivo excel: Nombre` | nombre del PDF (por defecto "Cotizacion 26 - 0456.pdf") y del Excel del cliente ("Cotizacion 456 Ayacucho - UB 1830.xlsx") |
 | `enviar` | manda el correo con el PDF (y el Excel de Prosegur); los archivos enviados quedan guardados |
 | `cotizaciones` · `cotizaciones Prosegur` | tus últimas 10 / las últimas 10 de esa empresa (número · fecha · total · estado · ítems), en cualquier momento |
 | `reenviar 451` · `archivos 451` · `pdf 451` (o el número completo) | te reenvía los archivos guardados (o los genera de nuevo) |
@@ -179,8 +181,8 @@ Variables de entorno: copiar `.env.example` a `.env`. Nada es obligatorio para e
   30 días, 48 HRS POST OC, validez 7 días, sin IGV) salvo lo que el vendedor escriba, y pide **unidad**, **UB** y
   **solicitante** si faltan (`ok` sigue sin ellos). `prosegur` solo → guía de 3 líneas.
 - Llegan dos documentos (tras `ok` si hubo opciones; con ítems de contrato, de inmediato): el PDF 360° (MEDIDA
-  "215/75R17.5 18PR UB 1830") y el Excel "Formato Proveedores" lleno (`151026-1830-AYACUCHO-PROFESSIONAL TYRES
-  S.A.C.-451.xlsx`, precios sin IGV, máximo 11 ítems). `enviar` adjunta ambos al correo.
+  "215/75R17.5 18PR UB 1830"; una sola foto por marca+modelo aunque haya varias UBs) y el Excel "Formato Proveedores"
+  lleno (`Cotizacion 451 Ayacucho - UB 1830.xlsx`, precios sin IGV, máximo 11 ítems). `enviar` adjunta ambos al correo.
 - La próxima cotización a Prosegur reutiliza solicitante, atención, UB y correo de la última de **esa unidad** (sin
   unidad, de la última a Prosegur); se cambian igual.
 - Ejemplo y verificación visual del Excel: `npx tsx --tsconfig tsconfig.cli.json scripts/prosegur-sample.ts out`

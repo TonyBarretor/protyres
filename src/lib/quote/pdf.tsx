@@ -97,7 +97,17 @@ export function QuoteDocument({ quote, settings, photos = {} }: { quote: Quote; 
   const rows = [...quote.items];
   const w = (f: number) => ({ width: `${f * 100}%` });
   const sp = quote.salesperson;
-  const photoItems = quote.items.map((it, i) => ({ it, i, a: photos[i] })).filter((x) => x.a?.photo || x.a?.sheet);
+  // one picture per brand + model: the same tyre quoted for two UBs / plates shows once ("una foto sufi")
+  const seenPhoto = new Set<string>();
+  const photoItems = quote.items
+    .map((it, i) => ({ it, i, a: photos[i] }))
+    .filter((x) => x.a?.photo || x.a?.sheet)
+    .filter((x) => {
+      const k = `${x.it.brand}|${x.it.model}`.toLowerCase().replace(/[^a-z0-9|]/g, "");
+      if (seenPhoto.has(k)) return false;
+      seenPhoto.add(k);
+      return true;
+    });
   // One page: the items table always shows at least 6 rows, or 3 when a photo strip follows. The strip gets whatever
   // height is left above the footer (≈ ROOM points for rows + photos); pictures shrink down to MIN_IMG before we give up
   // and move them to an annex page instead.

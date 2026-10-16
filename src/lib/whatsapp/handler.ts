@@ -963,7 +963,7 @@ export class BotHandler {
         ? `\n📷 Fotos: ${quote.items.length - noPhoto.length}/${quote.items.length}${noPhoto.length ? ` · sin foto: ${noPhoto.map((it) => [it.brand, it.model].filter(Boolean).join(" ") || it.description).join(", ")} → mándame la imagen con el texto *foto ${[noPhoto[0].brand, noPhoto[0].model].filter(Boolean).join(" ")}*${webSearchAvailable() ? ` o escribe *foto buscar ${quote.items.indexOf(noPhoto[0]) + 1}*` : ""}` : ""}`
         : "";
     // a profile's quote keeps its texts short (the salesman found them too long): no photo hints in the caption
-    await this.client.sendDocument(from, pdf, pdfFileName(quote), `Cotización ${quote.number} · ${summary} · Total ${fmtMoney(displayTotal(quote), quote.currency)} (${taxNote})${profile ? "" : photoNote}`, PDF_MIME);
+    await this.client.sendDocument(from, pdf, pdfFileName(quote, this.settings), `Cotización ${quote.number} · ${summary} · Total ${fmtMoney(displayTotal(quote), quote.currency)} (${taxNote})${profile ? "" : photoNote}`, PDF_MIME);
     if (xlsx && profile) await this.client.sendDocument(from, xlsx.buffer, xlsx.fileName, `Formato ${profile.name} · ${xlsx.fileName}`, XLSX_MIME);
     if (!quote.customer.email) {
       await this.store.setConversation(from, { phone: from, step: "need_email", quoteNumber: quote.number, updatedAt: now() });
@@ -981,7 +981,7 @@ export class BotHandler {
       missing.length ? `⚠️ Falta en el PDF: ${missing.join(", ")}` : "",
       excelMissing.length ? `⚠️ Falta en el Excel: ${excelMissing.map((f) => `*${FIELD_LABEL[f]}: …*`).join(", ")}` : "",
       `📋 ${terms} _(cambia con *pago: letras*, *plazo: 45 días*, *entrega: inmediata*)_`,
-      xlsx ? `📎 Al *enviar* van los dos archivos adjuntos: *${pdfFileName(quote)}* y *${xlsx.fileName}*.` : "",
+      xlsx ? `📎 Al *enviar* van los dos archivos adjuntos: *${pdfFileName(quote, this.settings)}* y *${xlsx.fileName}*.` : "",
     ]
       .filter(Boolean)
       .join("\n");
@@ -1255,7 +1255,7 @@ export class BotHandler {
 
   /** The documents of a quote: its PDF, plus the customer's Excel format when its profile has one. */
   private async renderQuoteFiles(quote: Quote, opts: { photos?: boolean } = {}): Promise<EmailAttachment[]> {
-    const files: EmailAttachment[] = [{ filename: pdfFileName(quote), content: await renderQuotePdf(quote, this.settings, opts.photos === false ? { photos: false } : {}), contentType: PDF_MIME }];
+    const files: EmailAttachment[] = [{ filename: pdfFileName(quote, this.settings), content: await renderQuotePdf(quote, this.settings, opts.photos === false ? { photos: false } : {}), contentType: PDF_MIME }];
     const profile = findProfile(this.settings, quote.customerProfile);
     if (hasExcelFormat(profile)) {
       const x = await renderProsegurXlsx(quote, this.settings, profile);

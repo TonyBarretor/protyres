@@ -43,11 +43,11 @@ solicitante: Johann Castañeda`,
     );
     expect(quote.unit).toBe("Ayacucho");
     const { buffer, fileName } = await renderProsegurXlsx(quote, settings, profile);
-    expect(fileName).toBe("151026-1830-AYACUCHO-PROFESSIONAL TYRES S.A.C.-451.xlsx");
+    expect(fileName).toBe("Cotizacion 451 Ayacucho - UB 1830 y 1900.xlsx"); // quote UB + the item's own
     const ws = await reload(buffer);
     const v = (a: string) => ws.getCell(a).value;
 
-    expect(v("E1")).toBe("Nombre de Archivo: 151026-1830-AYACUCHO-PROFESSIONAL TYRES S.A.C.-451");
+    expect(v("E1")).toBe("Nombre de Archivo: Cotizacion 451 Ayacucho - UB 1830 y 1900");
     expect(v("C5")).toBe("PROFESSIONAL TYRES S.A.C.");
     expect(v("C6")).toBe(20565716396);
     expect(v("G5")).toBe(451);
@@ -76,14 +76,14 @@ solicitante: Johann Castañeda`,
     expect(ws.getColumn("F").width).toBeCloseTo(51.43, 1);
   });
 
-  it("names the file after the quote date, UB, unit and number; the salesman can override it", () => {
+  it("names the file after the quote number, unit and UB; the salesman can override it", () => {
     const quote = quoteOf("215/75R17.5 VALOR 99 x2 UB 2001\nunidad: Cusco", [100], "NOVIEMBRE 2026 - 018");
     quote.date = "2026-11-03";
-    expect(prosegurFileName(quote, settings, profile)).toBe("031126-2001-CUSCO-PROFESSIONAL TYRES S.A.C.-18.xlsx"); // no quote UB: the first item's
+    expect(prosegurFileName(quote, settings, profile)).toBe("Cotizacion 18 Cusco - UB 2001.xlsx"); // no quote UB: the item's
     quote.files = { xlsxName: "Cotizacion Prosegur Cusco" };
     expect(prosegurFileName(quote, settings, profile)).toBe("Cotizacion Prosegur Cusco.xlsx");
     const noUnit = quoteOf("215/75R17.5 VALOR 99 x2", [100]);
-    expect(prosegurFileName(noUnit, settings, profile)).toBe("151026-PROFESSIONAL TYRES S.A.C.-451.xlsx"); // missing parts leave no "--"
+    expect(prosegurFileName(noUnit, settings, profile)).toBe("Cotizacion 451.xlsx"); // missing parts leave no dangling " - UB"
   });
 
   it("Sistema and Descripción for tyres, rims and accessories", () => {
