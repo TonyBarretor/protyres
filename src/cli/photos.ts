@@ -6,6 +6,7 @@
  *   npm run photos -- --source Steel
  *   npm run photos -- --woocommerce https://tienda.com --provider "Nombre"   any other WooCommerce shop
  *   npm run photos -- --stats                            how many photos the library has
+ *   npm run photos -- --find marshal                     which photos the library has for a brand / model
  *   npm run photos -- --add foto.jpg --brand Fenixway --model "Valor 99"   one picture from disk
  *   npm run photos -- --dir carpeta                      every "Marca - Modelo.jpg" of a folder
  *
@@ -38,6 +39,7 @@ const { values } = parseArgs({
     brand: { type: "string" },
     model: { type: "string" },
     dir: { type: "string" },
+    find: { type: "string" },
   },
 });
 
@@ -48,6 +50,13 @@ async function main() {
     if (values.stats) {
       const keys = await store.photoKeys();
       console.log(`Fotos en la biblioteca: ${keys.size}`);
+      return;
+    }
+    if (values.find) {
+      const q = values.find.toLowerCase().replace(/[^a-z0-9|]/g, "");
+      const keys = [...(await store.photoKeys())].filter((k) => k.includes(q)).sort();
+      console.log(keys.length ? keys.map((k) => `  ${k.replace("|", " · ")}`).join("\n") : `No hay fotos que contengan "${values.find}".`);
+      console.log(`${keys.length} foto(s)`);
       return;
     }
     if (values.add) {
