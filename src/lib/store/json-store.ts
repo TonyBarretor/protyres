@@ -128,7 +128,11 @@ export class JsonStore implements PriceStore {
   }
 
   getPhoto(brand: string, model: string): Promise<ProductPhoto | null> {
-    return this.run(() => this.data.photos[photoKey(brand, model)] ?? null);
+    return this.getPhotoByKey(photoKey(brand, model));
+  }
+
+  getPhotoByKey(key: string): Promise<ProductPhoto | null> {
+    return this.run(() => this.data.photos[key] ?? null);
   }
 
   setPhoto(photo: ProductPhoto): Promise<void> {

@@ -188,8 +188,12 @@ export class PgStore implements PriceStore {
     return rows.map(toRow);
   }
 
-  async getPhoto(brand: string, model: string): Promise<ProductPhoto | null> {
-    const [row] = await this.db.select().from(schema.photos).where(eq(schema.photos.key, photoKey(brand, model))).limit(1);
+  getPhoto(brand: string, model: string): Promise<ProductPhoto | null> {
+    return this.getPhotoByKey(photoKey(brand, model));
+  }
+
+  async getPhotoByKey(key: string): Promise<ProductPhoto | null> {
+    const [row] = await this.db.select().from(schema.photos).where(eq(schema.photos.key, key)).limit(1);
     if (!row) return null;
     return {
       key: row.key,

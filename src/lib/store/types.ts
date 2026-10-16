@@ -166,6 +166,8 @@ export interface PriceStore {
   /** Price rows (any provider) of this brand+model that carry a photo URL. */
   rowsWithPhoto(brand: string, model: string): Promise<PriceRow[]>;
   getPhoto(brand: string, model: string): Promise<ProductPhoto | null>;
+  /** A saved photo by its key ("brand|model", see photoKey). */
+  getPhotoByKey(key: string): Promise<ProductPhoto | null>;
   setPhoto(photo: ProductPhoto): Promise<void>;
   /** Keys of every stored photo (to skip downloads already done). */
   photoKeys(): Promise<Set<string>>;

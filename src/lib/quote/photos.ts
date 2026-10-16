@@ -22,10 +22,35 @@ export async function findPhoto(store: PriceStore, brand: string, model: string)
   if (!brand || !model) return null;
   const saved = await store.getPhoto(brand, model);
   if (saved) return fromSaved(saved);
+  const near = await nearestPhotoKey(store, brand, model);
+  if (near) {
+    const p = await store.getPhotoByKey(near);
+    if (p) return fromSaved(p);
+  }
   const rows = await store.rowsWithPhoto(brand, model);
   const row = rows.find((r) => r.photoUrl);
   if (row) return { url: row.photoUrl, sheetUrl: row.sheetUrl, source: row.provider };
   return null;
+}
+
+/**
+ * The same brand under a longer or shorter model name: "Marshal KL71" finds the library's "Marshal Road Venture KL71 M/T",
+ * "Fenixway Valor 96" finds "Valor 96 TCF". Needs at least 4 characters of model to avoid "AT"-style false hits; the
+ * closest (shortest) key wins.
+ */
+export async function nearestPhotoKey(store: PriceStore, brand: string, model: string): Promise<string | null> {
+  const want = photoKey(brand, model);
+  const bar = want.indexOf("|");
+  const b = want.slice(0, bar + 1);
+  const m = want.slice(bar + 1);
+  if (!b || m.length < 4) return null;
+  const keys = [...(await store.photoKeys())].filter((k) => k.startsWith(b) && k !== want);
+  const hits = keys.filter((k) => {
+    const km = k.slice(b.length);
+    return km.length >= 4 && (km.includes(m) || m.includes(km));
+  });
+  if (!hits.length) return null;
+  return hits.sort((x, y) => Math.abs(x.length - want.length) - Math.abs(y.length - want.length))[0];
 }
 
 function fromSaved(p: ProductPhoto): ResolvedPhoto {
