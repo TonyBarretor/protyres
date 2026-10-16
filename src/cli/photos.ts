@@ -6,6 +6,8 @@
  *   npm run photos -- --source Steel
  *   npm run photos -- --woocommerce https://tienda.com --provider "Nombre"   any other WooCommerce shop
  *   npm run photos -- --stats                            how many photos the library has
+ *   npm run photos -- --add foto.jpg --brand Fenixway --model "Valor 99"   one picture from disk
+ *   npm run photos -- --dir carpeta                      every "Marca - Modelo.jpg" of a folder
  *
  * Options: --force (re-download existing)  --limit N  --dry
  *          --browser   download through a real Chrome window from the start (sites behind Cloudflare, e.g. JCH).
@@ -16,7 +18,7 @@
  */
 import "./env";
 import { parseArgs } from "node:util";
-import { importPhotos, loadPhotoSources, type PhotoSource } from "../lib/photos/library";
+import { importPhotoDir, importPhotoFile, importPhotos, loadPhotoSources, type PhotoSource } from "../lib/photos/library";
 import { getStore } from "../lib/store";
 
 const { values } = parseArgs({
@@ -32,6 +34,10 @@ const { values } = parseArgs({
     browser: { type: "boolean", default: false },
     "no-browser": { type: "boolean", default: false },
     headless: { type: "boolean", default: false },
+    add: { type: "string" },
+    brand: { type: "string" },
+    model: { type: "string" },
+    dir: { type: "string" },
   },
 });
 
@@ -42,6 +48,17 @@ async function main() {
     if (values.stats) {
       const keys = await store.photoKeys();
       console.log(`Fotos en la biblioteca: ${keys.size}`);
+      return;
+    }
+    if (values.add) {
+      if (!values.brand || !values.model) throw new Error("indica --brand y --model para la foto");
+      const r = await importPhotoFile(store, values.add, values.brand, values.model, { image: cfg.image, force: values.force });
+      console.log(r === "stored" ? `✓ ${values.brand} ${values.model} guardada` : `= ${values.brand} ${values.model} ya existía (usa --force para reemplazar)`);
+      return;
+    }
+    if (values.dir) {
+      const r = await importPhotoDir(store, values.dir, { image: cfg.image, force: values.force, log: (l) => console.log(l) });
+      console.log(`guardadas: ${r.stored} · ya existían: ${r.exists}${r.skipped.length ? ` · sin "Marca - Modelo" en el nombre: ${r.skipped.join(", ")}` : ""}`);
       return;
     }
     let sources: PhotoSource[] = [];

@@ -82,6 +82,45 @@ export async function fetchAndShrink(url: string, image: { maxPx: number; jpegQu
   }
 }
 
+/** Shrink an image file (from disk) to the library's JPEG size. */
+export async function shrinkFile(file: string, image: { maxPx: number; jpegQuality: number }): Promise<Buffer> {
+  const buf = fs.readFileSync(file);
+  return sharp(buf).rotate().resize({ width: image.maxPx, height: image.maxPx, fit: "inside", withoutEnlargement: true }).flatten({ background: "#ffffff" }).jpeg({ quality: image.jpegQuality }).toBuffer();
+}
+
+/** Save one picture from disk under brand + model (a photo the salesman or the client already has). */
+export async function importPhotoFile(store: PriceStore, file: string, brand: string, model: string, opts: { image?: { maxPx: number; jpegQuality: number }; force?: boolean } = {}): Promise<"stored" | "exists"> {
+  const key = photoKey(brand, model);
+  if (!opts.force && (await store.photoKeys()).has(key)) return "exists";
+  const data = await shrinkFile(file, opts.image ?? { maxPx: 600, jpegQuality: 80 });
+  await store.setPhoto({ key, brand, model, data: data.toString("base64"), mimeType: "image/jpeg", source: "manual", origin: path.basename(file), createdAt: new Date().toISOString() });
+  return "stored";
+}
+
+/**
+ * Every image of a folder named "Marca - Modelo.jpg" (also "Marca_Modelo.jpg"): one photo each.
+ * Files whose name has no separator are skipped and reported.
+ */
+export async function importPhotoDir(store: PriceStore, dir: string, opts: { image?: { maxPx: number; jpegQuality: number }; force?: boolean; log?: (line: string) => void } = {}): Promise<{ stored: number; exists: number; skipped: string[] }> {
+  const log = opts.log ?? (() => undefined);
+  const out = { stored: 0, exists: 0, skipped: [] as string[] };
+  for (const name of fs.readdirSync(dir).sort()) {
+    if (!/\.(jpe?g|png|webp)$/i.test(name)) continue;
+    const base = name.replace(/\.[^.]+$/, "");
+    const m = base.match(/^\s*(.+?)\s*(?:-|_|–)\s*(.+?)\s*$/);
+    if (!m) {
+      out.skipped.push(name);
+      continue;
+    }
+    const [, brand, model] = m;
+    const r = await importPhotoFile(store, path.join(dir, name), brand.trim(), model.trim(), opts);
+    if (r === "stored") out.stored++;
+    else out.exists++;
+    log(`  ${r === "stored" ? "✓" : "="} ${brand.trim()} ${model.trim()} ← ${name}${r === "exists" ? " (ya existía; --force para reemplazar)" : ""}`);
+  }
+  return out;
+}
+
 /** Brand + model from a shop product name ("LLANTA GT RADIAL ADVENTURO AT3 P265/65 R18"). */
 export function brandModelFromName(name: string): { brand: string; model: string } | null {
   const clean = name.replace(/^\s*(llanta|neum[aá]tico|nt?co)\s*:?\s*/i, "").trim();
