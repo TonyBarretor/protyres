@@ -2,12 +2,27 @@
   "customers": [
     {
       "name": "Prosegur",
-      "aliases": ["prosegur", "prosegur sa", "prosegur s.a.", "prosegur s.a"],
+      "aliases": [
+        "prosegur",
+        "prosegur sa",
+        "prosegur s.a.",
+        "prosegur s.a"
+      ],
       "company": "PROSEGUR SA",
       "email": "",
       "format": "prosegur",
-      "defaults": { "paymentType": "FACTURA", "paymentTerm": "30 días", "deliveryTerm": "48 HRS POST OC", "validityDays": 7, "pricesIncludeTax": false },
-      "required": ["unit", "ub", "requester"],
+      "defaults": {
+        "paymentType": "FACTURA",
+        "paymentTerm": "30 días",
+        "deliveryTerm": "48 HRS POST OC",
+        "validityDays": 7,
+        "pricesIncludeTax": false
+      },
+      "required": [
+        "unit",
+        "ub",
+        "requester"
+      ],
       "excel": {
         "template": "config/templates/prosegur-cotizacion.xlsx",
         "fileName": "{DDMMYY}-{UB}-{UNIDAD}-{PROVEEDOR}-{N}",
@@ -19,9 +34,63 @@
         "size": "215/75R17.5",
         "ply": 18,
         "items": [
-          { "id": "v99", "aliases": ["v99", "v 99", "valor 99", "mixta", "mixt"], "brand": "Fenixway", "model": "Valor 99", "application": "MIXT", "price": 123.17 },
-          { "id": "v89", "aliases": ["v89", "v 89", "valor 89", "posterior", "post", "tracción", "traccion"], "brand": "Fenixway", "model": "Valor 89", "application": "POST", "price": 126.42 },
-          { "id": "f77", "aliases": ["f77", "f 77", "flama 77"], "brand": "Fenixway", "model": "Flama 77", "application": null, "price": 116.34 }
+          {
+            "id": "v99",
+            "aliases": [
+              "v99",
+              "v 99",
+              "valor 99",
+              "mixta",
+              "mixt"
+            ],
+            "brand": "Fenixway",
+            "model": "Valor 99",
+            "application": "MIXT",
+            "price": 123.17
+          },
+          {
+            "id": "v89",
+            "aliases": [
+              "v89",
+              "v 89",
+              "valor 89",
+              "posterior",
+              "post",
+              "tracción",
+              "traccion"
+            ],
+            "brand": "Fenixway",
+            "model": "Valor 89",
+            "application": "POST",
+            "price": 126.42
+          },
+          {
+            "id": "f77",
+            "aliases": [
+              "f77",
+              "f 77",
+              "flama 77"
+            ],
+            "brand": "Fenixway",
+            "model": "Flama 77",
+            "application": null,
+            "price": 116.34
+          },
+          {
+            "id": "kl71",
+            "aliases": [
+              "kl71",
+              "kl 71",
+              "marshal",
+              "marshal kl71"
+            ],
+            "brand": "Marshal",
+            "model": "KL71",
+            "size": "215/75R15",
+            "ply": 8,
+            "application": null,
+            "price": 149.81
+          }
         ]
       }
     }

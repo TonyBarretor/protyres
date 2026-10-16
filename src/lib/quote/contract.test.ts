@@ -24,12 +24,13 @@ function read(text: string): QuoteRequest {
 const codes = (r: QuoteRequest) => r.lines.map((l) => [l.contract?.id ?? null, l.quantity]);
 
 describe("Prosegur contract: config and DB rows", () => {
-  it("customers.json has the 3 contract items; the DB wins per id (field by field) and adds items", () => {
+  it("customers.json has the 4 contract items; the DB wins per id (field by field) and adds items", () => {
     expect(contract.note).toBe("Contrato Prosegur 2 años · precios sin IGV");
     expect(contract.items.map(contractItemLabel)).toEqual([
       "v99 · Fenixway Valor 99 · 215/75R17.5 18PR · MIXT · US$ 123.17",
       "v89 · Fenixway Valor 89 · 215/75R17.5 18PR · POST · US$ 126.42",
       "f77 · Fenixway Flama 77 · 215/75R17.5 18PR · sin aplicación · US$ 116.34",
+      "kl71 · Marshal KL71 · 215/75R15 8PR · sin aplicación · US$ 149.81",
     ]);
     const merged = resolveContract(prosegur, [
       { id: "V99", price: 125.5, updatedBy: "18605180534" }, // only the price stored: the rest is the config's
@@ -41,6 +42,7 @@ describe("Prosegur contract: config and DB rows", () => {
       ["v99", 125.5, "MIXT", "db", true],
       ["v89", 126.42, "POST", "config", true],
       ["f77", 116.34, "POST", "db", true],
+      ["kl71", 149.81, null, "config", true],
       ["f66", 118, "POST", "db", false],
     ]);
     expect(merged.items[0]).toMatchObject({ brand: "Fenixway", model: "Valor 99", size: "215/75R17.5", ply: 18, aliases: ["v99", "v 99", "valor 99", "mixta", "mixt"], updatedBy: "18605180534" });
@@ -192,7 +194,7 @@ describe("Prosegur shorthand: header and contract lines", () => {
     const guide = profileGuide(prosegur, contract.items.map((i) => i.id));
     expect(guide.split("\n")).toEqual([
       "Primera línea: *prosegur ayacucho 1830* (unidad y UB)",
-      "Debajo, una llanta por línea: *2 v99*, *4 v89* (códigos: v99, v89, f77)",
+      "Debajo, una llanta por línea: *2 v99*, *4 v89* (códigos: v99, v89, f77, kl71)",
       "Te mando PDF + Excel; revisa y responde *enviar*.",
     ]);
   });

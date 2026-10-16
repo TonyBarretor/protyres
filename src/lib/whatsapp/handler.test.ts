@@ -628,7 +628,7 @@ describe("Prosegur quotes: profile, numbering, Excel, stored files, history", ()
       ["contract", "contrato", "v99", 123.17, 123.17, 0, "MIXT", "215/75R17.5 18PR FENIXWAY VALOR 99"],
       ["contract", "contrato", "v89", 126.42, 126.42, 0, "POST", "215/75R17.5 18PR FENIXWAY VALOR 89"],
     ]);
-    expect(q).toMatchObject({ unit: "Ayacucho", ub: "1830", requester: "Johann Castañeda", customer: { company: "PROSEGUR SA", email: "compras@prosegur.com", attention: "Johann Castañeda" } });
+    expect(q).toMatchObject({ unit: "Ayacucho", ub: "1830", requester: "Johann Castañeda", customer: { company: "PROSEGUR SA", email: "compras@prosegur.com", attention: "Johann Castañeda", address: "Ayacucho" } }); // dirección = unidad when none was given
     await bot.handle(text("enviar"));
     expect(client.last()?.body).toBe(`Enviado ✔ Cotización ${num(17)} a compras@prosegur.com (PDF + Excel).`);
     expect(emails[1].attachments.map((a) => a.filename)).toEqual([`${num(17)}.pdf`, `${ddmmyy()}-1830-AYACUCHO-PROFESSIONAL TYRES S.A.C.-17.xlsx`]);
@@ -701,6 +701,7 @@ describe("Prosegur quotes: profile, numbering, Excel, stored files, history", ()
           "v99 · Fenixway Valor 99 · 215/75R17.5 18PR · MIXT · US$ 123.17",
           "v89 · Fenixway Valor 89 · 215/75R17.5 18PR · POST · US$ 126.42",
           "f77 · Fenixway Flama 77 · 215/75R17.5 18PR · sin aplicación · US$ 116.34",
+          "kl71 · Marshal KL71 · 215/75R15 8PR · sin aplicación · US$ 149.81",
         ].join("\n"),
       );
       await bot.handle(text("contrato prosegur v99 125.50"));
@@ -718,7 +719,7 @@ describe("Prosegur quotes: profile, numbering, Excel, stored files, history", ()
       await bot.handle(admin("contrato prosegur nuevo: f66 = Fenixway Flama 66 215/75R17.5 18PR POST 118.00"));
       expect(client.last()?.body).toBe("✅ Agregué en el contrato de Prosegur: f66 · Fenixway Flama 66 · 215/75R17.5 18PR · POST · US$ 118.00");
       await bot.handle(admin("contrato prosegur v100 99"));
-      expect(client.last()?.body).toBe("No hay ningún ítem *v100* en el contrato de Prosegur (ítems: v99, v89, f77, f66).");
+      expect(client.last()?.body).toBe("No hay ningún ítem *v100* en el contrato de Prosegur (ítems: v99, v89, f77, kl71, f66).");
 
       // the next quote uses them (the salesman is not an admin)
       await bot.handle(text("prosegur ayacucho 1830\n2 v99\n1 flama 66\n1 f77\nsolicitante: Johann\ncorreo compras@prosegur.com"));

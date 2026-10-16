@@ -186,7 +186,8 @@ export function buildQuote(params: {
       ref: req.customerRef,
       // without "atención:", the contact named next to the company, else the requester ("solicitante:", Prosegur)
       attention: req.attention ?? (req.customerCompany && req.customerName ? req.customerName : undefined) ?? req.requester,
-      address: req.address,
+      // without "dirección:", the unit served ("unidad: Ayacucho", Prosegur) is the address printed on the quote
+      address: req.address ?? req.unit,
     },
     items: params.items,
     subtotal: t.subtotal,
