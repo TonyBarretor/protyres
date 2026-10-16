@@ -105,4 +105,30 @@ export const quoteFiles = pgTable(
   (t) => [primaryKey({ columns: [t.quoteNumber, t.kind] })],
 );
 
+/**
+ * Contract prices changed from WhatsApp by an admin ("contrato prosegur v99 125.50") or learnt by the bot (the
+ * APLICACIÓN of an item): they override config/customers.json per item id (empty columns keep the config's value).
+ */
+export const contractPrices = pgTable(
+  "contract_prices",
+  {
+    /** customer profile id ("prosegur") */
+    customer: text("customer").notNull(),
+    /** "v99" */
+    itemId: text("item_id").notNull(),
+    brand: text("brand"),
+    model: text("model"),
+    size: text("size"),
+    ply: integer("ply"),
+    application: text("application"),
+    price: numeric("price", { precision: 12, scale: 2 }),
+    currency: text("currency").default("USD"),
+    /** JSON array of the ways the salesman writes the item ("v99", "valor 99", "mixta") */
+    aliases: text("aliases"),
+    updatedBy: text("updated_by"),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow(),
+  },
+  (t) => [primaryKey({ columns: [t.customer, t.itemId] })],
+);
+
 export const _pk = primaryKey;

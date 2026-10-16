@@ -145,7 +145,8 @@ Variables de entorno: copiar `.env.example` a `.env`. Nada es obligatorio para e
 5. **Supabase** – https://supabase.com → proyecto → cadena de conexión → `DATABASE_URL` → `npm run db:migrate` (o `npm run db:push`).
    Sin `DATABASE_URL` se usa `data/store.json` (bien en local; en Vercel el disco no persiste). `db:migrate` es
    idempotente: correrlo después de cada actualización (la v14 crea `quote_files` —los archivos enviados de cada
-   cotización— y agrega `sync_marks.provider`) **antes** de desplegar.
+   cotización— y agrega `sync_marks.provider`; la v15 crea `contract_prices` —los precios de contrato cambiados
+   desde WhatsApp—) **antes** de desplegar.
 6. **Despliegue** – Vercel (`vercel`) o Railway. Variables = las de `.env`. `curl https://<app>/api/health` debe
    mostrar `whatsapp: true`. Para refrescar Drive cada hora: cron que llame `GET /api/ingest/refresh` con
    `Authorization: Bearer $CRON_SECRET`.
@@ -168,6 +169,7 @@ Variables de entorno: copiar `.env.example` a `.env`. Nada es obligatorio para e
 | `reenviar 451` · `archivos 451` · `pdf 451` (o el número completo) | te reenvía los archivos guardados (o los genera de nuevo) |
 | mensaje reenviado / PDF / Excel / foto de lista | carga de precios: solo de proveedores conocidos (JCH, Steel, Protyres o los ya cargados); una cotización no se carga |
 | `proveedor nuevo: NOMBRE` · `borrar proveedor NOMBRE` | solo administradores (`ADMIN_NUMBERS`) |
+| `contrato prosegur` · `contrato prosegur v99 125.50` (admin) | precios de contrato de Prosegur: ver (cualquiera) / cambiar (administradores); ver "Prosegur (contrato)" |
 | `precios 11R22.5` · `stock 295/80R22.5` | todas las opciones para una medida |
 | `proveedores` · `ayuda` · `cancelar` | |
 
@@ -175,13 +177,56 @@ Variables de entorno: copiar `.env.example` a `.env`. Nada es obligatorio para e
 
 - El pedido empieza con `prosegur` (o dice "para Prosegur"): el bot pone PROSEGUR SA y sus condiciones (FACTURA,
   30 días, 48 HRS POST OC, validez 7 días, sin IGV) salvo lo que el vendedor escriba, y pide **unidad**, **UB** y
-  **solicitante** si faltan (`ok` sigue sin ellos). `prosegur` solo → mini guía de qué mandar.
-- Con `ok` llegan dos documentos: el PDF 360° (MEDIDA "215/75R17.5 18PR UB 1830") y el Excel "Formato Proveedores"
-  lleno (`151026-1830-AYACUCHO-PROFESSIONAL TYRES S.A.C.-451.xlsx`, precios sin IGV, máximo 11 ítems). `enviar` adjunta
-  ambos al correo.
-- La próxima cotización a Prosegur reutiliza unidad, UB, solicitante y correo de la anterior (se cambian igual).
+  **solicitante** si faltan (`ok` sigue sin ellos). `prosegur` solo → guía de 3 líneas.
+- Llegan dos documentos (tras `ok` si hubo opciones; con ítems de contrato, de inmediato): el PDF 360° (MEDIDA
+  "215/75R17.5 18PR UB 1830") y el Excel "Formato Proveedores" lleno (`151026-1830-AYACUCHO-PROFESSIONAL TYRES
+  S.A.C.-451.xlsx`, precios sin IGV, máximo 11 ítems). `enviar` adjunta ambos al correo.
+- La próxima cotización a Prosegur reutiliza solicitante, atención, UB y correo de la última de **esa unidad** (sin
+  unidad, de la última a Prosegur); se cambian igual.
 - Ejemplo y verificación visual del Excel: `npx tsx --tsconfig tsconfig.cli.json scripts/prosegur-sample.ts out`
   (necesita LibreOffice `soffice` y `pdftoppm` para el PNG).
+
+### Prosegur (contrato)
+
+Prosegur compra solo 3 modelos, con precio fijo de contrato (2 años, sin IGV), todos 215/75R17.5 18PR:
+**v99** Fenixway Valor 99 (MIXT, US$ 123.17), **v89** Fenixway Valor 89 (POST, US$ 126.42) y **f77** Fenixway Flama 77
+(US$ 116.34; su aplicación la pregunta el bot la primera vez y la guarda). Están en `config/customers.json` →
+`contract`; lo que se cambia por WhatsApp queda en la tabla `contract_prices` y gana sobre el archivo.
+
+El vendedor manda **un mensaje de 3 líneas** y recibe el PDF 360°, el Excel y un resumen corto; responde `enviar`:
+
+```
+prosegur ayacucho 1830
+2 v99
+4 v89
+```
+
+- Primera línea: `prosegur <unidad> <UB>` (`prosegur ayacucho ub 1830`, `coti para prosegur ayacucho`). Todo en una
+  línea también vale: `prosegur ayacucho 1830, 2 v99, 4 v89`.
+- Una llanta por línea, código o nombre y cantidad en cualquier orden: `2 v99`, `v99 x2`, `v99 2`, `dos v89`,
+  `quiero 2 valor 99`, `2 mixtas`, `4 posteriores`, `215/75R17.5 18PR Fenixway Valor 99 x2`. Sin cantidad = 1.
+  `ub 1845` en la línea = UB de esa llanta. "mixta" / "posterior" son pistas: la aplicación la fija el contrato.
+- Sin opciones: los ítems de contrato van directo a su precio. Si el pedido trae otras llantas (otra medida o marca),
+  solo esas muestran opciones de las listas; las de contrato salen ya elegidas (`📑 contrato · US$ 123.17`).
+- Cada llanta en un mensaje aparte (`2 v99`, luego `4 v89`) también sirve: se agrega a la cotización que acaba de
+  llegar (llegan de nuevo PDF y Excel).
+- Solicitante, atención y correo salen de la última cotización de esa unidad. Unidad nueva: el bot pide el solicitante
+  una vez (basta escribir el nombre). Sin `atención:`, la atención es el solicitante.
+- Correcciones antes de `enviar`: `precio 2 130`, `cantidad 1 3`, `quitar 2`, `aplicación 2 MIXT`, `atención: Sr. …`,
+  `correo x@y.com`, `número 453`, `cancelar`.
+- `prosegur` solo → guía de 3 líneas. `prosegur ayacucho 1830` solo → el bot espera las llantas en el siguiente mensaje.
+- `contrato prosegur` (cualquiera) → los ítems vigentes con su precio. Solo administradores (`ADMIN_NUMBERS`):
+  - `contrato prosegur v99 125.50` → nuevo precio sin IGV
+  - `contrato prosegur f77 aplicación POST` → aplicación
+  - `contrato prosegur nuevo: f66 = Fenixway Flama 66 215/75R17.5 18PR POST 118.00` → ítem nuevo (se escribe `f66` o
+    `flama 66`)
+  - `contrato prosegur borrar f66` → quita un ítem agregado; en un ítem de `customers.json` borra lo cambiado por
+    WhatsApp y vuelve a lo del archivo (para quitarlo del todo, editar el archivo)
+
+  Valen para las cotizaciones siguientes (la que ya está armada no cambia). Requiere `npm run db:migrate` (tabla
+  `contract_prices`); sin ella el contrato del archivo funciona, pero los cambios por WhatsApp fallan.
+- Conversación de ejemplo con el bot real y un WhatsApp simulado (para mostrársela al vendedor):
+  `npx tsx --tsconfig tsconfig.cli.json scripts/prosegur-chat.ts out/ejemplo-prosegur-chat.txt`.
 
 ## Límites conocidos del piloto
 

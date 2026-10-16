@@ -184,7 +184,8 @@ export function buildQuote(params: {
       company: req.customerCompany,
       email: req.customerEmail,
       ref: req.customerRef,
-      attention: req.attention ?? (req.customerCompany && req.customerName ? req.customerName : undefined),
+      // without "atención:", the contact named next to the company, else the requester ("solicitante:", Prosegur)
+      attention: req.attention ?? (req.customerCompany && req.customerName ? req.customerName : undefined) ?? req.requester,
       address: req.address,
     },
     items: params.items,

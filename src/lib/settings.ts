@@ -78,6 +78,36 @@ export const SalespersonSchema = z.object({
 });
 export type Salesperson = z.infer<typeof SalespersonSchema>;
 
+/** One item of a customer's contract: fixed price (net of IGV) and the short codes the salesman types ("2 v99"). */
+export const ContractItemSchema = z.object({
+  /** "v99": what the salesman types; also the key of its contract_prices row. */
+  id: z.string().min(1),
+  /** Other ways of writing it ("valor 99", "mixta"), compared accent / case-insensitively on word boundaries. */
+  aliases: z.array(z.string()).default([]),
+  brand: z.string().default(""),
+  model: z.string().default(""),
+  /** Default: the contract's size / ply. */
+  size: z.string().optional(),
+  ply: z.number().int().optional(),
+  /** APLICACIÓN ("MIXT", "POST"); null = the bot asks the first time and saves the answer. */
+  application: z.string().nullable().default(null),
+  price: z.number(),
+  /** Default: the contract's currency. */
+  currency: z.string().optional(),
+});
+export type ContractItemConfig = z.infer<typeof ContractItemSchema>;
+
+/** A customer's contract: the only items it buys, at fixed prices, all of one size by default. */
+export const ContractSchema = z.object({
+  /** Shown with "contrato prosegur" ("Contrato Prosegur 2 años · precios sin IGV"). */
+  note: z.string().default(""),
+  size: z.string().default(""),
+  ply: z.number().int().optional(),
+  currency: z.string().default("USD"),
+  items: z.array(ContractItemSchema).default([]),
+});
+export type ContractConfig = z.infer<typeof ContractSchema>;
+
 /** A customer with its own quote rules (config/customers.json), e.g. Prosegur and its "Formato Proveedores" Excel. */
 export const CustomerProfileSchema = z.object({
   /** "Prosegur"; its folded form is the profile id ("prosegur"). */
@@ -111,6 +141,8 @@ export const CustomerProfileSchema = z.object({
       supplierRuc: z.string().default(""),
     })
     .optional(),
+  /** Contract prices (Prosegur: 3 models, 2 years); the contract_prices table overrides / adds items per id. */
+  contract: ContractSchema.optional(),
 });
 export type CustomerProfile = z.infer<typeof CustomerProfileSchema>;
 

@@ -120,6 +120,50 @@ function contract(name: string, make: () => Promise<PriceStore>) {
       expect(await store.getQuoteFiles("L-1")).toEqual([]);
     });
 
+    it("contract items per customer: set (replace), get by id, delete", async () => {
+      expect(await store.getContractItems("prosegur")).toEqual([]);
+      await store.setContractItem("prosegur", { id: "V99", brand: "Fenixway", model: "Valor 99", size: "215/75R17.5", ply: 18, application: "MIXT", price: 125.5, currency: "USD", aliases: ["v99", "valor 99"], updatedBy: "18605180534" });
+      await store.setContractItem("prosegur", { id: "f66", brand: "Fenixway", model: "Flama 66", size: "215/75R17.5", ply: 18, application: "POST", price: 118, currency: "USD", aliases: ["f66", "flama 66"] });
+      await store.setContractItem("otro", { id: "x1", price: 1 });
+      let items = await store.getContractItems("prosegur");
+      expect(items.map((i) => [i.id, i.price, i.application, i.aliases])).toEqual([
+        ["f66", 118, "POST", ["f66", "flama 66"]],
+        ["v99", 125.5, "MIXT", ["v99", "valor 99"]], // ids are stored lower case
+      ]);
+      expect(items[1]).toMatchObject({ brand: "Fenixway", model: "Valor 99", size: "215/75R17.5", ply: 18, currency: "USD", updatedBy: "18605180534" });
+      expect(typeof items[1].updatedAt).toBe("string");
+      await store.setContractItem("prosegur", { ...items[1], price: 126 }); // replaced, not duplicated
+      items = await store.getContractItems("prosegur");
+      expect(items.map((i) => [i.id, i.price])).toEqual([
+        ["f66", 118],
+        ["v99", 126],
+      ]);
+      expect(await store.deleteContractItem("prosegur", "F66")).toBe(true);
+      expect(await store.deleteContractItem("prosegur", "f66")).toBe(false);
+      expect((await store.getContractItems("prosegur")).map((i) => i.id)).toEqual(["v99"]);
+      expect((await store.getContractItems("otro")).map((i) => i.id)).toEqual(["x1"]);
+      // a change made from WhatsApp stores only its field; the empty ones (currency too) leave the config's values
+      await store.setContractItem("prosegur", { id: "f77", application: "POST", updatedBy: "51955344340" });
+      expect((await store.getContractItems("prosegur")).find((i) => i.id === "f77")).toEqual({ id: "f77", application: "POST", updatedBy: "51955344340", updatedAt: expect.any(String) });
+    });
+
+    it("last quote of a customer, optionally of one of its units", async () => {
+      const rows = await store.findBySize(["11R22.5"]);
+      const make = async (number: string, text: string, createdAt: string) => {
+        const req = parseRequestRegex(text);
+        const cands = rankLine(rows, req.lines[0], req, settings.pricing, { today: "2026-10-06" });
+        const q = buildQuote({ number, request: req, items: [itemFromCandidate(cands[0], 1, settings)], settings, today: "2026-10-06" });
+        q.createdAt = createdAt;
+        await store.saveQuote(q);
+      };
+      await make("U-1", "11R22.5 x1 para UNIDADES SAC\nunidad: Ayacucho\nsolicitante: Johann", "2026-10-13T10:00:00Z");
+      await make("U-2", "11R22.5 x1 para UNIDADES SAC\nunidad: Cusco\nsolicitante: Ana", "2026-10-14T10:00:00Z");
+      expect((await store.findLastQuoteForCustomer({ company: "UNIDADES SAC" }))?.number).toBe("U-2");
+      expect((await store.findLastQuoteForCustomer({ company: "UNIDADES SAC", unit: "ayacucho" }))?.number).toBe("U-1"); // case-insensitive
+      expect((await store.findLastQuoteForCustomer({ company: "UNIDADES SAC", unit: "Cusco" }))?.requester).toBe("Ana");
+      expect(await store.findLastQuoteForCustomer({ company: "UNIDADES SAC", unit: "Lima" })).toBeNull();
+    });
+
     it("deletes a provider's rows (name matched loosely) and its Drive sync marks", async () => {
       const res = await ingestExcel(fs.readFileSync(path.resolve(process.cwd(), "samples/proveedor-a-lista.xlsx")), { provider: "Llantas del Sur", sourceRef: "a.xlsx", priceDate: "2026-10-01" });
       await store.upsertRows(res.rows, { replace: { provider: "Llantas del Sur", sourceRef: "a.xlsx" } });
@@ -146,7 +190,7 @@ if (url) {
     // clean slate
     const postgres = (await import("postgres")).default;
     const c = postgres(url);
-    await c`truncate prices, quotes, conversations, counters, processed_messages, sync_marks, quote_files`;
+    await c`truncate prices, quotes, conversations, counters, processed_messages, sync_marks, quote_files, contract_prices`;
     await c.end();
     return s;
   });

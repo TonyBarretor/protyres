@@ -7,7 +7,7 @@ import postgres from "postgres";
 import * as schema from "../../db/schema";
 import type { PriceRow, PriceSource } from "../ingest/types";
 import type { Quote } from "../quote/types";
-import { foldKey, photoKey, type ConversationState, type ListQuotesOptions, type PriceStore, type ProductPhoto, type ProviderSummary, type QuoteFile, type ReplaceScope } from "./types";
+import { foldKey, photoKey, type ConversationState, type ListQuotesOptions, type PriceStore, type ProductPhoto, type ProviderSummary, type QuoteFile, type ReplaceScope, type StoredContractItem } from "./types";
 
 type Db = PostgresJsDatabase<typeof schema>;
 
@@ -52,6 +52,22 @@ const isMissingColumn = (err: unknown) => {
   const e = err as { code?: string; cause?: { code?: string } } | undefined;
   return (e?.code ?? e?.cause?.code) === "42703";
 };
+
+/** Postgres "undefined table" (a table added by `npm run db:migrate` that has not been created yet). */
+const isMissingTable = (err: unknown) => {
+  const e = err as { code?: string; cause?: { code?: string } } | undefined;
+  return (e?.code ?? e?.cause?.code) === "42P01";
+};
+
+function parseAliases(json: string | null): string[] | undefined {
+  if (!json) return undefined;
+  try {
+    const v = JSON.parse(json);
+    return Array.isArray(v) ? v.map(String) : undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 export class PgStore implements PriceStore {
   private constructor(
@@ -205,12 +221,13 @@ export class PgStore implements PriceStore {
     return new Set(rows.map((r) => r.key));
   }
 
-  async findLastQuoteForCustomer(opts: { email?: string; company?: string }): Promise<Quote | null> {
+  async findLastQuoteForCustomer(opts: { email?: string; company?: string; unit?: string }): Promise<Quote | null> {
     const conds = [];
     if (opts.email) conds.push(sql`lower(${schema.quotes.customerEmail}) = ${opts.email.toLowerCase()}`);
     if (opts.company) conds.push(sql`lower(${schema.quotes.data}->'customer'->>'company') = ${opts.company.toLowerCase()}`);
     if (conds.length === 0) return null;
-    const where = conds.length === 1 ? conds[0] : sql`(${conds[0]}) or (${conds[1]})`;
+    let where = conds.length === 1 ? conds[0] : sql`(${conds[0]}) or (${conds[1]})`;
+    if (opts.unit) where = sql`(${where}) and ${FOLD(sql`(${schema.quotes.data}->>'unit')`)} = ${foldKey(opts.unit)}`;
     const [row] = await this.db.select().from(schema.quotes).where(where).orderBy(desc(schema.quotes.createdAt)).limit(1);
     return row ? (row.data as Quote) : null;
   }
@@ -325,6 +342,67 @@ export class PgStore implements PriceStore {
   async getQuoteFiles(quoteNumber: string): Promise<QuoteFile[]> {
     const rows = await this.db.select().from(schema.quoteFiles).where(eq(schema.quoteFiles.quoteNumber, quoteNumber)).orderBy(schema.quoteFiles.kind);
     return rows.map((r) => ({ quoteNumber: r.quoteNumber, kind: r.kind, fileName: r.fileName, mimeType: r.mimeType, data: r.data, createdAt: r.createdAt.toISOString() }));
+  }
+
+  async getContractItems(customer: string): Promise<StoredContractItem[]> {
+    try {
+      const rows = await this.db.select().from(schema.contractPrices).where(eq(schema.contractPrices.customer, customer)).orderBy(schema.contractPrices.itemId);
+      return rows.map((r) => ({
+        id: r.itemId,
+        brand: r.brand ?? undefined,
+        model: r.model ?? undefined,
+        size: r.size ?? undefined,
+        ply: r.ply ?? undefined,
+        application: r.application ?? undefined,
+        price: r.price === null ? undefined : Number(r.price),
+        currency: r.currency ?? undefined,
+        aliases: parseAliases(r.aliases),
+        updatedBy: r.updatedBy ?? undefined,
+        updatedAt: r.updatedAt?.toISOString(),
+      }));
+    } catch (err) {
+      if (isMissingTable(err)) return []; // contract_prices not migrated yet: the config's contract applies
+      throw err;
+    }
+  }
+
+  async setContractItem(customer: string, item: StoredContractItem): Promise<void> {
+    const values = {
+      customer,
+      itemId: item.id.trim().toLowerCase(),
+      brand: item.brand ?? null,
+      model: item.model ?? null,
+      size: item.size ?? null,
+      ply: item.ply ?? null,
+      application: item.application ?? null,
+      price: item.price === undefined ? null : item.price.toFixed(2),
+      currency: item.currency ?? null, // empty like the other fields: the config's currency applies
+      aliases: item.aliases ? JSON.stringify(item.aliases) : null,
+      updatedBy: item.updatedBy ?? null,
+      updatedAt: new Date(),
+    };
+    try {
+      await this.db
+        .insert(schema.contractPrices)
+        .values(values)
+        .onConflictDoUpdate({ target: [schema.contractPrices.customer, schema.contractPrices.itemId], set: { ...values } });
+    } catch (err) {
+      if (isMissingTable(err)) throw new Error("falta la tabla contract_prices: corre npm run db:migrate");
+      throw err;
+    }
+  }
+
+  async deleteContractItem(customer: string, itemId: string): Promise<boolean> {
+    try {
+      const del = await this.db
+        .delete(schema.contractPrices)
+        .where(and(eq(schema.contractPrices.customer, customer), eq(schema.contractPrices.itemId, itemId.trim().toLowerCase())))
+        .returning({ itemId: schema.contractPrices.itemId });
+      return del.length > 0;
+    } catch (err) {
+      if (isMissingTable(err)) return false;
+      throw err;
+    }
   }
 
   async getConversation(phone: string): Promise<ConversationState | null> {

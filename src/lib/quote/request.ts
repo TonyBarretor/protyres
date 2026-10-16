@@ -264,7 +264,7 @@ function withoutPlate(line: string): string {
 }
 
 /** Plate and UB blanked out (same length): references the customer writes next to an item, never part of its size. */
-function withoutRefs(line: string): string {
+export function withoutRefs(line: string): string {
   return withoutUb(withoutPlate(line));
 }
 

@@ -24,17 +24,18 @@ import { fold, findBrandInText } from "../tyre/brands";
 import { findTyreSizes, parseTyreSize } from "../tyre/spec";
 import type { CustomerProfile, Settings } from "../settings";
 import { foldKey, photoKey, quoteCounterKey, type ConversationState, type PendingLine, type PriceStore } from "../store/types";
-import { buildQuote, displayTotal, formatQuoteNumber, itemFromCandidate, manualItem, quoteSerial } from "../quote/build";
+import { buildQuote, displayTotal, displayUnit, formatQuoteNumber, itemFromCandidate, manualItem, quoteSerial } from "../quote/build";
+import { contractItemLabel, contractQuoteItem, contractUnitPrice, findContractItem, onlyContractLines, parseContractRequest, parseContractRequestRegex, parseNewContractItem, resolveContract, startsWithContractAlias, toStored, type Contract } from "../quote/contract";
 import { buildEmailDraft, sendQuoteEmail, type EmailAttachment, type SendResult } from "../quote/email";
 import { PDF_MIME, XLSX_MIME, pdfFileName, withExtension } from "../quote/files";
 import { findCandidates } from "../quote/match";
 import { renderQuotePdf } from "../quote/pdf";
 import { attachPhotos, findPhoto, itemsWithoutPhoto, loadImage, searchWebPhotos, webSearchAvailable } from "../quote/photos";
-import { fmtMoney } from "../quote/pricing";
-import { FIELD_LABEL, askRequired, detectProfile, findProfile, hasExcelFormat, leadingProfile, missingInQuote, missingRequired, profileDefaultLines, profileGuide, profileId } from "../quote/profiles";
+import { fmtMoney, r2 } from "../quote/pricing";
+import { FIELD_LABEL, askRequired, detectProfile, findProfile, hasExcelFormat, leadingProfile, missingInQuote, missingRequired, profileGuide, profileHead, profileId, profileKey, profileRequestText, shortItemLabel, type RequiredField } from "../quote/profiles";
 import { PROSEGUR_MAX_ITEMS, prosegurTooManyItems, renderProsegurXlsx } from "../quote/prosegur-xlsx";
 import { describeLine, describeRequest, parseEmail, parseRequest, parseRequestRegex } from "../quote/request";
-import type { Candidate, EmailDraft, LineCandidates, Quote, QuoteItem, QuoteRequest } from "../quote/types";
+import type { Candidate, EmailDraft, LineCandidates, Quote, QuoteItem, QuoteRequest, RequestLine } from "../quote/types";
 import type { WhatsAppClient } from "./client";
 import type { InboundMessage } from "./webhook";
 
@@ -59,7 +60,7 @@ const HELP = [
   "Respondes *ok* para aceptar las primeras opciones, o eliges: *1b 2a*, *quitar 3*, *precio 3 4.50*, *dscto 15*, *con igv*.",
   "Luego revisas el PDF y escribes *enviar*.",
   "",
-  "Prosegur: escribe *prosegur* y te digo qué mandar (unidad, UB, solicitante); va también su Excel «Formato Proveedores».",
+  "Prosegur: *prosegur ayacucho 1830* y debajo una línea por llanta (*2 v99*); *contrato prosegur* muestra sus precios. Va también su Excel «Formato Proveedores».",
   "Número y archivos: *número 451*, *nombre: …*, *archivo: Nombre*, *archivo excel: Nombre*.",
   "Historial: *cotizaciones*, *cotizaciones Prosegur*, *reenviar 451*.",
   "",
@@ -169,10 +170,21 @@ function parseFileCommand(text: string): { pdfName?: string; xlsxName?: string }
 
 const STATUS_LABEL: Record<Quote["status"], string> = { draft: "borrador", sent: "enviada", cancelled: "anulada" };
 
-/** A profile chosen with a bare "prosegur" applies to the next request (for two hours). */
-function pendingProfile(state: ConversationState): string | undefined {
+/** A profile chosen with a bare "prosegur" (or "prosegur ayacucho 1830": its unit / UB lines too) applies to the next request (for two hours). */
+function pendingProfile(state: ConversationState): { profile: string; header?: string } | undefined {
   if (state.step !== "idle" || !state.profile) return undefined;
-  return Date.now() - Date.parse(state.updatedAt) < 2 * 3600_000 ? state.profile : undefined;
+  return Date.now() - Date.parse(state.updatedAt) < 2 * 3600_000 ? { profile: state.profile, header: state.requestText } : undefined;
+}
+
+/** "unidad: …" / "ub: …" / "solicitante: …": the line that sets a profile's required field. */
+const FIELD_KEY: Record<RequiredField, string> = { unit: "unidad", ub: "ub", requester: "solicitante" };
+
+/** Words that are commands, never a bare answer (a requester's name, a unit, an APLICACIÓN). */
+const COMMAND_WORD = /^(?:enviar|send|ayuda|help|hola|menu|inicio|gracias|listo|dale|si|no|ok|cancelar|seguir|continuar|cotizar|confirmar|proveedores|listas|cotizaciones|contrato|contratos|fotos?|precios?|stock|cantidad|cant|quitar|quita|eliminar|aplicacion|archivo|nombre|numero|nro|reenviar|reenvia|archivos|pdf|correo|email|borrar|proveedor|dscto|descuento)\b/;
+
+/** The question for a contract item without APLICACIÓN yet ("Flama 77"). */
+function askApplication(name: string): string {
+  return `¿Qué aplicación lleva la ${name}? (MIXT, POST, DEL…)`;
 }
 
 export class BotHandler {
@@ -209,8 +221,9 @@ export class BotHandler {
       }
       if (cmd === "proveedores" || cmd === "listas") return this.replyProviders(from);
       if (state.step !== "review_quote" && /^(precios?|stock)\s+/.test(cmd) && findTyreSizes(text).length > 0) return this.replyPrices(from, text.replace(/^(precios?|stock)\s+/i, ""));
-      // history commands work in any state and leave the conversation as it is
+      // history and contract commands work in any state and leave the conversation as it is
       if (!msg.media && (await this.handleHistoryCommand(from, text))) return;
+      if (!msg.media && (await this.handleContractCommand(from, text))) return;
 
       // 0) Product photos: an image captioned "foto <marca> <modelo>" is stored; "foto 1b" / "foto ok" / "foto no" are commands
       const photoCaption = (msg.media?.caption ?? "").match(/^foto\s+(.+)$/i);
@@ -230,6 +243,10 @@ export class BotHandler {
       }
 
       // 2) Quote flow
+      if (state.step === "need_application" && state.askItem) {
+        const handled = await this.handleApplicationAnswer(from, state, text);
+        if (handled) return;
+      }
       if (state.step === "need_fields" && state.requestText) {
         const handled = await this.handleNeedFields(from, state, text);
         if (handled) return;
@@ -253,6 +270,11 @@ export class BotHandler {
         if (mail) return this.rebuildQuote(from, state, { email: mail[1] });
         const price = text.match(/^(?:precio|price|unitario)\s*:?\s+(?:(\d{1,2})\s+)?([\d.,]+)\s*$/i);
         if (price) return this.rebuildQuote(from, state, { lineIndex: price[1] ? parseInt(price[1], 10) - 1 : 0, unitPrice: parseFloat(price[2].replace(",", ".")) });
+        // a contract quote skips the options step: quantities and lines are corrected here
+        const qty = text.match(/^(?:cantidad|cant|qty)\s+(\d{1,2})\s+(\d{1,4})\s*$/i);
+        if (qty) return this.rebuildQuote(from, state, { lineIndex: parseInt(qty[1], 10) - 1, quantity: parseInt(qty[2], 10) });
+        const remove = text.match(/^(?:quitar|quita|eliminar)\s+(\d{1,2})\s*$/i);
+        if (remove) return this.rebuildQuote(from, state, { lineIndex: parseInt(remove[1], 10) - 1, remove: true });
         if (/^(con|sin)\s+igv$/.test(cmd)) return this.rebuildQuote(from, state, { pricesIncludeTax: cmd.startsWith("con") });
         const app = text.match(/^(?:aplicaci[oó]n|aplic|app|uso)\s+(\d{1,2})\s+(\S.*)$/i);
         if (app) return this.rebuildQuote(from, state, { lineIndex: parseInt(app[1], 10) - 1, application: app[2].trim().toUpperCase() });
@@ -265,8 +287,10 @@ export class BotHandler {
         if (email) return this.rebuildQuote(from, state, { email });
         if (["enviar", "send", "ok", "si", "sí", "dale", "listo"].includes(cmd)) return this.reply(from, "Me falta el correo del cliente: escríbelo (p.ej. *compras@empresa.com*) o *cancelar*.");
       }
+      // items sent as messages of their own ("2 v99", then "4 v89"): contract lines go into the quote just presented
+      if ((state.step === "review_quote" || state.step === "need_email") && (await this.addToQuote(from, state, text))) return;
       if (!text) return this.reply(from, "No entendí el mensaje. Escribe *ayuda* para ver cómo funciona.");
-      return this.startRequest(from, text, undefined, { profile: profileNext });
+      return this.startRequest(from, text, undefined, { profile: profileNext?.profile, header: profileNext?.header });
     } catch (err) {
       this.log(`error handling ${msg.id}: ${(err as Error).stack ?? err}`);
       await this.reply(from, `Ocurrió un error: ${(err as Error).message}. Intenta de nuevo o escribe *cancelar*.`);
@@ -460,6 +484,11 @@ export class BotHandler {
       const p = pending[i];
       const head = `*${i + 1}.* ${describeLine(p.application ? { ...lc.line, application: p.application } : lc.line)}${p.removed ? " _(quitado)_" : ""}`;
       if (p.removed) return head;
+      if (lc.line.contract) {
+        // the customer's contract price: nothing to choose
+        const price = p.unitPriceOverride !== undefined ? `precio manual ${fmtMoney(p.unitPriceOverride, this.cur)}` : fmtMoney(contractUnitPrice(lc.line.contract, this.settings.pricing), this.cur);
+        return `${head}\n  📑 contrato · ${price}`;
+      }
       if (lc.candidates.length === 0) {
         const manual = p.unitPriceOverride !== undefined ? `precio manual ${fmtMoney(p.unitPriceOverride, this.cur)}` : `sin precio en las listas → escribe *precio ${i + 1} 123.45* o *quitar ${i + 1}*`;
         return `${head}\n  ❌ ${manual}`;
@@ -472,74 +501,138 @@ export class BotHandler {
     return `${blocks.join("\n\n")}${extras.length ? `\n\n${extras.join(" · ")}` : ""}\n\nResponde *ok* para cotizar con las opciones *a*, o elige: *1b* (ítem 1, opción b), *b x4* (opción b, 4 unidades), *a x2, b x8* (dos opciones del mismo ítem). También: *quitar 2*, *precio 3 4.50*, *aplicación 2 MIXT DEL*, *dscto 15*, *con igv*, *cancelar*.`;
   }
 
-  private async startRequest(from: string, text: string, note?: string, opts: { profile?: string } = {}): Promise<void> {
+  private async startRequest(from: string, text: string, note?: string, opts: { profile?: string; header?: string } = {}): Promise<void> {
     // customer profile (Prosegur…): the message starts with its alias, says "para prosegur", names it as the customer,
-    // or the salesman asked for it with a bare "prosegur" just before
+    // or the salesman asked for it with a bare "prosegur" (or "prosegur ayacucho 1830") just before
     let profile = findProfile(this.settings, opts.profile) ?? detectProfile(this.settings, text, parseRequestRegex(text)) ?? undefined;
+    let contract = await this.contractFor(profile);
     if (profile) {
-      const applied = this.applyProfile(text, profile);
+      const applied = this.applyProfile(text, profile, contract, opts.header);
       if (applied.bare) {
-        await this.store.setConversation(from, { phone: from, step: "idle", profile: profileId(profile), updatedAt: now() });
-        return this.reply(from, profileGuide(profile));
+        // "prosegur": the guide; "prosegur ayacucho 1830": its unit / UB wait for the items
+        await this.store.setConversation(from, { phone: from, step: "idle", profile: profileId(profile), requestText: applied.header.join("\n") || undefined, updatedAt: now() });
+        if (!applied.header.length) return this.reply(from, profileGuide(profile, contract?.items.map((i) => i.id)));
+        const ids = contract?.items.map((i) => i.id) ?? [];
+        const example = ids.length ? `*2 ${ids[0]}*${ids[1] ? `, *4 ${ids[1]}*` : ""}` : "_215/75R17.5 Fenixway Valor 99 x2_";
+        return this.reply(from, `${profileHead(profile, parseRequestRegex(applied.text))}\nAhora las llantas, una por línea: ${example}`);
       }
       text = applied.text;
     }
-    let req = await parseRequest(text);
+    let req = await this.parseFor(text, contract);
     if (!profile) {
       // a customer only the LLM recognised
       const late = detectProfile(this.settings, text, req);
       if (late) {
         profile = late;
-        text = this.applyProfile(text, late).text;
-        req = await parseRequest(text);
+        contract = await this.contractFor(late);
+        text = this.applyProfile(text, late, contract).text;
+        req = await this.parseFor(text, contract);
       }
     }
     if (req.lines.length === 0) {
+      // contract codes without the customer ("2 v99" with no "prosegur …" first): how to start, rather than guess the unit
+      for (const p of profile ? [] : this.settings.customers) {
+        if (this.moreContractLines(await this.contractFor(p), text)) return this.reply(from, `¿Es para ${p.name}? Escribe primero el cliente y la unidad, p.ej. *${profileKey(p)} ayacucho 1830*, y debajo las llantas (*${text.trim().split(/\r?\n/)[0]}*).`);
+      }
       return this.reply(from, `${note ? note + "\n" : ""}No encontré ninguna medida ni producto en el pedido. Escríbela como *11R22.5*, *295/80R22.5* o *1000R20*.\nEjemplo: _Fenixway 295/80R22.5 Valor 87 x4 para Transportes ABC, juan@abc.com_`);
     }
-    // customer memory: reuse contact / address / terms from the last quote to the same customer
-    const remembered = await this.rememberCustomer(req);
+    // customer memory: reuse contact / address / terms from the last quote to the same customer (per unit for a profile)
+    const remembered = await this.rememberCustomer(req, profile);
     if (remembered.lines.length) {
       text = `${text}\n${remembered.lines.join("\n")}`;
-      req = await parseRequest(text);
+      req = await this.parseFor(text, contract);
       note = `${note ? note + "\n" : ""}📒 Datos de la última cotización a ${remembered.who}: ${remembered.summary.join(" · ")} _(cámbialos con *atención: …*, *pago: …*, *dirección: …*${profile?.required.length ? `, ${profile.required.map((f) => `*${FIELD_LABEL[f]}: …*`).join(", ")}` : ""})_`;
     }
     return this.showOptions(from, text, req, profile, { note });
   }
 
-  /** The request without the profile's leading alias, plus the profile's lines for the fields the salesman did not write. */
-  private applyProfile(text: string, profile: CustomerProfile): { text: string; bare: boolean } {
-    const lead = leadingProfile(this.settings, text);
-    const body = lead && lead.profile === profile ? lead.rest : text;
-    if (!body.trim()) return { text: body, bare: true };
-    const defaults = profileDefaultLines(profile, parseRequestRegex(body));
-    return { text: defaults.length ? `${body}\n${defaults.join("\n")}` : body, bare: false };
+  /**
+   * The request without the profile's leading alias, its header's unit / UB as lines ("prosegur ayacucho 1830"), plus
+   * the profile's lines for the fields the salesman did not write.
+   */
+  private applyProfile(text: string, profile: CustomerProfile, contract: Contract | null, pending?: string): { text: string; bare: boolean; header: string[] } {
+    return profileRequestText(this.settings, profile, text, { pending, startsItem: contract?.items.length ? (rest) => startsWithContractAlias(rest, contract.items) : undefined });
   }
 
-  /** The profile's required fields first (unidad, ub, solicitante), then the options of every line. */
+  /** The profile's effective contract: config/customers.json with the contract_prices rows applied (null: none). */
+  private async contractFor(profile: CustomerProfile | undefined): Promise<Contract | null> {
+    return profile ? resolveContract(profile, await this.store.getContractItems(profileId(profile))) : null;
+  }
+
+  /** The request parsed for its customer: with a contract, "2 v99" lines are contract items. */
+  private parseFor(text: string, contract: Contract | null): Promise<QuoteRequest> {
+    return contract?.items.length ? parseContractRequest(text, contract.items) : parseRequest(text);
+  }
+
+  /**
+   * More items in the middle of a quote ("4 v89"): a message made only of contract lines, with a digit, so a bare
+   * "post" or "mixta" (an APLICACIÓN, a name) is never taken for an item. Null for anything else.
+   */
+  private moreContractLines(contract: Contract | null, text: string): RequestLine[] | null {
+    return contract?.items.length && /\d/.test(text) && !leadingProfile(this.settings, text) ? onlyContractLines(text, contract.items) : null;
+  }
+
+  /** The same, without the LLM (to check what is still missing). */
+  private parseForRegex(text: string, contract: Contract | null): QuoteRequest {
+    return contract?.items.length ? parseContractRequestRegex(text, contract.items) : parseRequestRegex(text);
+  }
+
+  /** "Prosegur · Ayacucho · UB 1830" and one line per item with its contract price: the short form of a contract request. */
+  private contractSummary(profile: CustomerProfile, req: QuoteRequest): string {
+    const lines = req.lines.map((l, i) => {
+      const label = shortItemLabel({ size: l.size?.canonical ?? "", sizeDisplay: l.size?.display ?? "", ply: l.ply, brand: l.brand ?? "", model: l.model ?? "", description: l.text ?? l.raw, application: l.application, plate: l.plate, ub: l.ub, quantity: l.quantity }, req.ub);
+      return `${i + 1}. ${label}${l.contract ? ` · ${fmtMoney(contractUnitPrice(l.contract, this.settings.pricing), this.cur)}` : ""}`;
+    });
+    return [profileHead(profile, req), ...lines].join("\n");
+  }
+
+  /** Price-list candidates of every line; a contract line has none (its price is the contract's). */
+  private async lineCandidates(req: QuoteRequest, limit?: number): Promise<LineCandidates[]> {
+    const lcs = await findCandidates(this.store, req, this.settings.pricing, limit ? { limit } : {});
+    return lcs.map((lc) => (lc.line.contract ? { ...lc, candidates: [] } : lc));
+  }
+
+  /**
+   * The profile's required fields first (unidad, ub, solicitante), then the options of every line. A request made only
+   * of contract items has nothing to choose: the quote is built right away.
+   */
   private async showOptions(from: string, text: string, req: QuoteRequest, profile: CustomerProfile | undefined, opts: { note?: string; skipRequired?: boolean } = {}): Promise<void> {
-    const note = opts.note ? `${opts.note}\n` : "";
+    const allContract = req.lines.length > 0 && req.lines.every((l) => l.contract);
+    // the short contract texts leave out the memory note: the summary shows what was reused (correo, solicitante)
+    const note = opts.note && !allContract ? `${opts.note}\n` : "";
     const id = profile ? profileId(profile) : undefined;
     const missingFields = profile && !opts.skipRequired ? missingRequired(profile, req) : [];
     if (profile && missingFields.length) {
       await this.store.setConversation(from, { phone: from, step: "need_fields", requestText: text, profile: id, updatedAt: now() });
-      return this.reply(from, `${note}Entendí:\n${describeRequest(req)}\n\n${askRequired(profile, missingFields)}`);
+      const understood = allContract ? this.contractSummary(profile, req) : `Entendí:\n${describeRequest(req)}\n`;
+      return this.reply(from, `${note}${understood}\n${askRequired(profile, missingFields)}`);
     }
-    const lcs = await findCandidates(this.store, req, this.settings.pricing);
+    const lcs = await this.lineCandidates(req);
     const pending: PendingLine[] = lcs.map((lc) => ({ candidateIds: lc.candidates.map((c) => c.row.id), chosen: lc.candidates.length ? 0 : null, quantity: lc.line.quantity }));
-    await this.store.setConversation(from, { phone: from, step: "choose", requestText: text, pending, profile: id, updatedAt: now() });
-    const missing = lcs.filter((lc) => lc.candidates.length === 0).length;
+    const state: ConversationState = { phone: from, step: "choose", requestText: text, pending, profile: id, updatedAt: now() };
+    await this.store.setConversation(from, state);
+    if (allContract) {
+      await this.finishChoice(from, state);
+      return;
+    }
+    const missing = lcs.filter((lc) => !lc.line.contract && lc.candidates.length === 0).length;
     const intro = `${note}Entendí:\n${describeRequest(req)}\n${missing ? `\n⚠️ ${missing} ítem(s) sin precio en las listas.\n` : ""}`;
     await this.reply(from, `${intro}\n${this.renderOptions(req, lcs, pending)}`);
   }
 
-  /** Waiting for a profile's required fields: field lines are added to the request; "ok" goes on without them. */
+  /**
+   * Waiting for a profile's required fields: field lines are added to the request; "ok" goes on without them. When only
+   * one field is missing, a bare answer is that field ("Johann Castañeda" for the solicitante, "Ayacucho", "1830").
+   */
   private async handleNeedFields(from: string, state: ConversationState, text: string): Promise<boolean> {
     const profile = findProfile(this.settings, state.profile);
     if (!profile) return false;
+    const contract = await this.contractFor(profile);
     const cmd = norm(text);
     const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
-    const fieldLines = lines.length > 0 && lines.every((l) => TERM_LINE.test(l) || parseNumberCommand(l) || /^(?:correo|email|mail)\s*:?\s*\S+@\S+$/i.test(l));
+    // more items may come with the answer or instead of it ("4 v89"): they are added to the request
+    const itemLine = (l: string) => !!this.moreContractLines(contract, l);
+    let fieldLines = lines.length > 0 && lines.every((l) => TERM_LINE.test(l) || parseNumberCommand(l) || /^(?:correo|email|mail)\s*:?\s*\S+@\S+$/i.test(l) || itemLine(l));
     let requestText = state.requestText ?? "";
     if (fieldLines) {
       for (const l of lines) {
@@ -547,15 +640,72 @@ export class BotHandler {
         const mail = l.match(/^(?:correo|email|mail)\s*:?\s*(\S+@\S+)$/i);
         if (term) requestText += `\n${term[1]}: ${term[2].trim()}`;
         else if (mail) requestText = `${requestText.replace(/[\w.+-]+@[\w-]+(?:\.[\w-]+)+/g, " ")}\ncorreo ${mail[1]}`;
-        else requestText += `\n${l}`; // número 451
+        else requestText += `\n${l}`; // número 451, or more items
       }
     } else if (!["ok", "seguir", "continuar", "listo", "si", "sí", "dale"].includes(cmd)) {
       if (findTyreSizes(text).length > 0 || leadingProfile(this.settings, text)) return false; // a new request
-      await this.reply(from, askRequired(profile, missingRequired(profile, parseRequestRegex(requestText))));
+      const missing = missingRequired(profile, this.parseForRegex(requestText, contract));
+      const value = text.trim();
+      const only = missing.length === 1 ? missing[0] : undefined;
+      const bare = !!only && lines.length === 1 && !COMMAND_WORD.test(cmd) && (only === "ub" ? /^\d{3,5}$/.test(value) : /^[\p{L}][\p{L} .'-]{1,59}$/u.test(value));
+      if (!bare) {
+        await this.reply(from, askRequired(profile, missing));
+        return true;
+      }
+      requestText += `\n${FIELD_KEY[only!]}: ${value}`;
+      fieldLines = true;
+    }
+    const req = await this.parseFor(requestText, contract);
+    await this.showOptions(from, requestText, req, profile, { skipRequired: !fieldLines });
+    return true;
+  }
+
+  /**
+   * The answer to "¿Qué aplicación lleva la Flama 77?": saved on the contract item (never asked again), then the quote
+   * is built, or the items waiting in `addText` go into the quote already presented. "ok" goes on without it (asked
+   * again next time); more contract lines ("4 v89") join the others and the question stands. Returns false when the
+   * text is something else (a new request).
+   */
+  private async handleApplicationAnswer(from: string, state: ConversationState, text: string): Promise<boolean> {
+    const profile = findProfile(this.settings, state.profile);
+    const contract = await this.contractFor(profile);
+    const item = contract?.items.find((i) => i.id === state.askItem);
+    if (!profile || !contract || !item) return false;
+    const asked = [...(state.applicationAsked ?? []), item.id];
+    const goOn = async (): Promise<void> => {
+      if (state.addText === undefined) {
+        await this.finishChoice(from, { ...state, step: "choose", askItem: undefined, applicationAsked: asked, updatedAt: now() });
+        return;
+      }
+      const back: ConversationState = { phone: from, step: "review_quote", quoteNumber: state.quoteNumber, applicationAsked: asked, updatedAt: now() };
+      if (!(await this.addToQuote(from, back, state.addText))) await this.reply(from, "No encuentro la cotización; escribe el pedido de nuevo.");
+    };
+    const cmd = norm(text);
+    if (["ok", "no se", "no", "ninguna", "ninguno", "sin aplicacion", "seguir"].includes(cmd)) {
+      await goOn();
       return true;
     }
-    const req = await parseRequest(requestText);
-    await this.showOptions(from, requestText, req, profile, { skipRequired: !fieldLines });
+    if (leadingProfile(this.settings, text)) return false; // a new request
+    if (this.moreContractLines(contract, text)) {
+      if (state.addText !== undefined) {
+        await this.store.setConversation(from, { ...state, addText: `${state.addText}\n${text}`, updatedAt: now() });
+        await this.reply(from, askApplication(item.model || item.id));
+      } else {
+        const requestText = `${state.requestText ?? ""}\n${text}`;
+        await this.showOptions(from, requestText, await this.parseFor(requestText, contract), profile, { skipRequired: true });
+      }
+      return true;
+    }
+    if (text.includes("\n") || findTyreSizes(text).length > 0) return false; // a new request
+    const answer = text.trim().replace(/^(?:aplicaci[oó]n|aplic|app|uso)\s*:?\s*/i, "").trim();
+    if (COMMAND_WORD.test(norm(answer)) || !/^[\p{L}][\p{L}\s/.-]{0,29}$/u.test(answer)) {
+      await this.reply(from, `${askApplication(item.model || item.id)} — o *ok* para seguir sin ella.`);
+      return true;
+    }
+    const application = answer.toUpperCase().replace(/\s*\/\s*/g, "/").replace(/\s+/g, " ");
+    await this.saveContractChange(profile, item.id, { application }, from);
+    await this.reply(from, `✅ ${item.model || item.id}: aplicación *${application}*, guardada para las próximas cotizaciones.`);
+    await goOn();
     return true;
   }
 
@@ -707,8 +857,8 @@ export class BotHandler {
 
   /** Re-rank (discount / tax may have changed) and show the options again, keeping choices. */
   private async reshow(from: string, state: ConversationState, requestText: string): Promise<boolean> {
-    const req = await parseRequest(requestText);
-    const lcs = await findCandidates(this.store, req, this.settings.pricing);
+    const req = await this.parseFor(requestText, await this.contractFor(findProfile(this.settings, state.profile)));
+    const lcs = await this.lineCandidates(req);
     const pending: PendingLine[] = lcs.map((lc, i) => {
       const prev = state.pending?.[i];
       const ids = lc.candidates.map((c) => c.row.id);
@@ -722,8 +872,18 @@ export class BotHandler {
   }
 
   private async finishChoice(from: string, state: ConversationState): Promise<boolean> {
-    const req = await parseRequest(state.requestText ?? "");
-    const lcs = await findCandidates(this.store, req, this.settings.pricing, { limit: 50 });
+    const profile = findProfile(this.settings, state.profile);
+    const req = await this.parseFor(state.requestText ?? "", await this.contractFor(profile));
+    const lcs = await this.lineCandidates(req, 50);
+    // a contract item without APLICACIÓN yet ("application": null): asked once, the answer is saved for every quote
+    const unknown = (state.pending ?? [])
+      .map((p, i) => ({ p, line: lcs[i]?.line }))
+      .find(({ p, line }) => !p.removed && !p.application && line?.contract && !line.application && !(state.applicationAsked ?? []).includes(line.contract.id));
+    if (unknown?.line?.contract) {
+      await this.store.setConversation(from, { ...state, step: "need_application", askItem: unknown.line.contract.id, updatedAt: now() });
+      await this.reply(from, askApplication(unknown.line.model || unknown.line.contract.id));
+      return true;
+    }
     const items: QuoteItem[] = [];
     const unpriced: number[] = [];
     (state.pending ?? []).forEach((p, i) => {
@@ -732,6 +892,10 @@ export class BotHandler {
       if (!lc) return;
       const quantity = p.quantity;
       const line = p.application ? { ...lc.line, application: p.application } : lc.line; // "aplicación 2 MIXT DEL"
+      if (line.contract) {
+        items.push(contractQuoteItem(line, quantity, this.settings, p.unitPriceOverride));
+        return;
+      }
       if (p.chosen !== null && p.candidateIds[p.chosen]) {
         const cand = lc.candidates.find((c) => c.row.id === p.candidateIds[p.chosen!]);
         if (cand) {
@@ -758,7 +922,6 @@ export class BotHandler {
       await this.reply(from, "No quedó ningún ítem para cotizar. Escribe el pedido de nuevo.");
       return true;
     }
-    const profile = findProfile(this.settings, state.profile);
     if (hasExcelFormat(profile) && items.length > PROSEGUR_MAX_ITEMS) {
       await this.reply(from, prosegurTooManyItems(items.length));
       return true;
@@ -799,7 +962,8 @@ export class BotHandler {
       quote.items.length - noPhoto.length > 0 || noPhoto.length > 0
         ? `\n📷 Fotos: ${quote.items.length - noPhoto.length}/${quote.items.length}${noPhoto.length ? ` · sin foto: ${noPhoto.map((it) => [it.brand, it.model].filter(Boolean).join(" ") || it.description).join(", ")} → mándame la imagen con el texto *foto ${[noPhoto[0].brand, noPhoto[0].model].filter(Boolean).join(" ")}*${webSearchAvailable() ? ` o escribe *foto buscar ${quote.items.indexOf(noPhoto[0]) + 1}*` : ""}` : ""}`
         : "";
-    await this.client.sendDocument(from, pdf, pdfFileName(quote), `Cotización ${quote.number} · ${summary} · Total ${fmtMoney(displayTotal(quote), quote.currency)} (${taxNote})${photoNote}`, PDF_MIME);
+    // a profile's quote keeps its texts short (the salesman found them too long): no photo hints in the caption
+    await this.client.sendDocument(from, pdf, pdfFileName(quote), `Cotización ${quote.number} · ${summary} · Total ${fmtMoney(displayTotal(quote), quote.currency)} (${taxNote})${profile ? "" : photoNote}`, PDF_MIME);
     if (xlsx && profile) await this.client.sendDocument(from, xlsx.buffer, xlsx.fileName, `Formato ${profile.name} · ${xlsx.fileName}`, XLSX_MIME);
     if (!quote.customer.email) {
       await this.store.setConversation(from, { phone: from, step: "need_email", quoteNumber: quote.number, updatedAt: now() });
@@ -807,10 +971,11 @@ export class BotHandler {
     }
     await this.store.setConversation(from, { phone: from, step: "review_quote", quoteNumber: quote.number, updatedAt: now() });
     const d = quote.emailDraft;
+    const excelMissing = xlsx && profile ? missingInQuote(profile, quote) : [];
+    if (profile) return this.reply(from, this.profileReview(quote, profile, d.to, excelMissing));
     const missing: string[] = [];
     if (!quote.customer.attention && !quote.customer.name) missing.push("*atención: Sr. Pérez*");
     if (!quote.customer.address) missing.push("*dirección: Av. … , Lima*");
-    const excelMissing = xlsx && profile ? missingInQuote(profile, quote) : [];
     const terms = `Pago: ${quote.paymentType || "—"} · Plazo: ${quote.paymentTerm || "—"} · Entrega: ${quote.deliveryTerm || "—"} · Validez: ${quote.validityDays} días`;
     const check = [
       missing.length ? `⚠️ Falta en el PDF: ${missing.join(", ")}` : "",
@@ -821,6 +986,27 @@ export class BotHandler {
       .filter(Boolean)
       .join("\n");
     await this.reply(from, `📧 *Para:* ${d.to}\n*Asunto:* ${d.subject}\n\n${d.body}\n\n${check}\n\n—\nResponde *enviar* para mandarlo, *precio 2 480* para cambiar un unitario, *aplicación 2 POST ON/OFF* para la columna aplicación, *correo x@y.com* para cambiar el destinatario, *con igv* / *sin igv*, *número 452* o *nombre: …* para el número, *archivo: Nombre* para el nombre del PDF, *foto 1* para ver la foto de un ítem, o *cancelar*.`);
+  }
+
+  /**
+   * Summary + review of a profile's quote in about six lines:
+   *   Prosegur · Ayacucho · UB 1830 · solicitante Johann Castañeda
+   *   1. 215/75R17.5 18PR Fenixway Valor 99 MIXT x2 · US$ 123.17
+   *   Total US$ 752.02 sin IGV · OCTUBRE 2026 - 452 · correo: compras@prosegur.com
+   *   Responde *enviar*, o corrige: *precio 2 130*, *cantidad 1 3*, …
+   */
+  private profileReview(quote: Quote, profile: CustomerProfile, to: string, excelMissing: RequiredField[]): string {
+    const k = Math.min(2, quote.items.length);
+    const serial = quoteSerial(quote.number, this.settings.quote.numberFormat);
+    return [
+      profileHead(profile, quote),
+      ...quote.items.map((it, i) => `${i + 1}. ${shortItemLabel(it, quote.ub)} · ${fmtMoney(displayUnit(it, quote), quote.currency)}`),
+      `Total ${fmtMoney(displayTotal(quote), quote.currency)} ${quote.pricesIncludeTax ? "con" : "sin"} ${quote.taxLabel} · ${quote.number} · correo: ${to}`,
+      excelMissing.length ? `⚠️ Falta para el Excel: ${excelMissing.map((f) => `*${FIELD_LABEL[f]}: …*`).join(", ")}` : "",
+      `Responde *enviar*, o corrige: *precio ${k} 130*, *cantidad 1 3*, *aplicación ${k} MIXT*, *atención: …*${serial !== undefined ? `, *número ${serial + 1}*` : ""}, *cancelar*`,
+    ]
+      .filter(Boolean)
+      .join("\n");
   }
 
   /** "número 451" / "nombre: …" on a presented draft: saved under the new number, the old draft removed, presented again. */
@@ -847,19 +1033,35 @@ export class BotHandler {
     await this.presentQuote(from, { ...quote, files: { ...quote.files, ...files } });
   }
 
-  /** Contact, address and terms from the last quote to the same customer (email, else company), unless the request already sets them. */
-  private async rememberCustomer(req: QuoteRequest): Promise<{ lines: string[]; summary: string[]; who: string }> {
+  /**
+   * Contact, address and terms from the last quote to the same customer (email, else company), unless the request
+   * already sets them. A profile's units have their own requester and contact (Prosegur): when the request names a
+   * unit, the last quote of that unit; if the unit has none yet, only the customer's email is reused.
+   */
+  private async rememberCustomer(req: QuoteRequest, profile?: CustomerProfile): Promise<{ lines: string[]; summary: string[]; who: string }> {
     const out = { lines: [] as string[], summary: [] as string[], who: "" };
     if (!req.customerEmail && !req.customerCompany) return out;
-    const last = await this.store.findLastQuoteForCustomer({ email: req.customerEmail, company: req.customerCompany });
-    if (!last) return out;
-    out.who = last.customer.company || last.customer.name || last.customer.email || "";
+    const who = { email: req.customerEmail, company: req.customerCompany };
+    const perUnit = !!profile && !!req.unit;
+    const last = await this.store.findLastQuoteForCustomer(perUnit ? { ...who, unit: req.unit } : who);
+    if (!last) {
+      const any = perUnit && !req.customerEmail ? await this.store.findLastQuoteForCustomer(who) : null;
+      if (any?.customer.email) {
+        out.who = any.customer.company || any.customer.name || any.customer.email;
+        out.lines.push(`correo ${any.customer.email}`);
+        out.summary.push(`correo ${any.customer.email}`);
+      }
+      return out;
+    }
+    out.who = [last.customer.company || last.customer.name || last.customer.email || "", perUnit ? last.unit : ""].filter(Boolean).join(" · ");
     const add = (key: string, label: string, value: string | undefined, already: unknown) => {
       if (!value || already) return;
       out.lines.push(`${key}: ${value}`);
       out.summary.push(`${label} ${value}`);
     };
-    add("atención", "atención", last.customer.attention, req.attention);
+    // the attention goes with its requester: not carried over when it only repeated the requester, nor to a new requester
+    const sameRequester = !req.requester || foldKey(req.requester) === foldKey(last.requester);
+    add("atención", "atención", last.customer.attention !== last.requester && sameRequester ? last.customer.attention : undefined, req.attention);
     add("dirección", "dirección", last.customer.address, req.address);
     // they vary per unit of the customer, but are worth prefilling (the salesman overrides them with "unidad: …")
     add("unidad", "unidad", last.unit, req.unit);
@@ -989,22 +1191,63 @@ export class BotHandler {
     await this.reply(from, `¿Es la foto correcta de *${brand} ${model}*? Responde *foto ok* para guardarla, *foto otra* para ver la siguiente o *foto no* para descartar.`);
   }
 
-  private async rebuildQuote(from: string, state: ConversationState, change: { unitPrice?: number; lineIndex?: number; email?: string; pricesIncludeTax?: boolean; extraText?: string; application?: string }): Promise<void> {
+  /**
+   * Items sent in a message of their own after the quote was presented ("2 v99", then "4 v89"): a message made only of
+   * contract lines of the quote's customer adds them to the draft, which is presented again. An item without APLICACIÓN
+   * is asked about first. Returns false for anything else.
+   */
+  private async addToQuote(from: string, state: ConversationState, text: string): Promise<boolean> {
+    const quote = state.quoteNumber ? await this.store.getQuote(state.quoteNumber) : null;
+    const profile = findProfile(this.settings, quote?.customerProfile);
+    if (!quote || quote.status !== "draft" || !profile) return false;
+    const lines = this.moreContractLines(await this.contractFor(profile), text);
+    if (!lines) return false;
+    const unknown = lines.find((l) => l.contract && !l.application && !(state.applicationAsked ?? []).includes(l.contract.id));
+    if (unknown?.contract) {
+      await this.store.setConversation(from, { ...state, step: "need_application", profile: profileId(profile), askItem: unknown.contract.id, addText: text, updatedAt: now() });
+      await this.reply(from, askApplication(unknown.model || unknown.contract.id));
+      return true;
+    }
+    await this.rebuildQuote(from, state, { add: lines, addText: text });
+    return true;
+  }
+
+  private async rebuildQuote(from: string, state: ConversationState, change: { unitPrice?: number; lineIndex?: number; email?: string; pricesIncludeTax?: boolean; extraText?: string; application?: string; quantity?: number; remove?: boolean; add?: RequestLine[]; addText?: string }): Promise<void> {
     const quote = state.quoteNumber ? await this.store.getQuote(state.quoteNumber) : null;
     if (!quote) return this.reply(from, "No encuentro la cotización; escribe el pedido de nuevo.");
+    const at = change.lineIndex ?? 0;
+    const perItem = change.unitPrice !== undefined || change.application !== undefined || change.quantity !== undefined || change.remove;
+    if (perItem && !quote.items[at]) return this.reply(from, `No existe el ítem ${at + 1}; hay ${quote.items.length}.`);
     // terms typed after the quote ("pago: letras 30 días") are appended to the request text so they persist
-    // ("pago letras 30 días" gets its colon; text already written as "clave: valor" is kept as it is)
+    // ("pago letras 30 días" gets its colon; text already written as "clave: valor" is kept as it is); so are added items
     const extra = change.extraText && !/^[^\n:]*:/.test(change.extraText) ? change.extraText.replace(/^(\w[\w ]*?)\s+(?=\S)/, (m, k) => (/:$/.test(m.trim()) ? m : `${k}: `)) : change.extraText;
-    const requestText = extra ? `${quote.requestText}\n${extra}` : quote.requestText;
-    const req = await parseRequest(requestText);
+    const requestText = [quote.requestText, extra, change.addText].filter(Boolean).join("\n");
+    const profile = findProfile(this.settings, quote.customerProfile);
+    const req = await this.parseFor(requestText, await this.contractFor(profile));
     req.customerEmail = change.email ?? quote.customer.email;
-    const items = quote.items.map((it, i) => {
-      if (change.application !== undefined && i === (change.lineIndex ?? 0)) return { ...it, application: change.application };
-      if (change.unitPrice === undefined || i !== (change.lineIndex ?? 0)) return it;
+    let items = quote.items.map((it, i) => {
+      if (i !== at) return it;
+      if (change.application !== undefined) return { ...it, application: change.application };
+      if (change.quantity !== undefined) return { ...it, quantity: change.quantity, total: r2(it.unitPrice * change.quantity) };
+      if (change.unitPrice === undefined) return it;
       const unitPrice = change.unitPrice;
+      if (it.origin === "contract") return { ...it, unitPrice, discountPct: 0, total: r2(unitPrice * it.quantity) }; // a price below the contract's is not a "discount"
       const discountPct = it.listPrice ? Math.round((1 - unitPrice / it.listPrice) * 10000) / 100 : it.discountPct;
       return { ...it, unitPrice, discountPct: Math.max(0, discountPct), total: Math.round(unitPrice * it.quantity * 100) / 100, origin: it.listPrice ? it.origin : ("manual" as const) };
     });
+    if (change.remove) items = items.filter((_, i) => i !== at);
+    // contract items sent after the quote was presented: the same item, UB and plate adds to its quantity
+    const ubOf = (ub: string | undefined) => ub ?? req.ub ?? "";
+    for (const line of change.add ?? []) {
+      const k = items.findIndex((it) => it.origin === "contract" && it.code === line.contract?.id && ubOf(it.ub) === ubOf(line.ub) && (it.plate ?? "") === (line.plate ?? ""));
+      if (k < 0) items.push(contractQuoteItem(line, line.quantity, this.settings));
+      else items[k] = { ...items[k], application: items[k].application ?? line.application, quantity: items[k].quantity + line.quantity, total: r2(items[k].unitPrice * (items[k].quantity + line.quantity)) };
+    }
+    if (change.add?.length && hasExcelFormat(profile) && items.length > PROSEGUR_MAX_ITEMS) return this.reply(from, prosegurTooManyItems(items.length));
+    if (!items.length) {
+      await this.store.setConversation(from, null);
+      return this.reply(from, "No quedó ningún ítem para cotizar. Escribe el pedido de nuevo.");
+    }
     const rebuilt = buildQuote({ number: quote.number, request: req, items, settings: this.settings, today: quote.date, requestedBy: quote.requestedBy ?? from, pricesIncludeTax: change.pricesIncludeTax ?? quote.pricesIncludeTax, customerProfile: quote.customerProfile, files: quote.files });
     rebuilt.createdAt = quote.createdAt;
     await this.presentQuote(from, rebuilt);
@@ -1080,6 +1323,109 @@ export class BotHandler {
       return true;
     }
     return false;
+  }
+
+  // ---------- contracts ----------
+
+  /**
+   * "contrato prosegur" (anyone): the effective contract items. Admins only: "contrato prosegur v99 125.50" (price),
+   * "contrato prosegur f77 aplicación POST", "contrato prosegur nuevo: f66 = Fenixway Flama 66 215/75R17.5 18PR POST
+   * 118.00", "contrato prosegur borrar f66". Changes go to contract_prices and apply to the next quotes.
+   */
+  private async handleContractCommand(from: string, text: string): Promise<boolean> {
+    if (!text || text.includes("\n")) return false;
+    const m = text.trim().match(/^contratos?(?:\s+(?:de\s+)?(\S.*))?$/i);
+    if (!m) return false;
+    if (!m[1]) {
+      const lists: string[] = [];
+      for (const p of this.settings.customers) {
+        const c = await this.contractFor(p);
+        if (c?.items.length) lists.push(this.contractListing(p, c, from));
+      }
+      await this.reply(from, lists.length ? lists.join("\n\n") : "No hay clientes con contrato.");
+      return true;
+    }
+    const lead = leadingProfile(this.settings, m[1]);
+    if (!lead) {
+      const withContract = this.settings.customers.filter((p) => p.contract).map((p) => p.name);
+      await this.reply(from, `No conozco el cliente *${m[1].trim()}*.${withContract.length ? ` Clientes con contrato: ${withContract.join(", ")}.` : ""}`);
+      return true;
+    }
+    const profile = lead.profile;
+    const contract = await this.contractFor(profile);
+    const rest = lead.rest.trim();
+    if (!rest) {
+      await this.reply(from, this.contractListing(profile, contract, from));
+      return true;
+    }
+    if (!isAdmin(from)) {
+      await this.reply(from, "Solo el administrador cambia los precios de contrato.");
+      return true;
+    }
+    await this.reply(from, await this.changeContract(from, profile, contract, rest));
+    return true;
+  }
+
+  /** "*Contrato Prosegur 2 años · precios sin IGV*" and one line per item (plus the edit commands, for admins). */
+  private contractListing(profile: CustomerProfile, contract: Contract | null, from: string): string {
+    const key = profileKey(profile);
+    const example = `*contrato ${key} nuevo: f66 = Fenixway Flama 66 215/75R17.5 18PR POST 118.00*`;
+    if (!contract?.items.length) return `${profile.name} no tiene contrato cargado.${isAdmin(from) ? ` Agrega ítems con ${example}.` : ""}`;
+    const a = contract.items[0];
+    const b = contract.items.find((i) => !i.application) ?? contract.items[contract.items.length - 1];
+    const admin = isAdmin(from) ? `\nCambiar: *contrato ${key} ${a.id} 125.50* · *contrato ${key} ${b.id} aplicación POST* · ${example} · *contrato ${key} borrar f66*` : "";
+    return `*${contract.note || `Contrato ${profile.name}`}*\n${contract.items.map(contractItemLabel).join("\n")}${admin}`;
+  }
+
+  /** An admin's change to a contract; returns the reply. */
+  private async changeContract(from: string, profile: CustomerProfile, contract: Contract | null, rest: string): Promise<string> {
+    const cid = profileId(profile);
+    const key = profileKey(profile);
+    const notFound = (ref: string) => `No hay ningún ítem *${ref.trim()}* en el contrato de ${profile.name}${contract?.items.length ? ` (ítems: ${contract.items.map((i) => i.id).join(", ")})` : ""}.`;
+    const nuevo = rest.match(/^nuevo\s*:?\s*(\S.*)$/i);
+    if (nuevo) {
+      const item = parseNewContractItem(nuevo[1], contract);
+      if (typeof item === "string") return item;
+      const existed = contract?.items.some((i) => i.id === item.id);
+      await this.store.setContractItem(cid, { ...toStored(item), updatedBy: from });
+      return `✅ ${existed ? "Reemplacé" : "Agregué"} en el contrato de ${profile.name}: ${contractItemLabel(item)}`;
+    }
+    const del = rest.match(/^(?:borrar|eliminar|quitar)\s+(\S.*)$/i);
+    if (del) {
+      const item = contract ? findContractItem(contract, del[1]) : undefined;
+      if (!item) return notFound(del[1]);
+      const removed = await this.store.deleteContractItem(cid, item.id);
+      if (!item.inConfig) return `🗑️ Quité *${item.id}* del contrato de ${profile.name}.`;
+      const back = resolveContract(profile, await this.store.getContractItems(cid))?.items.find((i) => i.id === item.id);
+      return removed && back ? `↩️ *${item.id}* vuelve a lo de config/customers.json: ${contractItemLabel(back)}` : `*${item.id}* está en config/customers.json: para quitarlo del contrato hay que editar ese archivo.`;
+    }
+    const app = rest.match(/^(.+?)\s+(?:aplicaci[oó]n|aplic|app)\s*:?\s*(\S.*)$/i);
+    if (app) {
+      const item = contract ? findContractItem(contract, app[1]) : undefined;
+      if (!item) return notFound(app[1]);
+      const application = app[2].trim().toUpperCase().replace(/\s*\/\s*/g, "/").replace(/\s+/g, " ");
+      await this.saveContractChange(profile, item.id, { application }, from);
+      return `✅ ${contractItemLabel({ ...item, application })}`;
+    }
+    const price = rest.match(/^(.+?)\s+(?:precio\s*:?\s*)?(?:us\$|\$|usd)?\s*(\d+(?:[.,]\d{1,2})?)\s*$/i);
+    if (price) {
+      const item = contract ? findContractItem(contract, price[1]) : undefined;
+      if (!item) return notFound(price[1]);
+      const value = parseFloat(price[2].replace(",", "."));
+      await this.saveContractChange(profile, item.id, { price: value }, from);
+      return `✅ ${contractItemLabel({ ...item, price: value })} (antes ${fmtMoney(item.price, item.currency)}). Vale para las próximas cotizaciones.`;
+    }
+    return `No entendí. Ejemplos: *contrato ${key} v99 125.50* (precio sin IGV), *contrato ${key} f77 aplicación POST*, *contrato ${key} nuevo: f66 = Fenixway Flama 66 215/75R17.5 18PR POST 118.00*, *contrato ${key} borrar f66*.`;
+  }
+
+  /**
+   * One change to a contract item from WhatsApp (its price or APLICACIÓN), written to its contract_prices row on top of
+   * what the row already had: fields never changed stay empty, so they keep following config/customers.json.
+   */
+  private async saveContractChange(profile: CustomerProfile, id: string, change: { price?: number; application?: string }, from: string): Promise<void> {
+    const cid = profileId(profile);
+    const row = (await this.store.getContractItems(cid)).find((r) => r.id === id);
+    await this.store.setContractItem(cid, { ...(row ?? { id }), ...change, updatedBy: from, updatedAt: undefined });
   }
 
   private async replyQuoteList(from: string, company?: string): Promise<void> {

@@ -119,7 +119,7 @@ async function main() {
   fs.writeFileSync(path.join(outDir, `${safeName(quote.number)}.email.txt`), `To: ${draft.to}\nSubject: ${draft.subject}\n\n${draft.body}\n`);
 
   console.log(`\nCotización ${quote.number} (${quote.pricesIncludeTax ? "precios con IGV" : "precios sin IGV"}) · asesor: ${quote.salesperson.name}`);
-  for (const it of quote.items) console.log(`  ${it.quantity} x ${it.description} @ ${fmtMoney(it.unitPrice, cur)}${it.discountPct ? ` (dscto ${it.discountPct}%)` : ""} = ${fmtMoney(it.total, cur)}  [${it.origin === "own" ? "stock" : it.origin === "provider" ? it.provider : "manual"}]`);
+  for (const it of quote.items) console.log(`  ${it.quantity} x ${it.description} @ ${fmtMoney(it.unitPrice, cur)}${it.discountPct ? ` (dscto ${it.discountPct}%)` : ""} = ${fmtMoney(it.total, cur)}  [${it.origin === "own" ? "stock" : it.origin === "provider" ? it.provider : it.origin === "contract" ? "contrato" : "manual"}]`);
   console.log(`  subtotal ${fmtMoney(quote.subtotal, cur)}  ${quote.taxLabel} ${fmtMoney(quote.tax, cur)}  total ${fmtMoney(quote.total, cur)}  (impreso: ${fmtMoney(displayTotal(quote), cur)} ${quote.pricesIncludeTax ? "inc." : "sin"} ${quote.taxLabel})`);
   console.log(`  PDF: ${pdfPath}`);
   console.log(`  Email para: ${draft.to || "(sin correo en el pedido)"} · asunto: ${draft.subject}`);

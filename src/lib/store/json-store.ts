@@ -8,7 +8,7 @@ import path from "node:path";
 import { gunzipSync } from "node:zlib";
 import type { PriceRow } from "../ingest/types";
 import type { Quote } from "../quote/types";
-import { foldKey, photoKey, type ConversationState, type ListQuotesOptions, type PriceStore, type ProductPhoto, type ProviderSummary, type QuoteFile, type ReplaceScope } from "./types";
+import { foldKey, photoKey, type ConversationState, type ListQuotesOptions, type PriceStore, type ProductPhoto, type ProviderSummary, type QuoteFile, type ReplaceScope, type StoredContractItem } from "./types";
 
 interface Data {
   prices: Record<string, PriceRow>;
@@ -23,9 +23,11 @@ interface Data {
   photos: Record<string, ProductPhoto>;
   /** "<quote number>|<kind>" -> document */
   quoteFiles: Record<string, QuoteFile>;
+  /** "<customer>|<item id>" -> contract item (overrides config/customers.json) */
+  contractPrices: Record<string, StoredContractItem & { customer: string }>;
 }
 
-const EMPTY: Data = { prices: {}, quotes: {}, conversations: {}, counters: { quote: 0 }, processed: [], syncMarks: {}, syncProviders: {}, photos: {}, quoteFiles: {} };
+const EMPTY: Data = { prices: {}, quotes: {}, conversations: {}, counters: { quote: 0 }, processed: [], syncMarks: {}, syncProviders: {}, photos: {}, quoteFiles: {}, contractPrices: {} };
 
 const digits = (s: string | undefined) => (s ?? "").replace(/\D/g, "");
 
@@ -140,13 +142,15 @@ export class JsonStore implements PriceStore {
     return this.run(() => new Set(Object.keys(this.data.photos)));
   }
 
-  findLastQuoteForCustomer(opts: { email?: string; company?: string }): Promise<Quote | null> {
+  findLastQuoteForCustomer(opts: { email?: string; company?: string; unit?: string }): Promise<Quote | null> {
     return this.run(() => {
       const email = opts.email?.toLowerCase();
       const company = opts.company?.toLowerCase();
+      const unit = opts.unit ? foldKey(opts.unit) : "";
       if (!email && !company) return null;
       const hits = Object.values(this.data.quotes)
         .filter((q) => (email && q.customer.email?.toLowerCase() === email) || (company && q.customer.company?.toLowerCase() === company))
+        .filter((q) => !unit || foldKey(q.unit) === unit)
         .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
       return hits[0] ?? null;
     });
@@ -259,6 +263,33 @@ export class JsonStore implements PriceStore {
         .filter((f) => f.quoteNumber === quoteNumber)
         .sort((a, b) => (a.kind < b.kind ? -1 : 1)),
     );
+  }
+
+  getContractItems(customer: string): Promise<StoredContractItem[]> {
+    return this.run(() =>
+      Object.values(this.data.contractPrices)
+        .filter((r) => r.customer === customer)
+        .map(({ customer: _c, ...item }) => structuredClone(item))
+        .sort((a, b) => (a.id < b.id ? -1 : 1)),
+    );
+  }
+
+  setContractItem(customer: string, item: StoredContractItem): Promise<void> {
+    return this.run(() => {
+      const id = item.id.trim().toLowerCase();
+      this.data.contractPrices[`${customer}|${id}`] = { ...structuredClone(item), id, customer, updatedAt: item.updatedAt ?? new Date().toISOString() };
+      this.persist();
+    });
+  }
+
+  deleteContractItem(customer: string, itemId: string): Promise<boolean> {
+    return this.run(() => {
+      const key = `${customer}|${itemId.trim().toLowerCase()}`;
+      if (!(key in this.data.contractPrices)) return false;
+      delete this.data.contractPrices[key];
+      this.persist();
+      return true;
+    });
   }
 
   getConversation(phone: string): Promise<ConversationState | null> {

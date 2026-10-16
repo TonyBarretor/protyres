@@ -19,6 +19,11 @@ export interface RequestLine {
   plate?: string;
   /** The customer's UB code for this line ("UB 1830": Prosegur's cost-center / vehicle unit, 3–5 digits). */
   ub?: string;
+  /**
+   * The customer's contract item this line is ("2 v99" on a Prosegur request): quoted at the contract price, never
+   * from the price lists (no options). `price` is net of IGV, in `currency`.
+   */
+  contract?: { id: string; price: number; currency: string };
 }
 
 export interface QuoteRequest {
@@ -104,8 +109,8 @@ export interface QuoteItem {
   listPrice?: number;
   discountPct: number;
   total: number;
-  /** "own" = from stock/own list, "provider" = bought to order, "manual" = price typed by the salesman */
-  origin: "own" | "provider" | "manual";
+  /** "own" = from stock/own list, "provider" = bought to order, "manual" = price typed by the salesman, "contract" = the customer's contract price */
+  origin: "own" | "provider" | "manual" | "contract";
   /** APLICACIÓN column ("DELANTERA", "MIXTA", "MONTACARGAS"...). */
   application?: string;
   /** Vehicle plate given by the customer, printed after the size ("11R22.5 18PR BVV-704"). */
