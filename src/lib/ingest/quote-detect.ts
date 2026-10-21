@@ -22,7 +22,7 @@ export const QUOTE_FILE_REFUSAL = "Esto parece una cotización, no una lista de 
 const DEFAULT_OWN_NAMES = ["Professional Tyres", "360 Tyres", "20565716396"];
 const PROSEGUR_MARKS = /\bcotizacion proveedores\b|\bformato proveedores\b|\bnombre de archivo\b/;
 const ADDRESSEE_LABEL = /^(?:cliente|se[ñn]or(?:es)?|raz[oó]n social|empresa)\s*:/i;
-const CLIENT_BOX = /^(?:cliente|atenci[oó]n|se[ñn]or(?:es)?)\s*:/i;
+const CLIENT_BOX = /^(?:cliente|atenci[oó]n(?:\s+al?)?|se[ñn]or(?:es)?)\s*:/i;
 
 function ownKeys(opts: QuoteDetectOptions): string[] {
   return (opts.ownNames?.length ? opts.ownNames : DEFAULT_OWN_NAMES).map((n) => fold(n)).filter(Boolean);

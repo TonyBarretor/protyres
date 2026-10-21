@@ -39,6 +39,8 @@ export interface QuoteRequest {
   address?: string;
   /** Salesman's discount on own-list items (validated against the list's maximum). */
   discountPct?: number;
+  /** Salesman's margin on provider items for this quote ("margen 10%"); overrides pricing.provider.marginPct. */
+  marginPct?: number;
   /** "con IGV" / "sin IGV" in the request. */
   showPricesWithTax?: boolean;
   /** Per-quote commercial terms ("pago: factura crédito", "plazo: 45 días", "entrega: 48 hrs post OC", "validez: 5 días", "tc 3.4"). */
@@ -56,6 +58,11 @@ export interface QuoteRequest {
   /** "número 451" written as a line of the request: this quote's counter. */
   quoteNumber?: number;
   notes?: string;
+  /**
+   * Segments of the message (comma / ";" / newline separated, as written) that gave nothing: no item, field, flag or
+   * customer. Listed in the chat's "Entendí:" reply so the salesman can correct them; never on the quote.
+   */
+  unparsed?: string[];
   /** which parser produced the fields */
   parsedBy: "regex" | "llm" | "llm+regex";
 }

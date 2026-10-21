@@ -37,9 +37,11 @@ const PricingSchema = z.object({
   provider: z
     .object({
       marginPct: z.number().default(15),
+      /** "cost": price = cost × (1 + m/100) (markup on cost) · "price": price = cost / (1 − m/100) (m% of the sale price). */
+      marginBase: z.enum(["cost", "price"]).default("cost"),
       pricesIncludeTax: z.boolean().default(false),
     })
-    .default({ marginPct: 15, pricesIncludeTax: false }),
+    .default({ marginPct: 15, marginBase: "cost", pricesIncludeTax: false }),
   /** Quote unit prices with tax included by default ("Impuestos: INCLUIDOS"). */
   showPricesWithTax: z.boolean().default(false),
   /** 1 = whole units, 0.5, 0.1, 0.01 */

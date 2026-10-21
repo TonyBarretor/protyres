@@ -17,7 +17,7 @@ Cómo se arma el precio de venta:
   nunca más del máximo de la lista. Se muestra el stock de Odoo (la fila de la lista y la del stock se unen por el
   código Odoo, p.ej. P0360, o por marca + modelo + medida cuando la lista no trae código).
 * **Ítem de proveedor** (Steel, JCH o un mensaje reenviado): costo sin IGV + margen (`pricing.provider.marginPct`,
-  15 % por defecto). Sale en la cotización como "a pedido".
+  15 % por defecto; el vendedor lo cambia por cotización con `margen 10%`). Sale en la cotización como "a pedido".
 * **Ítem sin precio en ninguna lista** (parches, aros…): el vendedor escribe `precio 3 4.50` y entra como precio manual.
 
 ```
@@ -32,7 +32,9 @@ bot       →  "Enviado ✔"
 ```
 
 Pedidos con varias líneas (correos de licitación con tabla, mensajes reenviados) se entienden igual: una línea por
-ítem, cantidades sumadas cuando se repiten, código de referencia del cliente en la cotización.
+ítem, cantidades sumadas cuando se repiten, código de referencia del cliente en la cotización. Lo que el bot no entiende
+(una parte del mensaje entre comas o en su propia línea que no es llanta, cliente ni `clave: valor`) lo lista en el
+"Entendí:" como `⚠️ No entendí: «…»`, con cómo escribirlo (`atención: Nombre`, `295/80R22.5`…), antes de armar el PDF.
 
 La cotización sale en el formato de 360° Tyres (bandas negro/amarillo, número "OCTUBRE 2026 - 016", cajas de datos,
 tabla ITEM / MEDIDA / MARCA / MODELO / APLICACIÓN / ORIGEN / CANTIDAD / PRECIO UNIT. / PRECIO TOTAL, firma del asesor).
@@ -98,6 +100,7 @@ nombre no coincide con ninguna regla: `--provider "Nombre" --kind provider|own|s
 | `pricing.own.pricesIncludeTax` | la lista propia trae IGV (true) |
 | `pricing.own.maxDiscountPct` / `defaultDiscountPct` | descuento máximo y por defecto (si la lista trae "Descuento máximo", manda la lista) |
 | `pricing.provider.marginPct` / `pricesIncludeTax` | margen sobre costo de proveedor; si sus listas traen IGV |
+| `pricing.provider.marginBase` | `"cost"` (precio = costo × (1 + m)) o `"price"` (precio = costo / (1 − m), el margen es % del precio de venta) |
 | `pricing.showPricesWithTax` | cómo se muestran los unitarios en la cotización (el total es el mismo) |
 | `pricing.currency` / `exchangeRates` | moneda de la cotización y tipo de cambio para listas en soles |
 | `pricing.quoteValidityDays` / `stalePriceDays` | validez; a partir de cuántos días un precio de proveedor se marca como viejo |
@@ -162,6 +165,7 @@ Variables de entorno: copiar `.env.example` a `.env`. Nada es obligatorio para e
 | `1b 3c` · `2` (una sola línea) | elige opciones |
 | `quitar 2` · `cantidad 2 6` · `precio 3 4.50` | quita una línea, cambia cantidad, pone precio manual |
 | `dscto 15` · `con igv` / `sin igv` · `correo x@y.com` | descuento, presentación, destinatario |
+| `margen 10` (en el pedido: `margen 10%`, `10% de margen`, `mg 10%`) | margen de esta cotización sobre el costo de proveedor (reemplaza `pricing.provider.marginPct`; solo ítems de proveedor) |
 | `atención: Sra. X` · `dirección: Lima` · `pago: letras 30 días` · `plazo: 45 días` · `entrega: 48 hrs post OC` · `validez: 5 días` · `tc 3.4` | datos de las cajas de la cotización |
 | `unidad: Ayacucho` · `ub: 1830` (o `UB 1830` en la línea de la llanta) · `solicitante: Johann Castañeda` | unidad atendida, UB y solicitante (Prosegur) |
 | `número 451` (`numero`, `nro`, `n°`) · `número 451 confirmar` · `nombre: TEXTO` | fija el número ("OCTUBRE 2026 - 451", el siguiente del vendedor será 452); si ya existe pide confirmar; `nombre:` pone el número tal cual sin tocar el contador. En una cotización ya mostrada la renumera (solo borradores) |

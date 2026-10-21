@@ -17,13 +17,14 @@
     "taxPct": 18,
     "taxLabel": "IGV",
     "own": {
-      "pricesIncludeTax": false,
+      "pricesIncludeTax": true,
       "maxDiscountPct": 20,
       "defaultDiscountPct": 0
     },
     "provider": {
-      "marginPct": 15,
-      "pricesIncludeTax": false
+      "marginPct": 20,
+      "marginBase": "price",
+      "pricesIncludeTax": true
     },
     "showPricesWithTax": false,
     "roundTo": 0.01,

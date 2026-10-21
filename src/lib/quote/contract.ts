@@ -219,7 +219,7 @@ export function startsWithContractAlias(text: string, items: ContractItem[]): bo
 
 const EMAIL = /[\w.+-]+@[\w-]+(?:\.[\w-]+)+/g;
 /** A line or segment that sets a field ("unidad: …", "entrega: 48 HRS POST OC", "para PROSEGUR SA", "sin igv"…): never an item. */
-const FIELD = /^(?:[\p{L}][\p{L} .]{0,30}:|(?:para|cliente|correo|email|mail|atenci[oó]n|atn|att|direcci[oó]n|dir|pago|forma de pago|tipo de pago|plazo|entrega|validez|vigencia|tc|t\.c\.|tipo de cambio|unidad|sede|ub|u\.b\.|solicitante|n[uú]mero|nro|n[°º]|nombre|archivo|dscto|dcto|descuento|con igv|sin igv|ref|referencia)(?![\p{L}\p{N}]))/iu;
+const FIELD = /^(?:[\p{L}][\p{L} .]{0,30}:|(?:para|cliente|correo|email|mail|atenci[oó]n|atn|att|direcci[oó]n|dir|pago|forma de pago|tipo de pago|plazo|entrega|validez|vigencia|tc|t\.c\.|tipo de cambio|unidad|sede|ub|u\.b\.|solicitante|n[uú]mero|nro|n[°º]|nombre|archivo|dscto|dcto|descuento|margen|con igv|sin igv|ref|referencia)(?![\p{L}\p{N}]))/iu;
 const NUMBER_WORDS: Record<string, number> = { una: 1, uno: 1, dos: 2, tres: 3, cuatro: 4, cinco: 5, seis: 6, siete: 7, ocho: 8, nueve: 9, diez: 10, once: 11, doce: 12 };
 
 const canonicalOf = (size: string) => parseTyreSize(size)?.canonical ?? size;
@@ -384,7 +384,9 @@ export function parseContractRequestRegex(text: string, items: ContractItem[]): 
   const split = splitContractLines(text, items);
   if (!split.lines.length) return parseRequestRegex(text);
   // the fields (terms, customer, email…) are read from the whole text, the other items from what is left
-  return { ...parseRequestRegex(text), lines: [...split.lines, ...parseRequestRegex(split.rest).lines] };
+  const rest = parseRequestRegex(split.rest);
+  // the contract lines were understood: only what is left can be "unparsed"
+  return { ...parseRequestRegex(text), lines: [...split.lines, ...rest.lines], unparsed: rest.unparsed };
 }
 
 /** parseRequest for a request of a customer with a contract: the LLM, when configured, only reads the non-contract lines. */
@@ -392,8 +394,9 @@ export async function parseContractRequest(text: string, items: ContractItem[]):
   const split = splitContractLines(text, items);
   if (!split.lines.length) return parseRequest(text);
   const base = parseRequestRegex(text);
-  const others = parseRequestRegex(split.rest).lines;
-  if (!others.length || !llmAvailable()) return { ...base, lines: [...split.lines, ...others] };
+  const restParsed = parseRequestRegex(split.rest);
+  const others = restParsed.lines;
+  if (!others.length || !llmAvailable()) return { ...base, lines: [...split.lines, ...others], unparsed: restParsed.unparsed };
   const llm = await parseRequest(split.rest);
   return { ...llm, raw: text, lines: [...split.lines, ...llm.lines] };
 }

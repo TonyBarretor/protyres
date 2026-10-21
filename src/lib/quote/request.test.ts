@@ -1,5 +1,10 @@
-import { beforeAll, describe, expect, it } from "vitest";
-import { describeRequest, extractUb, parseDiscount, parseQuantity, parseRequestRegex, parseTaxMode, parseTerms } from "./request";
+import { beforeAll, describe, expect, it, vi } from "vitest";
+import { describeRequest, extractUb, parseDiscount, parseMargin, parseQuantity, parseRequest, parseRequestRegex, parseTaxMode, parseTerms, unparsedHint } from "./request";
+
+// the LLM is off unless a test turns it on with a canned answer
+const llm = vi.hoisted(() => ({ on: false, answer: null as unknown }));
+vi.mock("../llm/client", async (orig) => ({ ...(await orig<typeof import("../llm/client")>()), llmAvailable: () => llm.on }));
+vi.mock("../llm/parse-request", () => ({ parseRequestWithLLM: async () => llm.answer }));
 
 beforeAll(() => {
   process.env.LLM_DISABLED = "1";
@@ -204,5 +209,104 @@ MONT-13 300 x R15 ICA 1 Delantera 10 06 26`;
     ]);
     expect(r.lines[1].brand).toBe("Track King");
     expect(r.lines[1].ply).toBe(16);
+  });
+});
+
+describe("per-quote margin and 'atención a:'", () => {
+  it("the salesman's caps message: margin applied, attention read, model clean", () => {
+    const r = parseRequestRegex("FALKEN 295/80R22.5 MIXTA X 6, MARGEN 10% CLIENTE MOVIL BUS S.A.C. , ATENCION A: SR. JONATAHAN MATTA, DIRECCION: LIMA");
+    expect(r.customerCompany).toBe("MOVIL BUS S.A.C.");
+    expect(r.attention).toBe("SR. JONATAHAN MATTA");
+    expect(r.address).toBe("LIMA");
+    expect(r.marginPct).toBe(10);
+    expect(r.lines.length).toBe(1);
+    const l = r.lines[0];
+    expect(l.brand).toBe("Falken");
+    expect(l.size?.canonical).toBe("295/80R22.5");
+    expect(l.quantity).toBe(6);
+    expect(l.position).toBe("MIX");
+    expect(l.model ?? "").not.toMatch(/MARGEN/i);
+    expect(describeRequest(r)).toContain("margen 10%");
+  });
+  it("margin variants; 0–99 with one decimal; the last one wins", () => {
+    for (const t of ["margen 10", "margen 10%", "margen: 10", "margen de 10%", "10% margen", "10% de margen", "mg 10%", "MARGEN 10 %"]) expect(parseMargin(t), t).toBe(10);
+    expect(parseMargin("margen 7,5%")).toBe(7.5);
+    expect(parseMargin("margen 12.5")).toBe(12.5);
+    expect(parseMargin("margen 10%\nmargen 12%")).toBe(12);
+    expect(parseMargin("Fenixway 295/80R22.5 x4")).toBeUndefined();
+    expect(parseMargin("mg 10")).toBeUndefined(); // "mg" needs the "%"
+    expect(parseDiscount("dscto 10% margen 12%")).toBe(10);
+  });
+  it("margin next to a discount, stripped from the item", () => {
+    const r = parseRequestRegex("Fenixway 295/80R22.5 Valor 87 x4 para Transportes ABC, margen de 12%, dscto 5%");
+    expect(r.marginPct).toBe(12);
+    expect(r.discountPct).toBe(5);
+    expect(r.customerCompany).toBe("Transportes ABC");
+    expect(r.lines[0].model).toBe("VALOR 87");
+  });
+  it("'atención a:' / 'atención al:' / 'atención:'", () => {
+    expect(parseTerms("x4, atención al: Sr. X").attention).toBe("Sr. X");
+    expect(parseTerms("Atención: Karen Ordoñez").attention).toBe("Karen Ordoñez");
+    expect(parseTerms("ATENCION A: SR. JONATAHAN MATTA").attention).toBe("SR. JONATAHAN MATTA");
+    const r = parseRequestRegex("Michelin 11R22.5 XZE2+ x4\nAtención a: Sra. Karen Ordoñez");
+    expect(r.attention).toBe("Sra. Karen Ordoñez");
+    expect(r.lines.length).toBe(1);
+    expect(r.customerName).toBeUndefined();
+  });
+});
+
+describe("segments the bot did not understand", () => {
+  it("the salesman's message with the old spelling: 'para el señor …' is reported, without a hint", () => {
+    const r = parseRequestRegex("Falken 295/80R22.5 mixta x6, para el señor Jonathan Matta, dirección: Lima");
+    expect(r.lines.length).toBe(1);
+    expect(r.address).toBe("Lima");
+    expect(r.customerName).toBeUndefined();
+    expect(r.unparsed).toEqual(["para el señor Jonathan Matta"]);
+    expect(unparsedHint("para el señor Jonathan Matta")).toBeUndefined();
+    expect(describeRequest(r)).not.toContain("Jonathan");
+  });
+  it("hints name the field the segment looks like", () => {
+    expect(unparsedHint("att al sr Matta")).toBe("*atención: Nombre*");
+    expect(unparsedHint("ATENCIÓN SR. MATTA")).toBe("*atención: Nombre*");
+    expect(unparsedHint("plazo 30 dias")).toBe("*plazo: 30 días*");
+    expect(unparsedHint("Dirección Av. Lima 123")).toBe("*dirección: …*");
+    expect(unparsedHint("validez una semana")).toBe("*validez: 7 días*");
+    expect(unparsedHint("295/80 R22,5 falken")).toBe("escribe la medida como *295/80R22.5*");
+    const r = parseRequestRegex("Falken 295/80R22.5 mixta x6\natt. compras, plazo 30 dias");
+    expect(r.unparsed).toEqual(["att. compras", "plazo 30 dias"]);
+    expect(r.unparsed?.map(unparsedHint)).toEqual(["*atención: Nombre*", "*plazo: 30 días*"]);
+  });
+  it("a fully understood message reports nothing", () => {
+    expect(parseRequestRegex("FALKEN 295/80R22.5 MIXTA X 6, MARGEN 10% CLIENTE MOVIL BUS S.A.C. , ATENCION A: SR. JONATAHAN MATTA, DIRECCION: LIMA").unparsed).toBeUndefined();
+    expect(parseRequestRegex("Fenixway 295/80R22.5 Valor 87 x4 para Transportes ABC, juan@abc.com, dscto 10% sin igv").unparsed).toBeUndefined();
+    expect(parseRequestRegex("Michelin 11R22.5 XZE2+ x4\nplaca BVV-704, UB 1830, número 451\nvalidez 7 días, tc 3.75").unparsed).toBeUndefined();
+  });
+  it("greetings, filler and table headers are not reported", () => {
+    const r = parseRequestRegex("Hola, buenos días\nFalken 295/80R22.5 x6, por favor, urgente\nGracias, saludos");
+    expect(r.lines.length).toBe(1);
+    expect(r.unparsed).toBeUndefined();
+    expect(parseRequestRegex("Buen día:\nPor favor para cotizar lo siguiente:\nPlaca unidad Medida de Llanta Planta Zonal Cant Ubicación\nBYV-762 215/75 x R17.5 PIKIN 1 Posterior").unparsed).toBeUndefined();
+    expect(parseRequestRegex("Estimado proveedor, buen día.\nLa presente es para invitarle a cotizar, puestos en nuestro almacén.\n5657944 LLANTA 12.5/80 X 18 - 12 PLY R4 UND 2").unparsed).toBeUndefined();
+  });
+  it("a customer tail after the size, without a comma, still ends the item", () => {
+    const r = parseRequestRegex("Fenixway 295/80R22.5 Valor 87 x4 para Transportes ABC, plazo 30 dias");
+    expect(r.customerCompany).toBe("Transportes ABC");
+    expect(r.unparsed).toEqual(["plazo 30 dias"]);
+  });
+  it("parseRequest without the LLM keeps them", async () => {
+    expect((await parseRequest("Falken 295/80R22.5 mixta x6, para el señor Jonathan Matta")).unparsed).toEqual(["para el señor Jonathan Matta"]);
+  });
+  it("with the LLM: dropped when it filled the field the hint names, or noted it; kept otherwise", async () => {
+    const msg = "Falken 295/80R22.5 mixta x6\natt. compras, plazo 30 dias, para el señor Jonathan Matta";
+    llm.on = true;
+    try {
+      llm.answer = { lines: [{ size: "295/80R22.5", brand: "Falken", quantity: 6, raw: "Falken 295/80R22.5 mixta x6" }], attention: "Compras", payment_term: "30 días" };
+      expect((await parseRequest(msg)).unparsed).toEqual(["para el señor Jonathan Matta"]);
+      llm.answer = { lines: [{ size: "295/80R22.5", brand: "Falken", quantity: 6 }], notes: "Para el señor Jonathan Matta" };
+      expect((await parseRequest(msg)).unparsed).toEqual(["att. compras", "plazo 30 dias"]);
+    } finally {
+      llm.on = false;
+      llm.answer = null;
+    }
   });
 });

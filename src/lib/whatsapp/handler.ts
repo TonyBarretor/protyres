@@ -4,7 +4,7 @@
  *   salesman  ->  "Fenixway 295/80R22.5 Valor 87 x4 para Transportes ABC, juan@abc.com, dscto 10%"
  *                 (or a forwarded customer message / RFQ email with several lines)
  *   bot       ->  per line: numbered options (stock, list price, discount, provider alternatives)
- *   salesman  ->  "ok"  /  "1b 3a"  /  "quitar 2"  /  "precio 3 4.50"  /  "dscto 15"  /  "con igv"
+ *   salesman  ->  "ok"  /  "1b 3a"  /  "quitar 2"  /  "precio 3 4.50"  /  "dscto 15"  /  "margen 10"  /  "con igv"
  *   bot       ->  PDF quote + email preview
  *   salesman  ->  "enviar"  (or "correo x@y.com", "cancelar")
  *   bot       ->  "Enviado ✔"
@@ -34,7 +34,7 @@ import { attachPhotos, findPhoto, itemsWithoutPhoto, loadImage, searchWebPhotos,
 import { fmtMoney, r2 } from "../quote/pricing";
 import { FIELD_LABEL, askRequired, detectProfile, findProfile, hasExcelFormat, leadingProfile, missingInQuote, missingRequired, profileGuide, profileHead, profileId, profileKey, profileRequestText, shortItemLabel, type RequiredField } from "../quote/profiles";
 import { PROSEGUR_MAX_ITEMS, prosegurTooManyItems, renderProsegurXlsx } from "../quote/prosegur-xlsx";
-import { describeLine, describeRequest, parseEmail, parseRequest, parseRequestRegex } from "../quote/request";
+import { describeLine, describeRequest, parseEmail, parseRequest, parseRequestRegex, stripMargin, unparsedHintInfo } from "../quote/request";
 import type { Candidate, EmailDraft, LineCandidates, Quote, QuoteItem, QuoteRequest, RequestLine } from "../quote/types";
 import type { WhatsAppClient } from "./client";
 import type { InboundMessage } from "./webhook";
@@ -57,7 +57,7 @@ const HELP = [
   "_Fenixway 295/80R22.5 Valor 87 x4 para Transportes ABC, juan@abc.com, dscto 10%_",
   "",
   "Te muestro por cada ítem las opciones: stock propio (precio de lista menos descuento) y proveedores (Steel, JCH…).",
-  "Respondes *ok* para aceptar las primeras opciones, o eliges: *1b 2a*, *quitar 3*, *precio 3 4.50*, *dscto 15*, *con igv*.",
+  "Respondes *ok* para aceptar las primeras opciones, o eliges: *1b 2a*, *quitar 3*, *precio 3 4.50*, *dscto 15*, *margen 10*, *con igv*.",
   "Luego revisas el PDF y escribes *enviar*.",
   "",
   "Prosegur: *prosegur ayacucho 1830* y debajo una línea por llanta (*2 v99*); *contrato prosegur* muestra sus precios. Va también su Excel «Formato Proveedores».",
@@ -124,7 +124,7 @@ export function parsePicks(text: string, lines: number): Pick[] | null {
 }
 
 function looksLikeRequest(text: string): boolean {
-  return /\bx\s*\d{1,3}\b|\b\d{1,3}\s*(?:unidades|und|unid|llantas)\b|\b(?:para|cliente|cotiza|cotizar|cotización|cotizacion|necesito|pide|piden|me cotizas|und\b)\b|@|\bdscto\b|\bdescuento\b|\bu\.?\s?b\.?\s*:?\s*\d{3,5}\b|\b(?:unidad|solicitante)\s*:/i.test(text);
+  return /\bx\s*\d{1,3}\b|\b\d{1,3}\s*(?:unidades|und|unid|llantas)\b|\b(?:para|cliente|cotiza|cotizar|cotización|cotizacion|necesito|pide|piden|me cotizas|und\b)\b|@|\bdscto\b|\bdescuento\b|\bmargen\b|\bu\.?\s?b\.?\s*:?\s*\d{3,5}\b|\b(?:unidad|solicitante)\s*:/i.test(text);
 }
 
 function fmtDateShort(iso: string): string {
@@ -136,7 +136,26 @@ function fmtDate(iso: string): string {
 }
 
 /** A line that sets one of the quote's boxes: "unidad: Ayacucho", "ub 1830", "solicitante: …", "pago: letras", "validez 5 días". */
-const TERM_LINE = /^(atenci[oó]n|atn|att|direcci[oó]n|dir|tipo de pago|pago|plazo de entrega|plazo de pago|plazo|entrega|validez|tipo de cambio|tc|unidad atendida|unidad|sede|ub|u\.b\.|solicitante)\s*(?::\s*|\s+)(\S.*)$/i;
+const TERM_LINE = /^(atenci[oó]n|atn|att|direcci[oó]n|dir|tipo de pago|pago|plazo de entrega|plazo de pago|plazo|entrega|validez|tipo de cambio|tc|unidad atendida|unidad|sede|ub|u\.b\.|solicitante)(?:\s+(?:a|al|de|del)(?=\s*:))?\s*(?::\s*|\s+)(\S.*)$/i;
+
+/**
+ * "⚠️ No entendí: «…» — …": one line per segment of the request the parser could not place (at most four), with how
+ * to write it when the segment says what it was. Chat only: never on the quote.
+ */
+function unparsedWarning(segments: string[]): string {
+  const MAX = 4;
+  const lines = segments.slice(0, MAX).map((seg) => {
+    const h = unparsedHintInfo(seg);
+    const how = !h
+      ? "lo dejé fuera; si hace falta, reenvíalo como *clave: valor* o como línea de llanta"
+      : h.field === "size"
+        ? `si es una llanta, escribe la medida como ${h.example}`
+        : `si es ${h.label} escribe ${h.example}`;
+    return `⚠️ No entendí: «${seg}» — ${how}`;
+  });
+  if (segments.length > MAX) lines.push(`…y ${segments.length - MAX} más`);
+  return lines.join("\n");
+}
 
 /** Every line of the message is a field line → those lines as "clave: valor"; otherwise null. */
 function termLines(text: string): string[] | null {
@@ -180,7 +199,7 @@ function pendingProfile(state: ConversationState): { profile: string; header?: s
 const FIELD_KEY: Record<RequiredField, string> = { unit: "unidad", ub: "ub", requester: "solicitante" };
 
 /** Words that are commands, never a bare answer (a requester's name, a unit, an APLICACIÓN). */
-const COMMAND_WORD = /^(?:enviar|send|ayuda|help|hola|menu|inicio|gracias|listo|dale|si|no|ok|cancelar|seguir|continuar|cotizar|confirmar|proveedores|listas|cotizaciones|contrato|contratos|fotos?|precios?|stock|cantidad|cant|quitar|quita|eliminar|aplicacion|archivo|nombre|numero|nro|reenviar|reenvia|archivos|pdf|correo|email|borrar|proveedor|dscto|descuento)\b/;
+const COMMAND_WORD = /^(?:enviar|send|ayuda|help|hola|menu|inicio|gracias|listo|dale|si|no|ok|cancelar|seguir|continuar|cotizar|confirmar|proveedores|listas|cotizaciones|contrato|contratos|fotos?|precios?|stock|cantidad|cant|quitar|quita|eliminar|aplicacion|archivo|nombre|numero|nro|reenviar|reenvia|archivos|pdf|correo|email|borrar|proveedor|dscto|descuento|margen)\b/;
 
 /** The question for a contract item without APLICACIÓN yet ("Flama 77"). */
 function askApplication(name: string): string {
@@ -497,8 +516,14 @@ export class BotHandler {
       const chosen = p.chosen !== null ? ` → elegido *${LETTERS[p.chosen]}*${p.extra?.length ? ` ×${p.quantity}, ${p.extra.map((x) => `*${LETTERS[x.chosen]}* ×${x.quantity}`).join(", ")}` : ""}` : "";
       return `${head}${chosen}\n${opts}`;
     });
-    const extras = [req.customerCompany ?? req.customerName ?? "", req.customerEmail ?? "", req.discountPct !== undefined ? `dscto ${req.discountPct}%` : "", req.showPricesWithTax === true ? "con IGV" : req.showPricesWithTax === false ? "sin IGV" : ""].filter(Boolean);
-    return `${blocks.join("\n\n")}${extras.length ? `\n\n${extras.join(" · ")}` : ""}\n\nResponde *ok* para cotizar con las opciones *a*, o elige: *1b* (ítem 1, opción b), *b x4* (opción b, 4 unidades), *a x2, b x8* (dos opciones del mismo ítem). También: *quitar 2*, *precio 3 4.50*, *aplicación 2 MIXT DEL*, *dscto 15*, *con igv*, *cancelar*.`;
+    const extras = [req.customerCompany ?? req.customerName ?? "", req.customerEmail ?? "", req.discountPct !== undefined ? `dscto ${req.discountPct}%` : "", req.marginPct !== undefined ? `margen ${req.marginPct}%` : "", req.showPricesWithTax === true ? "con IGV" : req.showPricesWithTax === false ? "sin IGV" : ""].filter(Boolean);
+    const unparsed = this.unparsedOf(req);
+    return `${blocks.join("\n\n")}${extras.length ? `\n\n${extras.join(" · ")}` : ""}${unparsed.length ? `\n\n${unparsedWarning(unparsed)}` : ""}\n\nResponde *ok* para cotizar con las opciones *a*, o elige: *1b* (ítem 1, opción b), *b x4* (opción b, 4 unidades), *a x2, b x8* (dos opciones del mismo ítem). También: *quitar 2*, *precio 3 4.50*, *aplicación 2 MIXT DEL*, *dscto 15*, *margen 10*, *con igv*, *cancelar*.`;
+  }
+
+  /** The request's segments the parser did not understand, without those naming a customer profile ("coti para prosegur"). */
+  private unparsedOf(req: QuoteRequest): string[] {
+    return (req.unparsed ?? []).filter((seg) => !detectProfile(this.settings, seg, { raw: seg, lines: [], parsedBy: "regex" }));
   }
 
   private async startRequest(from: string, text: string, note?: string, opts: { profile?: string; header?: string } = {}): Promise<void> {
@@ -604,7 +629,8 @@ export class BotHandler {
     const missingFields = profile && !opts.skipRequired ? missingRequired(profile, req) : [];
     if (profile && missingFields.length) {
       await this.store.setConversation(from, { phone: from, step: "need_fields", requestText: text, profile: id, updatedAt: now() });
-      const understood = allContract ? this.contractSummary(profile, req) : `Entendí:\n${describeRequest(req)}\n`;
+      const unparsed = this.unparsedOf(req);
+      const understood = `${allContract ? this.contractSummary(profile, req) : `Entendí:\n${describeRequest(req)}\n`}${unparsed.length ? `\n${unparsedWarning(unparsed)}\n` : ""}`;
       return this.reply(from, `${note}${understood}\n${askRequired(profile, missingFields)}`);
     }
     const lcs = await this.lineCandidates(req);
@@ -709,7 +735,7 @@ export class BotHandler {
     return true;
   }
 
-  /** "ok", "1b 2a", "quitar 2", "precio 3 4.50", "dscto 15", "con igv", "2" (single line). Returns false when the text is a new request. */
+  /** "ok", "1b 2a", "quitar 2", "precio 3 4.50", "dscto 15", "margen 10", "con igv", "2" (single line). Returns false when the text is a new request. */
   private async handleChoice(from: string, state: ConversationState, text: string): Promise<boolean> {
     const cmd = norm(text);
     const pending = state.pending!;
@@ -805,6 +831,11 @@ export class BotHandler {
     const disc = text.match(/^(?:dscto|dcto|descuento|desc)\s*:?\s*(\d{1,2}(?:[.,]\d)?)\s*%?$/i);
     if (disc) {
       requestText = `${requestText.replace(/\b(?:dscto|dcto|descuento|desc)\.?\s*:?\s*\d{1,2}(?:[.,]\d)?\s*%?/gi, " ")}\ndscto ${disc[1]}%`;
+      return this.reshow(from, { ...state, requestText }, requestText);
+    }
+    const margin = text.match(/^(?:margen|mg)\s*:?\s*(?:de\s+)?(\d{1,2}(?:[.,]\d)?)\s*%?$/i);
+    if (margin) {
+      requestText = `${stripMargin(requestText)}\nmargen ${margin[1]}%`;
       return this.reshow(from, { ...state, requestText }, requestText);
     }
     if (/^(con|sin)\s+igv$/.test(cmd)) {

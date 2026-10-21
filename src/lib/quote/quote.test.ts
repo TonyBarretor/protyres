@@ -116,9 +116,9 @@ describe.runIf(hasClientData)("matching with the client's real lists", () => {
     expect(c[0].row.kind).toBe("own");
     expect(c[0].row.code).toBe("P0360");
     expect(c[0].available).toBe(34); // Odoo stock joined by code
-    expect(c[0].listNet).toBe(413.33); // the own list is quoted without IGV (config/providers.json)
+    expect(c[0].listNet).toBe(350.28); // the own list carries IGV (config/providers.json): 413.33 / 1.18
     expect(c[0].discountPct).toBe(10);
-    expect(c[0].unitNet).toBe(372);
+    expect(c[0].unitNet).toBe(315.25);
     expect(c.some((x) => x.row.kind === "provider")).toBe(false); // brand requested and found: only Fenixway
   });
 

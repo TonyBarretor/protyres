@@ -45,9 +45,15 @@ export function priceOwnItem(listNet: number, requestedDiscountPct: number | und
   return { listNet, discountPct, clamped: wanted > maxDiscountPct, unitNet: roundTo(listNet * (1 - discountPct / 100), p.roundTo) };
 }
 
-/** Provider item: cost plus margin. */
-export function priceProviderItem(costNet: number, p: PricingSettings): number {
-  return roundTo(costNet * (1 + p.provider.marginPct / 100), p.roundTo);
+/**
+ * Provider item: cost plus margin (the quote's "margen N%" when given, else pricing.provider.marginPct).
+ * marginBase "cost": cost × (1 + m/100) (markup) · "price": cost / (1 − m/100) (the margin is m% of the sale price).
+ */
+export function priceProviderItem(costNet: number, p: PricingSettings, marginPct?: number): number {
+  const m = marginPct ?? p.provider.marginPct;
+  const base = p.provider.marginBase ?? "cost";
+  const unit = base === "price" && m < 100 ? costNet / (1 - m / 100) : costNet * (1 + m / 100);
+  return roundTo(unit, p.roundTo);
 }
 
 export function totals(items: { quantity: number; unitPrice: number }[], p: PricingSettings): { subtotal: number; tax: number; total: number } {

@@ -142,6 +142,65 @@ describe("bot conversation (synthetic lists)", () => {
     expect(await store.getConversation(PHONE)).toBeNull();
   });
 
+  it("per-quote 'margen 10%' prices provider options; 'margen 12' while choosing re-prices; 'atención a:' is read", async () => {
+    const falken: PriceRow = { id: "falken-29580r225", provider: "Llantas del Sur", kind: "provider", description: "295/80R22.5 FALKEN", brand: "Falken", model: "", size: "295/80R22.5", sizeDisplay: "295/80R22.5", sizeRaw: "295/80R22.5", isTyre: true, cost: 422.3, priceIncludesTax: false, currency: "USD", stock: 10, priceDate: "2026-10-01", source: "excel", sourceRef: "a.xlsx" };
+    await store.upsertRows([falken]);
+    await bot.handle(text("FALKEN 295/80R22.5 MIXTA X 6, MARGEN 10% CLIENTE MOVIL BUS S.A.C. , ATENCION A: SR. JONATAHAN MATTA, DIRECCION: LIMA"));
+    const options = client.last()?.body ?? "";
+    expect(options).toContain("Falken");
+    expect(options).toContain("*US$ 464.53* (costo US$ 422.30"); // 422.30 × 1.10 instead of the default 15% (485.65)
+    expect(options).toContain("margen 10%");
+    expect(options).toContain("*margen 10*");
+    expect(options).not.toMatch(/Falken 295\/80R22\.5 MARGEN/i);
+
+    await bot.handle(text("margen 12"));
+    const repriced = client.last()?.body ?? "";
+    expect(repriced).toContain("*US$ 472.98*"); // 422.30 × 1.12
+    expect(repriced).toContain("margen 12%");
+    expect(repriced).not.toContain("margen 10%");
+
+    await bot.handle(text("ok"));
+    const quote = await store.getQuote("COT-0001");
+    expect(quote?.customer.attention).toBe("SR. JONATAHAN MATTA");
+    expect(quote?.customer.company).toBe("MOVIL BUS S.A.C.");
+    expect(quote?.items[0].unitPrice).toBe(472.98);
+    expect(quote?.items[0].quantity).toBe(6);
+
+    // typed on the shown quote: "atención a: …" is a field line too (not "a: …" as the value)
+    await bot.handle(text("compras@movilbus.pe")); // no email in the request: asked for it
+    expect((await store.getConversation(PHONE))?.step).toBe("review_quote");
+    await bot.handle(text("atención a: Sr. Pedro Ruiz"));
+    expect((await store.getQuote("COT-0001"))?.customer.attention).toBe("Sr. Pedro Ruiz");
+  });
+
+  it("'Entendí:' lists the segments it did not understand, with a hint; still listed after a choose command", async () => {
+    const falken: PriceRow = { id: "falken-29580r225", provider: "Llantas del Sur", kind: "provider", description: "295/80R22.5 FALKEN", brand: "Falken", model: "", size: "295/80R22.5", sizeDisplay: "295/80R22.5", sizeRaw: "295/80R22.5", isTyre: true, cost: 422.3, priceIncludesTax: false, currency: "USD", stock: 10, priceDate: "2026-10-01", source: "excel", sourceRef: "a.xlsx" };
+    await store.upsertRows([falken]);
+    await bot.handle(text("Falken 295/80R22.5 mixta x6, para el señor Jonathan Matta, dirección: Lima\natt. compras"));
+    const options = client.last()?.body ?? "";
+    expect(options).toContain("Entendí:");
+    expect(options).toContain("⚠️ No entendí: «para el señor Jonathan Matta» — lo dejé fuera; si hace falta, reenvíalo como *clave: valor* o como línea de llanta");
+    expect(options).toContain("⚠️ No entendí: «att. compras» — si es la atención escribe *atención: Nombre*");
+
+    await bot.handle(text("dscto 5"));
+    const again = client.last()?.body ?? "";
+    expect(again).toContain("⚠️ No entendí: «att. compras»");
+
+    await bot.handle(text("ok"));
+    const quote = await store.getQuote("COT-0001");
+    expect(quote?.customer.attention).toBeUndefined();
+    expect(JSON.stringify(quote)).not.toContain("No entendí");
+  });
+
+  it("a fully understood message has no 'No entendí' line", async () => {
+    const falken: PriceRow = { id: "falken-29580r225", provider: "Llantas del Sur", kind: "provider", description: "295/80R22.5 FALKEN", brand: "Falken", model: "", size: "295/80R22.5", sizeDisplay: "295/80R22.5", sizeRaw: "295/80R22.5", isTyre: true, cost: 422.3, priceIncludesTax: false, currency: "USD", stock: 10, priceDate: "2026-10-01", source: "excel", sourceRef: "a.xlsx" };
+    await store.upsertRows([falken]);
+    await bot.handle(text("Hola, buenos días\nFALKEN 295/80R22.5 MIXTA X 6, MARGEN 10% CLIENTE MOVIL BUS S.A.C. , ATENCION A: SR. JONATAHAN MATTA, DIRECCION: LIMA\nGracias"));
+    const options = client.last()?.body ?? "";
+    expect(options).toContain("Entendí:");
+    expect(options).not.toContain("No entendí");
+  });
+
   it("photos: upload with caption, 'foto 1a' sends it, PDF gets an annex page; missing attention is flagged", async () => {
     process.env.PHOTOS_DISABLED = "1";
     const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==", "base64");
@@ -874,14 +933,14 @@ describe.runIf(hasClientData)("bot conversation (client's real lists)", () => {
     await bot.handle(text("Fenixway 295/80R22.5 Valor 87 x4 para Transportes ABC, juan@abc.com dscto 10%"));
     const body = client.last()?.body ?? "";
     expect(body).toContain("*a)* 🏭 STOCK · stock 34 · Fenixway Valor 87 295/80R22.5 18PR");
-    expect(body).toContain("*US$ 372.00* (lista US$ 413.33 −10%)");
+    expect(body).toContain("*US$ 315.25* (lista US$ 350.28 −10%)"); // own list carries IGV: 413.33 / 1.18 = 350.28
     await bot.handle(text("con igv"));
     expect(client.last()?.body).toContain("con IGV");
     await bot.handle(text("ok"));
     const preview = client.last()?.body ?? "";
     expect(preview).toContain("(precios incluyen IGV 18%)");
-    expect(preview).toContain("4 x US$ 438.96"); // 372.00 * 1.18
-    expect(preview).toContain("Total: US$ 1,755.84"); // printed total = sum of displayed line totals
+    expect(preview).toContain("4 x US$ 372.00"); // 315.25 * 1.18 = 371.995
+    expect(preview).toContain("Total: US$ 1,488.00"); // printed total = sum of displayed line totals
     await bot.handle(text("cancelar"));
   });
 

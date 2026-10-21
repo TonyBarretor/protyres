@@ -102,7 +102,7 @@ function candidateFor(row: PriceRow, stockRow: PriceRow | undefined, line: Reque
     if (priced.clamped) reasons.push(`descuento máximo ${maxDisc}%`);
   } else {
     costNet = net.net;
-    unitNet = priceProviderItem(costNet, pricing);
+    unitNet = priceProviderItem(costNet, pricing, req.marginPct);
   }
   const available = stockRow ? stockRow.stock : row.kind === "own" ? null : row.stock;
   if (relaxed) reasons.push(`medida similar (${row.sizeDisplay})`);
