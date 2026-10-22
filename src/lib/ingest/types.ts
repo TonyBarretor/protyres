@@ -42,6 +42,11 @@ export interface PriceRow {
   currency: string;
   /** null = unknown */
   stock: number | null;
+  /**
+   * Units per warehouse when the list has one stock column per warehouse (JCH: {"Arriola": 8, "Frutales": 20, "Lurín": 50});
+   * warehouses with 0 / empty are left out. `stock` is still the sum.
+   */
+  stockByWarehouse?: Record<string, number>;
   /** ISO date (yyyy-mm-dd) the price was published / received. */
   priceDate: string;
   source: PriceSource;

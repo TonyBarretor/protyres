@@ -73,6 +73,8 @@ export interface Candidate {
   stockRow?: PriceRow;
   /** Units available (own stock or provider stock); null = unknown. */
   available: number | null;
+  /** Provider stock per warehouse, from the row (JCH); shown in the chat options only, never on the quote. */
+  stockByWarehouse?: Record<string, number>;
   /** List price per unit before discount, net of tax, in the quote currency (own items). */
   listNet?: number;
   /** Discount applied to the list price (own items). */

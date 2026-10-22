@@ -199,6 +199,23 @@ function pendingProfile(state: ConversationState): { profile: string; header?: s
 const FIELD_KEY: Record<RequiredField, string> = { unit: "unidad", ub: "ub", requester: "solicitante" };
 
 /** Words that are commands, never a bare answer (a requester's name, a unit, an APLICACIÓN). */
+/**
+ * Provider stock per warehouse for the chat: "Arriola 8 · Frutales 20 · Lurín 50", or just "Lurín" when one warehouse
+ * holds the whole stock; "" without a breakdown. Never printed on the quote (customer-facing).
+ */
+export function warehouseList(total: number, byWarehouse: Record<string, number> | undefined): string {
+  const entries = Object.entries(byWarehouse ?? {}).filter(([, n]) => n > 0);
+  if (entries.length === 0) return "";
+  if (entries.length === 1 && entries[0][1] === total) return entries[0][0];
+  return entries.map(([w, n]) => `${w} ${n}`).join(" · ");
+}
+
+/** " (Arriola 8 · Frutales 20 · Lurín 50)" after "stock 78" in an option line; "" without a breakdown. */
+function warehouseSuffix(total: number, byWarehouse: Record<string, number> | undefined): string {
+  const list = warehouseList(total, byWarehouse);
+  return list ? ` (${list})` : "";
+}
+
 const COMMAND_WORD = /^(?:enviar|send|ayuda|help|hola|menu|inicio|gracias|listo|dale|si|no|ok|cancelar|seguir|continuar|cotizar|confirmar|proveedores|listas|cotizaciones|contrato|contratos|fotos?|precios?|stock|cantidad|cant|quitar|quita|eliminar|aplicacion|archivo|nombre|numero|nro|reenviar|reenvia|archivos|pdf|correo|email|borrar|proveedor|dscto|descuento|margen)\b/;
 
 /** The question for a contract item without APLICACIÓN yet ("Flama 77"). */
@@ -471,7 +488,7 @@ export class BotHandler {
     await this.store.upsertRows(result.rows, state.pendingMedia?.fileName ? { replace: { provider: canonical, sourceRef: state.pendingMedia.fileName, kind } } : undefined);
     const preview = result.rows
       .slice(0, 8)
-      .map((r) => `• ${[r.brand, r.model].filter(Boolean).join(" ")} ${r.sizeDisplay || r.description.slice(0, 30)}${r.cost !== null ? ` → ${fmtMoney(r.cost, r.currency)}` : ""}${r.stock !== null ? ` (stock ${r.stock})` : ""}`)
+      .map((r) => `• ${[r.brand, r.model].filter(Boolean).join(" ")} ${r.sizeDisplay || r.description.slice(0, 30)}${r.cost !== null ? ` → ${fmtMoney(r.cost, r.currency)}` : ""}${r.stock !== null ? ` (stock ${r.stock}${r.stock > 0 && warehouseList(r.stock, r.stockByWarehouse) ? `: ${warehouseList(r.stock, r.stockByWarehouse)}` : ""})` : ""}`)
       .join("\n");
     const more = result.rows.length > 8 ? `\n… y ${result.rows.length - 8} más` : "";
     const warn = result.warnings.length ? `\n⚠️ ${result.warnings[0]}` : "";
@@ -485,7 +502,7 @@ export class BotHandler {
     const r = c.row;
     const name = [r.brand, r.model].filter(Boolean).join(" ") || r.description.slice(0, 40);
     const size = r.sizeDisplay ? ` ${r.sizeDisplay}${r.ply ? ` ${r.ply}PR` : ""}` : "";
-    const stock = c.available === null ? "" : c.available === 0 ? " · sin stock" : ` · stock ${c.available}`;
+    const stock = c.available === null ? "" : c.available === 0 ? " · sin stock" : ` · stock ${c.available}${warehouseSuffix(c.available, c.stockByWarehouse)}`;
     let price: string;
     if (r.kind === "own") {
       const disc = c.discountPct > 0 ? ` (lista ${fmtMoney(c.listNet!, this.cur)} −${c.discountPct}%)` : ` (lista${c.row.maxDiscountPct !== undefined ? `, máx. dscto ${c.row.maxDiscountPct}%` : ""})`;

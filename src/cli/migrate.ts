@@ -39,6 +39,7 @@ const STATEMENTS = [
   )`,
   `alter table prices add column if not exists photo_url text`,
   `alter table prices add column if not exists sheet_url text`,
+  `alter table prices add column if not exists stock_by_warehouse jsonb`,
   `create index if not exists prices_size_idx on prices (size)`,
   `create index if not exists prices_provider_idx on prices (provider, kind)`,
   `create table if not exists quotes (

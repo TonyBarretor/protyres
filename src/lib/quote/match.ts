@@ -105,6 +105,7 @@ function candidateFor(row: PriceRow, stockRow: PriceRow | undefined, line: Reque
     unitNet = priceProviderItem(costNet, pricing, req.marginPct);
   }
   const available = stockRow ? stockRow.stock : row.kind === "own" ? null : row.stock;
+  const stockByWarehouse = !stockRow && row.kind !== "own" ? row.stockByWarehouse : undefined;
   if (relaxed) reasons.push(`medida similar (${row.sizeDisplay})`);
   if (brandMismatch) reasons.push(`marca ${row.brand || "sin marca"}`);
   if (line.model && modelScore < 0.6) reasons.push(`modelo ${row.model || "distinto"}`);
@@ -118,6 +119,7 @@ function candidateFor(row: PriceRow, stockRow: PriceRow | undefined, line: Reque
     row,
     stockRow,
     available,
+    ...(stockByWarehouse ? { stockByWarehouse } : {}),
     listNet,
     discountPct,
     costNet,

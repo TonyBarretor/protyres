@@ -1,7 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
 import { beforeAll, describe, expect, it } from "vitest";
-import { ingestCsv, ingestExcel } from "./tabular";
+import { ingestCsv, ingestExcel, warehouseName } from "./tabular";
+import { resolveSourceOptions } from "./sources";
 import { ingestPdf, pdfToText } from "./pdf";
 import { ingestWhatsAppText, looksLikePriceMessage } from "./whatsapp-text";
 import { parseMoney } from "./util";
@@ -90,6 +91,44 @@ describe("Excel ingestion (samples/proveedor-a-lista.xlsx)", () => {
       columns: { brand: "A", size: "MEDIDA", model: "C", price: "E", stock: "F" },
     });
     expect(find(res.rows, "12R22.5", "Goodyear")?.cost).toBe(440);
+  });
+});
+
+describe("JCH list: stock per warehouse (samples/jch-consolidado-22-10.xlsx)", () => {
+  let rows: PriceRow[];
+  beforeAll(async () => {
+    const file = "jch-consolidado-22-10.xlsx";
+    const res = await ingestExcel(read(file), { ...resolveSourceOptions(file), provider: "JCH", sourceRef: file, priceDate: "2026-10-22" });
+    rows = res.rows;
+  });
+
+  it("keeps ARRIOLA / FRUTALES / LURIN as a breakdown; stock stays the sum; '20+' reads 20", () => {
+    const falken = rows.find((r) => r.code === "TBR2250719")!; // 295/80 R22.5 GI-388 Falken: 8 | 20+ | 50+
+    expect(falken.brand).toBe("Falken");
+    expect(falken.size).toBe("295/80R22.5");
+    expect(falken.stock).toBe(78);
+    expect(falken.stockByWarehouse).toEqual({ Arriola: 8, Frutales: 20, "Lurín": 50 });
+  });
+
+  it("only warehouses with stock are listed; no breakdown when every warehouse is 0", () => {
+    const one = rows.find((r) => r.code === "PCR1300134")!; // 165/70 R13 Sincera: 0 | 0 | 20
+    expect(one.stock).toBe(20);
+    expect(one.stockByWarehouse).toEqual({ "Lurín": 20 });
+    const none = rows.find((r) => r.code === "PCR1300120")!; // 0 | 0 | 0
+    expect(none.stock).toBe(0);
+    expect(none.stockByWarehouse).toBeUndefined();
+  });
+
+  it("warehouse names: title case, accents kept or restored", () => {
+    expect(warehouseName("ARRIOLA")).toBe("Arriola");
+    expect(warehouseName("LURÍN")).toBe("Lurín");
+    expect(warehouseName("LURIN")).toBe("Lurín");
+    expect(warehouseName("SAN JUAN DE LURIGANCHO")).toBe("San Juan De Lurigancho");
+  });
+
+  it("a single stock column gives no breakdown", async () => {
+    const res = await ingestExcel(read("proveedor-a-lista.xlsx"), { provider: "Llantas del Sur", sourceRef: "a.xlsx", priceDate: "2026-10-01" });
+    expect(res.rows.some((r) => r.stockByWarehouse)).toBe(false);
   });
 });
 

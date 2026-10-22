@@ -116,6 +116,18 @@ function applyExplicitMapping(headerRowCells: string[] | undefined, columns: Ing
   return map;
 }
 
+/** Place names that lists usually write in capitals without the accent ("LURIN"). */
+const WAREHOUSE_ACCENTS: Record<string, string> = { lurin: "Lurín", ancon: "Ancón", huanuco: "Huánuco", junin: "Junín" };
+
+/** Warehouse label from a stock column's header: title-cased, accents kept ("LURÍN" -> "Lurín", "LURIN" -> "Lurín"). */
+export function warehouseName(header: string): string {
+  const h = header.replace(/\s+/g, " ").trim();
+  if (!h) return "";
+  const known = WAREHOUSE_ACCENTS[fold(h)];
+  if (known) return known;
+  return h.toLocaleLowerCase("es").replace(/(^|[\s\-/(])(\p{L})/gu, (_m, sep: string, ch: string) => sep + ch.toLocaleUpperCase("es"));
+}
+
 /** Is this a "section" row that only names a brand (e.g. a merged cell "MICHELIN")? */
 function sectionBrand(row: string[]): string | null {
   const nonEmpty = row.filter((c) => c && c.trim());
@@ -139,6 +151,17 @@ export function rowsFromSheet(sheet: SheetData, opts: IngestOptions & { source: 
   const explicit = applyExplicitMapping(detected ? matrix[detected.headerRow] : matrix[0], opts.columns);
   const map: ColumnMap = { ...(detected?.map ?? {}), ...explicit };
   const start = detected ? detected.headerRow + 1 : 0;
+  // header row for the warehouse names: the detected one, else (explicit mapping, e.g. JCH whose price header is a
+  // warehouse name) the first row whose stock columns all hold text without digits ("ARRIOLA", "FRUTALES", "LURIN")
+  const headerIdx =
+    detected?.headerRow ??
+    (map.stockCols && map.stockCols.length > 1
+      ? matrix.slice(0, 25).findIndex((row) => map.stockCols!.every((i) => !!row?.[i]?.trim() && !/\d/.test(row[i])))
+      : -1);
+  const headerCells = (headerIdx >= 0 ? matrix[headerIdx] : matrix[0]) ?? [];
+  // several stock columns (JCH: ARRIOLA, FRUTALES, LURIN) -> keep the per-warehouse breakdown, named after the headers
+  const warehouses =
+    map.stockCols && map.stockCols.length > 1 ? map.stockCols.map((i, n) => ({ i, name: warehouseName(headerCells[i] ?? "") || `Almacén ${n + 1}` })) : null;
   const hasMapping = (map.size !== undefined || map.description !== undefined) && (map.price !== undefined || (kind === "stock" && map.stock !== undefined));
   const method = hasMapping ? "header-mapping" : "cell-scan";
   if (!hasMapping) warnings.push(`[${sheet.name}] no recognisable header row; scanning every cell for size + price`);
@@ -164,9 +187,14 @@ export function rowsFromSheet(sheet: SheetData, opts: IngestOptions & { source: 
     let model = cell("model");
     let priceText = cell("price");
     let stockValue: number | string | null = cell("stock") || null;
-    if (map.stockCols && map.stockCols.length > 1) {
-      const nums = map.stockCols.map((i) => parseStock(row[i] ?? "")).filter((n): n is number => n !== null);
+    let stockByWarehouse: Record<string, number> | undefined;
+    if (warehouses) {
+      const nums = warehouses.map((w) => parseStock(row[w.i] ?? "")).filter((n): n is number => n !== null);
       stockValue = nums.length ? nums.reduce((a, b) => a + b, 0) : null;
+      for (const w of warehouses) {
+        const n = parseStock(row[w.i] ?? "");
+        if (n && n > 0) (stockByWarehouse ??= {})[w.name] = (stockByWarehouse[w.name] ?? 0) + n;
+      }
     }
     const indexText = cell("index");
     const currencyText = cell("currency");
@@ -235,7 +263,10 @@ export function rowsFromSheet(sheet: SheetData, opts: IngestOptions & { source: 
       keepNonTyre,
       allowNoPrice: kind === "stock",
     });
-    if (built) rows.push(built);
+    if (built) {
+      if (stockByWarehouse) built.stockByWarehouse = stockByWarehouse;
+      rows.push(built);
+    }
   }
   return { rows, seen, method };
 }

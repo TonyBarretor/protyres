@@ -22,6 +22,8 @@ export const prices = pgTable("prices", {
   maxDiscountPct: numeric("max_discount_pct", { precision: 5, scale: 2 }),
   currency: text("currency").notNull().default("USD"),
   stock: integer("stock"),
+  /** Units per warehouse ({"Arriola": 8, "Frutales": 20, "Lurín": 50}) when the list has one stock column per warehouse; `stock` is the sum. */
+  stockByWarehouse: jsonb("stock_by_warehouse").$type<Record<string, number>>(),
   priceDate: text("price_date").notNull(),
   source: text("source").notNull(),
   sourceRef: text("source_ref").notNull().default(""),

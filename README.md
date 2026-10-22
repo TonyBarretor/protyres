@@ -113,6 +113,7 @@ nombre no coincide con ninguna regla: `--provider "Nombre" --kind provider|own|s
 `kind` (own / stock / provider), `priceIncludesTax`, `maxDiscountPct`, `currency`, `columns` (letra o encabezado;
 `stock` acepta varias columnas separadas por coma, se suman), `aliases` (otros nombres que el bot acepta, p.ej.
 "J.CH. Comercial" para JCH).
+Con varias columnas de stock (JCH: `"stock": "G,H,I"`) también se guarda el desglose por almacén con el nombre del encabezado (`prices.stock_by_warehouse`) y el chat lo muestra junto al stock: `stock 78 (Arriola 8 · Frutales 20 · Lurín 50)`; la cotización/PDF no lo muestra.
 
 `config/customers.json` – clientes con reglas propias (hoy Prosegur): `aliases` (cómo lo escribe el vendedor),
 `company` (lo que sale en la cotización), `email` (vacío = el del pedido o el de la última cotización), `defaults`

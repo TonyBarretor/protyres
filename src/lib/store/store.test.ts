@@ -3,9 +3,11 @@
  * e.g.  TEST_DATABASE_URL=postgres://postgres@localhost:5433/protyres npm test
  */
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { ingestExcel } from "../ingest/tabular";
+import type { PriceRow } from "../ingest/types";
 import { SettingsSchema } from "../settings";
 import { buildQuote, itemFromCandidate } from "../quote/build";
 import { rankLine } from "../quote/match";
@@ -44,6 +46,18 @@ function contract(name: string, make: () => Promise<PriceStore>) {
       expect(p.find((x) => x.provider === "Llantas del Sur")?.rows).toBe(res.rows.length);
       expect(p[0].kind).toBe("provider");
       expect(p[0].lastPriceDate).toBe("2026-10-01");
+    });
+
+    it("keeps the stock per warehouse (upsert and re-upsert)", async () => {
+      const base: PriceRow = { id: "wh-test-1", provider: "JCH", kind: "provider", description: "295/80R22.5 GI-388 FALKEN", brand: "Falken", model: "GI-388", size: "295/80R22.5", sizeDisplay: "295/80R22.5", sizeRaw: "295/80 R22.5", isTyre: true, cost: 422.3, priceIncludesTax: true, currency: "USD", stock: 78, stockByWarehouse: { Arriola: 8, Frutales: 20, "Lurín": 50 }, priceDate: "2026-10-22", source: "excel", sourceRef: "jch.xlsx" };
+      await store.upsertRows([base, { ...base, id: "wh-test-2", stock: 5, stockByWarehouse: undefined }]);
+      let [got, plain] = await store.getRows(["wh-test-1", "wh-test-2"]);
+      if (got.id !== "wh-test-1") [got, plain] = [plain, got];
+      expect(got.stockByWarehouse).toEqual({ Arriola: 8, Frutales: 20, "Lurín": 50 });
+      expect(plain.stockByWarehouse).toBeUndefined();
+      await store.upsertRows([{ ...base, stock: 50, stockByWarehouse: { "Lurín": 50 } }]);
+      expect((await store.getRows(["wh-test-1"]))[0].stockByWarehouse).toEqual({ "Lurín": 50 });
+      await store.deleteProvider("JCH");
     });
 
     it("quote numbers, quotes, conversations, processed ids, sync marks", async () => {
@@ -181,6 +195,24 @@ function contract(name: string, make: () => Promise<PriceStore>) {
 }
 
 contract("json", async () => JsonStore.memory());
+
+describe("json store file", () => {
+  it("stock per warehouse survives a save and reload", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "protyres-wh-"));
+    const file = path.join(dir, `store-wh-${process.pid}-${Date.now()}.json`);
+    const row: PriceRow = { id: "wh-file-1", provider: "JCH", kind: "provider", description: "295/80R22.5 GI-388 FALKEN", brand: "Falken", model: "GI-388", size: "295/80R22.5", sizeDisplay: "295/80R22.5", sizeRaw: "295/80 R22.5", isTyre: true, cost: 422.3, priceIncludesTax: true, currency: "USD", stock: 78, stockByWarehouse: { Arriola: 8, Frutales: 20, "Lurín": 50 }, priceDate: "2026-10-22", source: "excel", sourceRef: "jch.xlsx" };
+    const a = new JsonStore(file);
+    await a.upsertRows([row]);
+    await a.close();
+    const b = new JsonStore(file);
+    const [got] = await b.getRows(["wh-file-1"]);
+    expect(got.stock).toBe(78);
+    expect(got.stockByWarehouse).toEqual({ Arriola: 8, Frutales: 20, "Lurín": 50 });
+    await b.close();
+    for (const f of [file, JsonStore.tmpPathFor(file)]) fs.rmSync(f, { force: true });
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+});
 
 const url = process.env.TEST_DATABASE_URL;
 if (url) {

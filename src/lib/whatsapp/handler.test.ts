@@ -173,6 +173,25 @@ describe("bot conversation (synthetic lists)", () => {
     expect((await store.getQuote("COT-0001"))?.customer.attention).toBe("Sr. Pedro Ruiz");
   });
 
+  it("provider stock per warehouse is shown next to the stock in the options and in 'stock <medida>', not on the quote", async () => {
+    const jch: PriceRow = { id: "jch-29580r225-gi388", provider: "JCH", kind: "provider", code: "TBR2250719", description: "NTCO: 295/80 R22.5 154K GI-388 SUPER-MIXTA FALKEN TL JP", brand: "Falken", model: "GI-388 SUPER MIXTA", size: "295/80R22.5", sizeDisplay: "295/80R22.5", sizeRaw: "295/80 R22.5", isTyre: true, cost: 422.3, priceIncludesTax: false, currency: "USD", stock: 78, stockByWarehouse: { Arriola: 8, Frutales: 20, "Lurín": 50 }, priceDate: "2026-10-01", source: "excel", sourceRef: "jch.xlsx" };
+    const lurin: PriceRow = { ...jch, id: "jch-29580r225-other", code: "TBR2250720", model: "GI-368", description: "NTCO: 295/80 R22.5 GI-368 FALKEN", stock: 50, stockByWarehouse: { "Lurín": 50 } };
+    await store.upsertRows([jch, lurin]);
+    await bot.handle(text("Falken 295/80R22.5 x 4 para Transportes ABC, juan@abc.com"));
+    const options = client.last()?.body ?? "";
+    expect(options).toContain("🚚 JCH · stock 78 (Arriola 8 · Frutales 20 · Lurín 50) · Falken GI-388 SUPER MIXTA 295/80R22.5");
+    expect(options).toContain("🚚 JCH · stock 50 (Lurín) · Falken GI-368");
+    await bot.handle(text("cancelar"));
+
+    await bot.handle(text("stock 295/80R22.5"));
+    expect(client.last()?.body).toContain("stock 78 (Arriola 8 · Frutales 20 · Lurín 50)");
+
+    await bot.handle(text("Falken 295/80R22.5 GI-388 x 4 para Transportes ABC, juan@abc.com"));
+    await bot.handle(text("ok"));
+    const quote = await store.getQuote("COT-0001");
+    expect(JSON.stringify(quote)).not.toContain("Arriola");
+  });
+
   it("'Entendí:' lists the segments it did not understand, with a hint; still listed after a choose command", async () => {
     const falken: PriceRow = { id: "falken-29580r225", provider: "Llantas del Sur", kind: "provider", description: "295/80R22.5 FALKEN", brand: "Falken", model: "", size: "295/80R22.5", sizeDisplay: "295/80R22.5", sizeRaw: "295/80R22.5", isTyre: true, cost: 422.3, priceIncludesTax: false, currency: "USD", stock: 10, priceDate: "2026-10-01", source: "excel", sourceRef: "a.xlsx" };
     await store.upsertRows([falken]);
