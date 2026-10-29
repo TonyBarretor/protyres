@@ -310,3 +310,69 @@ describe("segments the bot did not understand", () => {
     }
   });
 });
+
+describe("per-line manual price 'precio 259'", () => {
+  const EXAMPLE = "Fenixway Flama 77 315/80R22.5 x4 precio 259, cliente: Transportes Lima S.A.C., atención: Sr. Juan Pérez, dirección: Lima";
+  it("the example: unit price on the line, stripped from the model, nothing unparsed", () => {
+    const r = parseRequestRegex(EXAMPLE);
+    expect(r.lines.length).toBe(1);
+    expect(r.lines[0]).toMatchObject({ brand: "Fenixway", model: "FLAMA 77", quantity: 4, unitPrice: 259 });
+    expect(r.lines[0].size?.canonical).toBe("315/80R22.5");
+    expect(r.customerCompany).toBe("Transportes Lima S.A.C.");
+    expect(r.attention).toBe("Sr. Juan Pérez");
+    expect(r.address).toBe("Lima");
+    expect(r.unparsed).toBeUndefined();
+    expect(describeRequest(r)).toBe("Fenixway 315/80R22.5 FLAMA 77 x4 precio 259 · Transportes Lima S.A.C. · atn. Sr. Juan Pérez");
+  });
+  it.each([
+    ["precio 259", 259],
+    ["precio: 259", 259],
+    ["precio 259.50", 259.5],
+    ["precio US$ 259", 259],
+    ["precio $259", 259],
+    ["precio 259 usd", 259],
+    ["precio 1,259.50", 1259.5],
+  ])("'%s' -> %s", (form, price) => {
+    const r = parseRequestRegex(`Fenixway Flama 77 315/80R22.5 x4 ${form} para Transportes ABC`);
+    expect(r.lines[0]).toMatchObject({ model: "FLAMA 77", quantity: 4, unitPrice: price });
+    expect(r.customerCompany).toBe("Transportes ABC");
+    expect(r.unparsed).toBeUndefined();
+  });
+  it("'a 259' is not a price; a line without it has none", () => {
+    expect(parseRequestRegex("Fenixway Flama 77 315/80R22.5 x4 a 259").lines[0].unitPrice).toBeUndefined();
+    expect(parseRequestRegex("Fenixway Flama 77 315/80R22.5 x4").lines[0].unitPrice).toBeUndefined();
+  });
+  it("the price is never a quantity", () => {
+    expect(parseRequestRegex("Fenixway Flama 77 315/80R22.5 precio 259").lines[0]).toMatchObject({ quantity: 1, unitPrice: 259, model: "FLAMA 77" });
+  });
+  it("per line with two lines; a second price on the same line wins", () => {
+    const r = parseRequestRegex("Fenixway Flama 77 315/80R22.5 x4 precio 259; Falken 295/80R22.5 x6 precio 300 precio 310\nMichelin 11R22.5 XZE2+ x2 para Transportes ABC");
+    expect(r.lines.map((l) => [l.size?.canonical, l.quantity, l.unitPrice])).toEqual([
+      ["315/80R22.5", 4, 259],
+      ["295/80R22.5", 6, 310],
+      ["11R22.5", 2, undefined],
+    ]);
+    expect(r.unparsed).toBeUndefined();
+  });
+  it("a segment of only the price right after the item is the item's", () => {
+    const comma = parseRequestRegex("Fenixway Flama 77 315/80R22.5 x4, precio 259, cliente: Transportes Lima S.A.C.");
+    expect(comma.lines[0].unitPrice).toBe(259);
+    expect(comma.unparsed).toBeUndefined();
+    const own = parseRequestRegex("Fenixway Flama 77 315/80R22.5 x4\nprecio: 259\npara Transportes ABC");
+    expect(own.lines.length).toBe(1);
+    expect(own.lines[0]).toMatchObject({ quantity: 4, unitPrice: 259 });
+    expect(own.unparsed).toBeUndefined();
+  });
+  it("with the LLM: the regex's price wins, the LLM's when the regex has none", async () => {
+    llm.on = true;
+    try {
+      llm.answer = { lines: [{ size: "315/80R22.5", brand: "Fenixway", model: "Flama 77", quantity: 4, unit_price: 250, raw: "Fenixway Flama 77 315/80R22.5 x4 precio 259" }] };
+      expect((await parseRequest(EXAMPLE)).lines[0].unitPrice).toBe(259);
+      llm.answer = { lines: [{ size: "315/80R22.5", brand: "Fenixway", model: "Flama 77", quantity: 4, unit_price: 250 }] };
+      expect((await parseRequest("Fenixway Flama 77 315/80R22.5 x4 a doscientos cincuenta")).lines[0].unitPrice).toBe(250);
+    } finally {
+      llm.on = false;
+      llm.answer = null;
+    }
+  });
+});

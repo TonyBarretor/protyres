@@ -331,6 +331,62 @@ describe("bot conversation (synthetic lists)", () => {
     expect(client.last()?.body).toContain("*Para:* c@andes.pe");
   });
 
+  it("'precio 259' in the request: the chosen option at that price, the quote uses it; 'precio 1 300' re-prices", async () => {
+    const flama: PriceRow = { id: "fenix-31580r225-flama77", provider: "Llantas del Sur", kind: "provider", description: "315/80R22.5 FENIXWAY FLAMA 77", brand: "Fenixway", model: "FLAMA 77", size: "315/80R22.5", sizeDisplay: "315/80R22.5", sizeRaw: "315/80R22.5", isTyre: true, cost: 230, priceIncludesTax: false, currency: "USD", stock: 10, priceDate: "2026-10-01", source: "excel", sourceRef: "a.xlsx" };
+    await store.upsertRows([flama]);
+    await bot.handle(text("Fenixway Flama 77 315/80R22.5 x4 precio 259, cliente: Transportes Lima S.A.C., atención: Sr. Juan Pérez, dirección: Lima"));
+    const options = client.last()?.body ?? "";
+    expect((await store.getConversation(PHONE))?.step).toBe("choose");
+    expect(options).toContain("*1.* Fenixway 315/80R22.5 FLAMA 77 x4 precio 259 → elegido *a* · precio manual US$ 259.00");
+    expect(options).toContain("🚚 Llantas del Sur");
+    expect(options).not.toContain("No entendí");
+    expect(options).not.toContain("sin precio en las listas");
+
+    await bot.handle(text("ok"));
+    let q = await store.getQuote("COT-0001");
+    expect(q?.items.map((i) => [i.brand, i.quantity, i.unitPrice, i.total])).toEqual([["Fenixway", 4, 259, 1036]]);
+    expect(q?.customer.company).toBe("Transportes Lima S.A.C.");
+    expect(q?.customer.attention).toBe("Sr. Juan Pérez");
+    expect(q?.customer.address).toBe("Lima");
+    await bot.handle(text("cancelar"));
+
+    // typed afterwards while choosing, "precio 1 300" overrides the request's price
+    await bot.handle(text("Fenixway Flama 77 315/80R22.5 x4 precio 259 para Transportes Lima S.A.C., c@lima.pe"));
+    await bot.handle(text("precio 1 300"));
+    expect(client.last()?.body).toContain("→ elegido *a* · precio manual US$ 300.00");
+    await bot.handle(text("dscto 5")); // a re-show keeps the override
+    expect(client.last()?.body).toContain("precio manual US$ 300.00");
+    await bot.handle(text("ok"));
+    q = await store.getQuote("COT-0002");
+    expect(q?.items[0].unitPrice).toBe(300);
+  });
+
+  it("'precio N' on a line no list has: a manual item with the salesman's description", async () => {
+    await bot.handle(text("Fenixway Flama 77 315/80R22.5 x4 precio 259; Michelin 11R22.5 XZE2+ x2 para Transportes ABC, c@abc.pe"));
+    const options = client.last()?.body ?? "";
+    expect(options).toContain("*1.* Fenixway 315/80R22.5 FLAMA 77 x4 precio 259\n  ✍️ precio manual US$ 259.00");
+    expect(options).not.toContain("sin precio en las listas");
+    await bot.handle(text("ok"));
+    const q = await store.getQuote("COT-0001");
+    expect(q?.items.map((i) => [i.description, i.quantity, i.unitPrice, i.origin])).toEqual([
+      ["Llanta Fenixway FLAMA 77 315/80R22.5", 4, 259, "manual"],
+      ["Llanta Michelin XZE2+ 11R22.5 146/143L", 2, 457.7, "provider"],
+    ]);
+  });
+
+  it("a request with a quantity or a customer is a request even with 'precio N' (not a provider price)", async () => {
+    await bot.handle(text("Falken 295/80R22.5 x6 precio 300 para Transportes ABC"));
+    expect((await store.getConversation(PHONE))?.step).toBe("choose");
+    expect(client.last()?.body).toContain("Falken 295/80R22.5 x6 precio 300");
+    await bot.handle(text("cancelar"));
+    await bot.handle(text("Falken 295/80R22.5 precio 300, atención: Sr. Juan Pérez"));
+    expect((await store.getConversation(PHONE))?.step).toBe("choose");
+    await bot.handle(text("cancelar"));
+    // ambiguous (no quantity, no customer): still a provider's price, as before
+    await bot.handle(text("Falken 295/80R22.5 precio 300"));
+    expect((await store.getConversation(PHONE))?.step).toBe("need_provider");
+  });
+
   it("no size / no prices", async () => {
     await bot.handle(text("quiero llantas michelin"));
     expect(client.last()?.body).toContain("No encontré ninguna medida");

@@ -124,7 +124,7 @@ export function parsePicks(text: string, lines: number): Pick[] | null {
 }
 
 function looksLikeRequest(text: string): boolean {
-  return /\bx\s*\d{1,3}\b|\b\d{1,3}\s*(?:unidades|und|unid|llantas)\b|\b(?:para|cliente|cotiza|cotizar|cotización|cotizacion|necesito|pide|piden|me cotizas|und\b)\b|@|\bdscto\b|\bdescuento\b|\bmargen\b|\bu\.?\s?b\.?\s*:?\s*\d{3,5}\b|\b(?:unidad|solicitante)\s*:/i.test(text);
+  return /\bx\s*\d{1,3}\b|\b\d{1,3}\s*(?:unidades|und|unid|llantas)\b|\b(?:para|cliente|cotiza|cotizar|cotización|cotizacion|necesito|pide|piden|me cotizas|und\b)\b|@|\bdscto\b|\bdescuento\b|\bmargen\b|\bu\.?\s?b\.?\s*:?\s*\d{3,5}\b|\b(?:unidad|solicitante|atenci[oó]n|atn|direcci[oó]n|pago|plazo|entrega|validez|empresa)\s*:/i.test(text);
 }
 
 function fmtDateShort(iso: string): string {
@@ -526,11 +526,11 @@ export class BotHandler {
         return `${head}\n  📑 contrato · ${price}`;
       }
       if (lc.candidates.length === 0) {
-        const manual = p.unitPriceOverride !== undefined ? `precio manual ${fmtMoney(p.unitPriceOverride, this.cur)}` : `sin precio en las listas → escribe *precio ${i + 1} 123.45* o *quitar ${i + 1}*`;
-        return `${head}\n  ❌ ${manual}`;
+        if (p.unitPriceOverride !== undefined) return `${head}\n  ✍️ precio manual ${fmtMoney(p.unitPriceOverride, this.cur)}`;
+        return `${head}\n  ❌ sin precio en las listas → escribe *precio ${i + 1} 123.45* o *quitar ${i + 1}*`;
       }
       const opts = lc.candidates.map((c, j) => this.optionLine(LETTERS[j], c)).join("\n");
-      const chosen = p.chosen !== null ? ` → elegido *${LETTERS[p.chosen]}*${p.extra?.length ? ` ×${p.quantity}, ${p.extra.map((x) => `*${LETTERS[x.chosen]}* ×${x.quantity}`).join(", ")}` : ""}` : "";
+      const chosen = p.chosen !== null ? ` → elegido *${LETTERS[p.chosen]}*${p.extra?.length ? ` ×${p.quantity}, ${p.extra.map((x) => `*${LETTERS[x.chosen]}* ×${x.quantity}`).join(", ")}` : ""}${p.unitPriceOverride !== undefined ? ` · precio manual ${fmtMoney(p.unitPriceOverride, this.cur)}` : ""}` : "";
       return `${head}${chosen}\n${opts}`;
     });
     const extras = [req.customerCompany ?? req.customerName ?? "", req.customerEmail ?? "", req.discountPct !== undefined ? `dscto ${req.discountPct}%` : "", req.marginPct !== undefined ? `margen ${req.marginPct}%` : "", req.showPricesWithTax === true ? "con IGV" : req.showPricesWithTax === false ? "sin IGV" : ""].filter(Boolean);
@@ -651,14 +651,15 @@ export class BotHandler {
       return this.reply(from, `${note}${understood}\n${askRequired(profile, missingFields)}`);
     }
     const lcs = await this.lineCandidates(req);
-    const pending: PendingLine[] = lcs.map((lc) => ({ candidateIds: lc.candidates.map((c) => c.row.id), chosen: lc.candidates.length ? 0 : null, quantity: lc.line.quantity }));
+    // "precio 259" written on a line is its manual price from the start (as "precio 1 259")
+    const pending: PendingLine[] = lcs.map((lc) => ({ candidateIds: lc.candidates.map((c) => c.row.id), chosen: lc.candidates.length ? 0 : null, quantity: lc.line.quantity, ...(lc.line.unitPrice !== undefined ? { unitPriceOverride: lc.line.unitPrice } : {}) }));
     const state: ConversationState = { phone: from, step: "choose", requestText: text, pending, profile: id, updatedAt: now() };
     await this.store.setConversation(from, state);
     if (allContract) {
       await this.finishChoice(from, state);
       return;
     }
-    const missing = lcs.filter((lc) => !lc.line.contract && lc.candidates.length === 0).length;
+    const missing = lcs.filter((lc) => !lc.line.contract && lc.candidates.length === 0 && lc.line.unitPrice === undefined).length;
     const intro = `${note}Entendí:\n${describeRequest(req)}\n${missing ? `\n⚠️ ${missing} ítem(s) sin precio en las listas.\n` : ""}`;
     await this.reply(from, `${intro}\n${this.renderOptions(req, lcs, pending)}`);
   }
@@ -912,7 +913,7 @@ export class BotHandler {
       const ids = lc.candidates.map((c) => c.row.id);
       const keep = prev?.chosen !== null && prev?.chosen !== undefined && prev.candidateIds[prev.chosen] ? ids.indexOf(prev.candidateIds[prev.chosen]) : -1;
       const extra = (prev?.extra ?? []).map((x) => ({ chosen: ids.indexOf(prev!.candidateIds[x.chosen]), quantity: x.quantity })).filter((x) => x.chosen >= 0);
-      return { candidateIds: ids, chosen: keep >= 0 ? keep : ids.length ? 0 : null, quantity: prev?.quantity ?? lc.line.quantity, unitPriceOverride: prev?.unitPriceOverride, removed: prev?.removed, application: prev?.application, extra: extra.length ? extra : undefined };
+      return { candidateIds: ids, chosen: keep >= 0 ? keep : ids.length ? 0 : null, quantity: prev?.quantity ?? lc.line.quantity, unitPriceOverride: prev?.unitPriceOverride ?? lc.line.unitPrice, removed: prev?.removed, application: prev?.application, extra: extra.length ? extra : undefined };
     });
     await this.store.setConversation(from, { ...state, step: "choose", requestText, pending, updatedAt: now() });
     await this.reply(from, this.renderOptions(req, lcs, pending));

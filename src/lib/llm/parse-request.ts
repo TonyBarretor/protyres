@@ -13,6 +13,7 @@ const LineSchema = z.object({
   ub: z.string().nullable().optional(),
   ply: z.number().int().nullable().optional(),
   description: z.string().nullable().optional(),
+  unit_price: z.number().nullable().optional(),
 });
 
 export const RequestSchema = z.object({
@@ -56,6 +57,7 @@ const TOOL_SCHEMA = {
           plate: { type: ["string", "null"], description: "Vehicle plate given for this line ('BLM-923'), or null." },
           ub: { type: ["string", "null"], description: "The customer's UB code written on this line ('UB 1830' -> '1830', 3-5 digits), or null. Never a quantity." },
           description: { type: ["string", "null"], description: "For non-tyre items (parches, cámaras, aros, válvulas): the item description." },
+          unit_price: { type: ["number", "null"], description: "Unit price the salesman wrote for this line as 'precio 259' / 'precio US$ 259' (net, a number), or null. Never a quantity, never part of the model." },
         },
       },
     },
@@ -80,7 +82,7 @@ const TOOL_SCHEMA = {
 } as const;
 
 const SYSTEM = `You read tyre (llantas/neumáticos) purchase requests in Spanish or English: a salesman's short note, a customer's WhatsApp message (possibly with a photo or screenshot), or a formal RFQ email with a table.
-Extract every requested product as a line. Do not invent values: use null for anything not stated. "x4", "4 unidades", "02 llantas", "cuatro" all mean quantity 4. A quantity before a position word is that group's quantity ("2 mixtas y 8 de tracción": 2 MIX + 8 TRAC, two lines). "UB 1830" is the customer's UB code for the line (field ub), never a quantity or a size; "número 451" is the quote number, not a product. Keep sizes exactly as written. For photos of a tyre sidewall, read the size, brand and model if legible.`;
+Extract every requested product as a line. Do not invent values: use null for anything not stated. "x4", "4 unidades", "02 llantas", "cuatro" all mean quantity 4. A quantity before a position word is that group's quantity ("2 mixtas y 8 de tracción": 2 MIX + 8 TRAC, two lines). "UB 1830" is the customer's UB code for the line (field ub), never a quantity or a size; "número 451" is the quote number, not a product; "precio 259" on a line is that line's unit_price, not a quantity nor part of the model. Keep sizes exactly as written. For photos of a tyre sidewall, read the size, brand and model if legible.`;
 
 export async function parseRequestWithLLM(text: string, extra: ContentBlock[] = []): Promise<LLMRequest | null> {
   try {

@@ -105,6 +105,25 @@ export function extractUb(text: string): string | undefined {
   return text.match(UB)?.[1];
 }
 
+/**
+ * "precio 259" / "precio: 259" / "precio 259.50" / "precio US$ 259" / "precio $259" / "precio 259 usd": the salesman's
+ * manual unit price for the line it is written on (net, quote currency). "a 259" is not one (too ambiguous).
+ */
+const LINE_PRICE = /\bprecio\s*:?\s*(?:US\$|U\$S|\$)?\s*(\d{1,3}(?:,\d{3})+(?:\.\d{1,2})?|\d{1,6}(?:[.,]\d{1,2})?)(?:\s*(?:usd|us\$|d[oó]lares)(?![\w$])|(?![\d.,]*\d|[a-z/]))/gi;
+/** The line's manual price ("precio 259"); the last one wins. */
+export function extractLinePrice(text: string): number | undefined {
+  const m = lastMatch(text, LINE_PRICE);
+  if (!m) return undefined;
+  const v = /^\d{1,3}(?:,\d{3})+/.test(m[1]) ? m[1].replace(/,/g, "") : m[1].replace(",", ".");
+  const n = parseFloat(v);
+  return Number.isFinite(n) && n > 0 ? n : undefined;
+}
+
+/** The text with every "precio 259" blanked (same length), so the price is never a quantity or part of the model. */
+function withoutLinePrice(text: string): string {
+  return text.replace(LINE_PRICE, (m) => " ".repeat(m.length));
+}
+
 /** The line with its UB blanked out (same length), so "UB 1830" is never a quantity, a size or part of the model. */
 function withoutUb(line: string): string {
   return line.replace(new RegExp(UB.source, "gi"), (m) => " ".repeat(m.length));
@@ -401,6 +420,9 @@ export function parseRequestRegex(text: string): QuoteRequest {
   const lines: RequestLine[] = [];
 
   const itemLines: Span[] = [];
+  // lines whose "precio 259" was read (the line's own, or a segment of only the price right after an item)
+  const priceLines: Span[] = [];
+  let prevItem = false;
   for (const { text: line, src } of candidateLines(stripped)) {
     // strip the customer/discount/tax tail from the item text
     const head = stripMargin(line)
@@ -410,22 +432,36 @@ export function parseRequestRegex(text: string): QuoteRequest {
       .replace(/\b(con|sin|mas|m[aá]s|inc\w*)\s+igv\b/gi, " ")
       .replace(/\b(?:cotizar|cotizaci[oó]n|cotiza|cotizas|me cotizas|precio de|necesito|quiero|quiere|piden?|pedido|busco|me pide|requiere|requerimos|solicito|solicitamos)\b/gi, " ");
     const cut = head.search(/\b(?:para|cliente|client|empresa|customer|correo|email|tel|atn|att)\b(?!\s+(?:llantas?|neum[aá]ticos?|cami[oó]n|camioneta|bus|tractor|auto|carro|moto|aro))\s*:?\s+[A-Z]/i);
-    const item = (cut > 0 ? head.slice(0, cut) : head).trim();
+    const withPrice = (cut > 0 ? head.slice(0, cut) : head).trim();
+    // "precio 259": the line's manual price, blanked before reading quantity / size / model
+    const unitPrice = extractLinePrice(withPrice);
+    const item = unitPrice !== undefined ? withoutLinePrice(withPrice).replace(/\s+/g, " ").trim() : withPrice;
+    if (unitPrice !== undefined && !/[\p{L}\p{N}]/u.test(item) && prevItem) {
+      // a segment of only the price, right after the item ("…x4\nprecio 259")
+      lines[lines.length - 1].unitPrice = unitPrice;
+      priceLines.push(src);
+      prevItem = false;
+      continue;
+    }
     // "UB 1830" is the line's UB: blanked before reading quantity / size / model
     const ub = extractUb(item);
     const itemText = ub ? withoutUb(item).replace(/\s+/g, " ").trim() : item;
     const parsed = lineFromText(itemText, parseQuantity(itemText));
+    prevItem = !!parsed;
     if (parsed) {
-      lines.push(ub ? { ...parsed, raw: item, ub } : parsed);
+      const withUb = ub ? { ...parsed, raw: item, ub } : parsed;
+      lines.push(unitPrice !== undefined ? { ...withUb, unitPrice } : withUb);
+      if (unitPrice !== undefined) priceLines.push(src);
       if (!itemLines.some((s) => s[0] === src[0])) itemLines.push(src);
     }
   }
+  claimed.push(...spansOf(text, LINE_PRICE).filter(([a, b]) => priceLines.some(([x, y]) => a >= x && b <= y)));
   const unparsed = unparsedSegments(text, claimed, itemLines);
 
   // merge identical lines ("215/75R17.5 Posterior" x4 rows -> quantity 4)
   const merged: RequestLine[] = [];
   for (const l of lines) {
-    const keyOf = (x: RequestLine) => [x.size?.canonical ?? fold(x.text ?? ""), fold(x.brand ?? ""), fold(x.model ?? ""), x.position ?? "", x.application ?? "", x.plate ?? "", x.ub ?? ""].join("|");
+    const keyOf = (x: RequestLine) => [x.size?.canonical ?? fold(x.text ?? ""), fold(x.brand ?? ""), fold(x.model ?? ""), x.position ?? "", x.application ?? "", x.plate ?? "", x.ub ?? "", x.unitPrice ?? ""].join("|");
     const key = keyOf(l);
     const prev = merged.find((m) => keyOf(m) === key);
     if (prev) prev.quantity += l.quantity;
@@ -632,8 +668,11 @@ export async function parseRequest(text: string): Promise<QuoteRequest> {
       application: l.application?.trim().toUpperCase() || undefined,
       plate: l.plate ? extractPlate(`placa ${l.plate}`) ?? l.plate.toUpperCase() : undefined,
       ub: (l.raw ? extractUb(l.raw) : undefined) ?? (l.ub ? extractUb(`UB ${l.ub}`) : undefined),
+      // "precio 259" typed on the line is read exactly by the regex; the LLM's value only when the regex has none
+      unitPrice: (l.raw ? extractLinePrice(l.raw) : undefined) ?? regexPriceFor(base.lines, lines.length, size) ?? (l.unit_price && l.unit_price > 0 ? l.unit_price : undefined),
     });
   }
+  for (const l of lines) if (l.unitPrice === undefined) delete l.unitPrice;
   const merged: QuoteRequest = {
     ...base,
     // keyed fields typed by the salesman ("unidad: …") are read exactly by the regex; corrections appended later win
@@ -660,14 +699,20 @@ export async function parseRequest(text: string): Promise<QuoteRequest> {
   return { ...merged, unparsed: unparsed?.length ? unparsed : undefined };
 }
 
+/** The regex line's "precio 259" for the LLM's line `i`, when the regex read the same line there (same size). */
+function regexPriceFor(base: RequestLine[], i: number, size: RequestLine["size"]): number | undefined {
+  const b = base[i];
+  return b?.unitPrice !== undefined && (b.size?.canonical ?? "") === (size?.canonical ?? "") ? b.unitPrice : undefined;
+}
+
 export function describeLine(l: RequestLine): string {
   if (l.size) {
     const app = l.application ? l.application : l.position === "DEL" ? "delantera" : l.position === "TRAC" ? "tracción/posterior" : l.position === "MIX" ? "mixta" : "";
-    return [l.brand ?? "", l.size.display, l.model ?? "", l.ply ? `${l.ply}PR` : "", app, l.plate ? `placa ${l.plate}` : "", l.ub ? `UB ${l.ub}` : "", `x${l.quantity}`]
+    return [l.brand ?? "", l.size.display, l.model ?? "", l.ply ? `${l.ply}PR` : "", app, l.plate ? `placa ${l.plate}` : "", l.ub ? `UB ${l.ub}` : "", `x${l.quantity}`, l.unitPrice !== undefined ? `precio ${l.unitPrice}` : ""]
       .filter(Boolean)
       .join(" ");
   }
-  return `${l.text ?? l.raw}${l.plate ? ` placa ${l.plate}` : ""}${l.ub ? ` UB ${l.ub}` : ""} x${l.quantity}`;
+  return `${l.text ?? l.raw}${l.plate ? ` placa ${l.plate}` : ""}${l.ub ? ` UB ${l.ub}` : ""} x${l.quantity}${l.unitPrice !== undefined ? ` precio ${l.unitPrice}` : ""}`;
 }
 
 /** Human-readable summary of what was understood (sent back to the salesman). */

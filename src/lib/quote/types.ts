@@ -24,6 +24,8 @@ export interface RequestLine {
    * from the price lists (no options). `price` is net of IGV, in `currency`.
    */
   contract?: { id: string; price: number; currency: string };
+  /** "precio 259" written on the line: the salesman's unit price (net of IGV, quote currency), as "precio 1 259". */
+  unitPrice?: number;
 }
 
 export interface QuoteRequest {

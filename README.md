@@ -19,6 +19,11 @@ Cómo se arma el precio de venta:
 * **Ítem de proveedor** (Steel, JCH o un mensaje reenviado): costo sin IGV + margen (`pricing.provider.marginPct`,
   15 % por defecto; el vendedor lo cambia por cotización con `margen 10%`). Sale en la cotización como "a pedido".
 * **Ítem sin precio en ninguna lista** (parches, aros…): el vendedor escribe `precio 3 4.50` y entra como precio manual.
+* **Precio manual en el pedido**: `precio 259` (`precio: 259`, `precio 259.50`, `precio US$ 259`, `precio $259`,
+  `precio 259 usd`) en la línea de la llanta (o como segmento justo después de ella) es su precio unitario sin IGV:
+  la opción elegida sale a ese precio ("precio manual"); sin opciones en las listas entra como ítem manual con la
+  descripción escrita. `precio 1 300` después lo cambia. `a 259` no cuenta. Un mensaje con `precio N` sin cantidad
+  ni cliente ni campos (`Marca medida precio 259`) sigue leyéndose como precio de proveedor.
 
 ```
 vendedor  →  "Fenixway 295/80R22.5 Valor 87 x4 para Transportes ABC, juan@abc.com, dscto 10%"
@@ -165,6 +170,7 @@ Variables de entorno: copiar `.env.example` a `.env`. Nada es obligatorio para e
 | `ok` | cotiza con la opción *a* de cada línea |
 | `1b 3c` · `2` (una sola línea) | elige opciones |
 | `quitar 2` · `cantidad 2 6` · `precio 3 4.50` | quita una línea, cambia cantidad, pone precio manual |
+| `precio 259` en la línea del pedido (`Fenixway Flama 77 315/80R22.5 x4 precio 259, cliente: …`) | precio manual de esa línea desde el inicio (como `precio 1 259`); `precio 1 300` lo cambia |
 | `dscto 15` · `con igv` / `sin igv` · `correo x@y.com` | descuento, presentación, destinatario |
 | `margen 10` (en el pedido: `margen 10%`, `10% de margen`, `mg 10%`) | margen de esta cotización sobre el costo de proveedor (reemplaza `pricing.provider.marginPct`; solo ítems de proveedor) |
 | `atención: Sra. X` · `dirección: Lima` · `pago: letras 30 días` · `plazo: 45 días` · `entrega: 48 hrs post OC` · `validez: 5 días` · `tc 3.4` | datos de las cajas de la cotización |
