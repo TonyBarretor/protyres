@@ -31,10 +31,47 @@ bot       →  1. Fenixway 295/80R22.5 VALOR 87 x4
                a) 🏭 STOCK · stock 34 · Fenixway Valor 87 295/80R22.5 18PR   US$ 315.25 (lista US$ 350.28 −10%)
                b) 🚚 Steel · stock 8 · …                                       US$ 220.58 (costo … Steel)
 vendedor  →  "ok"            (o "1b", "quitar 2", "precio 3 4.50", "dscto 15", "con igv")
-bot       →  PDF + vista previa del correo
+bot       →  1) texto para el cliente (se reenvía tal cual)  2) PDF  3) vista previa del correo
 vendedor  →  "enviar"        (o "correo otro@x.com", "cancelar")
 bot       →  "Enviado ✔"
 ```
+
+Al armar la cotización (y cada vez que se rearma) llegan **dos mensajes para reenviar al cliente tal cual** y luego la
+revisión:
+
+1. Un texto escrito para el cliente, sin comandos ni emojis:
+   ```
+   Estimados señores MOVIL BUS S.A.C.
+   Atención: Sr. Jonathan Matta
+   Adjunto la cotización OCTUBRE 2026 - 032:
+   • 8 × Fenixway Flama 77 315/80R22.5 20PR – US$ 254.00 c/u
+   Total: US$ 2,032.00 + IGV
+   Forma de pago: Factura crédito, 45 días · Entrega: 48 hrs post OC · Validez: 7 días
+   Quedo atento a cualquier consulta.
+   Frank Melek Rodríguez Mirano · 360 by Professional Tyres · 955 344 340
+   ```
+   (`inc. IGV` cuando los precios van con IGV; Prosegur agrega `Unidad: … · UB …`; el asesor sale de `salespeople`).
+2. El PDF, con un pie para el vendedor: `Cotización OCTUBRE 2026 - 032 · 8 × Flama 77 @ US$ 254.00 (precio manual) ·
+   Pago factura crédito 30 días · Total US$ 2,032.00 (sin IGV)` y la nota de fotos. Prosegur: además su Excel.
+
+Cada cotización nueva empieza con `🆕 Cotización nueva · CLIENTE`. Si llega otro pedido mientras hay una cotización
+abierta (eligiendo opciones o con el PDF ya enviado al vendedor), el bot no empieza otra en silencio:
+
+- **Otro cliente** → empieza la nueva de inmediato y lo dice: `Cerré la 032 (MOVIL BUS) y empiezo una nueva.`
+  (Prosegur: otra unidad cuenta como otro cliente).
+- **El mismo cliente** (o ninguno escrito) → pregunta `Tienes la cotización 032 (MOVIL BUS S.A.C.) abierta. ¿Es un
+  *cambio* en esa, una llanta para *agregar*, o una cotización *nueva*?` y espera:
+  - `cambiar` → si las llantas del mensaje son las de la cotización (marca + modelo + medida), aplica lo distinto:
+    cantidad (como `cantidad N`), `precio N` y condiciones (pago, plazo, entrega, atención, dirección, correo, con/sin
+    IGV); si trae otra llanta dice que no puede y ofrece `agregar` / `nueva`.
+  - `agregar` → las llantas del mensaje entran a la cotización abierta (como `agregar …`).
+  - `nueva` → cotización nueva. `cancelar` cancela todo.
+- **Memoria del cliente** al empezar una cotización: el mismo cliente (razón social o nombre, sin importar mayúsculas,
+  tildes ni "S.A.C.") cotizado por el mismo vendedor en los últimos 30 días con un **precio escrito a mano** para la
+  misma llanta (marca + modelo + medida) → ese precio se pone de nuevo: `💲 precio 254 como en la 031 a este cliente
+  (escribe precio 1 248 para volver a lista)`. Pago, plazo, entrega, atención, dirección y correo de la última
+  cotización a ese cliente se reutilizan si el pedido no los trae: `📒 plazo 45 días y atención Sr. Jonathan Matta,
+  como en la 031 (MOVIL BUS S.A.C.)`. Lo escrito en el pedido siempre gana.
 
 Pedidos con varias líneas (correos de licitación con tabla, mensajes reenviados) se entienden igual: una línea por
 ítem, cantidades sumadas cuando se repiten, código de referencia del cliente en la cotización. Lo que el bot no entiende
@@ -157,7 +194,7 @@ Variables de entorno: copiar `.env.example` a `.env`. Nada es obligatorio para e
    Sin `DATABASE_URL` se usa `data/store.json` (bien en local; en Vercel el disco no persiste). `db:migrate` es
    idempotente: correrlo después de cada actualización (la v14 crea `quote_files` —los archivos enviados de cada
    cotización— y agrega `sync_marks.provider`; la v15 crea `contract_prices` —los precios de contrato cambiados
-   desde WhatsApp—) **antes** de desplegar.
+   desde WhatsApp—; la v16 crea `messages` —el registro de mensajes de `historial`—) **antes** de desplegar.
 6. **Despliegue** – Vercel (`vercel`) o Railway. Variables = las de `.env`. `curl https://<app>/api/health` debe
    mostrar `whatsapp: true`. Para refrescar Drive cada hora: cron que llame `GET /api/ingest/refresh` con
    `Authorization: Bearer $CRON_SECRET`.
@@ -170,9 +207,13 @@ Variables de entorno: copiar `.env.example` a `.env`. Nada es obligatorio para e
 | `ok` | cotiza con la opción *a* de cada línea |
 | `1b 3c` · `2` (una sola línea) | elige opciones |
 | `quitar 2` · `cantidad 2 6` · `precio 3 4.50` | quita una línea, cambia cantidad, pone precio manual |
+| con **un solo ítem**: `cantidad 8` · `x8` · `8 unidades` · `precio 254` · `a 254` · `quitar` · `aplicación MIXT DEL` · `foto` | lo mismo sin el número del ítem (eligiendo opciones o con el PDF armado); con 2 o más ítems el bot pregunta `¿De qué ítem? (ej. cantidad 2 8)`. `a x2, b x8` sigue eligiendo opciones |
+| `agregar 11R22.5 Fenixway x2` (`añadir`, `agrega`, `+ …`; varias líneas valen) | agrega llantas a la cotización en curso: eligiendo opciones, aparecen como ítems nuevos (la misma llanta suma a su cantidad); con el PDF ya armado, entran con su primera opción (o el `precio N` escrito) y llegan PDF y resumen de nuevo. Prosegur: los ítems de contrato (`agregar 4 v89`) van a precio de contrato |
 | `precio 259` en la línea del pedido (`Fenixway Flama 77 315/80R22.5 x4 precio 259, cliente: …`) | precio manual de esa línea desde el inicio (como `precio 1 259`); `precio 1 300` lo cambia |
 | `dscto 15` · `con igv` / `sin igv` · `correo x@y.com` | descuento, presentación, destinatario |
+| después de cada cambio (`cantidad`, `precio`, `quitar`, `agregar`, `dscto`, `margen`, `pago`/`plazo`/`entrega`, `aplicación`, `con/sin igv`) | el bot responde con el estado de la cotización en 4–6 líneas: cliente · atención, un ítem por línea (`1. Fenixway FLAMA 77 315/80R22.5 x8 @ US$ 254.00 (precio manual)`), `Pago · Plazo · Entrega` y `Total … sin IGV`. Eligiendo opciones reemplaza a las opciones (salvo `dscto`/`margen`, que cambian sus precios, y `agregar`, que muestra las opciones de la llanta nueva); `opciones` las vuelve a mostrar. Con el PDF armado va antes de la vista del correo |
 | `margen 10` (en el pedido: `margen 10%`, `10% de margen`, `mg 10%`) | margen de esta cotización sobre el costo de proveedor (reemplaza `pricing.provider.marginPct`; solo ítems de proveedor) |
+| (aviso) `Plazo 30 días por defecto (escribe plazo: 45 días para cambiarlo).` | última línea del primer mensaje de opciones cuando el pedido no dice plazo ni pago y no hay uno recordado del cliente (una vez por cotización) |
 | `atención: Sra. X` · `dirección: Lima` · `pago: letras 30 días` · `plazo: 45 días` · `entrega: 48 hrs post OC` · `validez: 5 días` · `tc 3.4` | datos de las cajas de la cotización |
 | `unidad: Ayacucho` · `ub: 1830` (o `UB 1830` en la línea de la llanta) · `solicitante: Johann Castañeda` | unidad atendida, UB y solicitante (Prosegur) |
 | `número 451` (`numero`, `nro`, `n°`) · `número 451 confirmar` · `nombre: TEXTO` | fija el número ("OCTUBRE 2026 - 451", el siguiente del vendedor será 452); si ya existe pide confirmar; `nombre:` pone el número tal cual sin tocar el contador. En una cotización ya mostrada la renumera (solo borradores) |
@@ -182,8 +223,10 @@ Variables de entorno: copiar `.env.example` a `.env`. Nada es obligatorio para e
 | `reenviar 451` · `archivos 451` · `pdf 451` (o el número completo) | te reenvía los archivos guardados (o los genera de nuevo) |
 | mensaje reenviado / PDF / Excel / foto de lista | carga de precios: solo de proveedores conocidos (JCH, Steel, Protyres o los ya cargados); una cotización no se carga |
 | `proveedor nuevo: NOMBRE` · `borrar proveedor NOMBRE` | solo administradores (`ADMIN_NUMBERS`) |
+| `historial 51955344340` · `historial` (tu número) · `historial 51955344340 50` | solo administradores: los últimos 30 (o N, máx. 100) mensajes de ese número, el más reciente al final, hora de Lima: `30/10 17:16 ← precio 1 254` · `30/10 17:16 → Cotización … (PDF: Cotizacion 26 - 0031.pdf)` |
 | `contrato prosegur` · `contrato prosegur v99 125.50` (admin) | precios de contrato de Prosegur: ver (cualquiera) / cambiar (administradores); ver "Prosegur (contrato)" |
 | `precios 11R22.5` · `stock 295/80R22.5` | todas las opciones para una medida |
+| otro pedido con una cotización abierta | otro cliente: empieza una nueva (`Cerré la 032 …`); el mismo cliente: pregunta y se responde `cambiar` · `agregar` · `nueva` |
 | `proveedores` · `ayuda` · `cancelar` | |
 
 ### Prosegur (cliente con formato propio)
@@ -259,5 +302,8 @@ prosegur ayacucho 1830
   - `PHOTOS_DISABLED=1` evita descargar imágenes al renderizar (tests).
 - **Biblioteca de fotos propia** (`npm run photos`): descarga las fotos de los proveedores y las guarda reducidas (600 px JPEG) en la tabla `photos`, para no depender de que el proveedor mantenga el enlace. Fuentes en `config/photo-sources.json`: JCH (WooCommerce, SKU = código de su lista) y Steel (URLs de su lista). `--dry --limit 20` para previsualizar; `--woocommerce URL --provider Nombre` para cualquier otra tienda WooCommerce; `--stats` para contar. Sin IA: el emparejamiento es por código y, si no, por marca/modelo del nombre.
   - **Webs detrás de Cloudflare** (JCH): rechazan descargas directas (HTTP 403 a curl/Node) y su verificación «eres humano» se queda en bucle con Playwright normal. El importador abre entonces una ventana de Google Chrome con `patchright` (Playwright parcheado para no delatarse; dependencia de desarrollo; usa el Chrome instalado y un perfil propio en `.cache/chrome-profile`) y descarga catálogo e imágenes desde dentro de la página. `"browser": true` en la fuente abre Chrome desde el inicio; sin esa marca se intenta primero la descarga directa y se abre Chrome solo si la web la bloquea. `--headless` oculta la ventana, `--no-browser` nunca la abre, `PHOTOS_CHROME_PATH` elige otro Chrome/Chromium. Si Cloudflare muestra la casilla «Verificar que eres humano», se marca a mano en la ventana y el importador sigue solo.
-- **Memoria de clientes**: al cotizar de nuevo al mismo cliente (correo o razón social) el bot reutiliza atención, dirección y condiciones de la última cotización y lo avisa; se cambian con `atención: …`, `dirección: …`, `pago: …`, `plazo: …`, `entrega: …`.
+- **Memoria de clientes** (ver también "Cada cotización nueva…" arriba): al cotizar de nuevo al mismo cliente (correo o razón social) el bot reutiliza atención, dirección y condiciones de la última cotización y lo avisa; se cambian con `atención: …`, `dirección: …`, `pago: …`, `plazo: …`, `entrega: …`.
 - Antes de `enviar`, el bot avisa si faltan *atención* o *dirección* y muestra las condiciones vigentes.
+- **Registro de mensajes**: todo lo que entra y sale del bot queda en la tabla `messages` (número, entrada/salida, tipo,
+  texto o pie de foto, nombre del archivo —nunca el archivo—, cotización). `historial <número>` (administradores) lo
+  muestra; un fallo al registrar nunca corta la conversación.

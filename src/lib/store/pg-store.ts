@@ -7,7 +7,7 @@ import postgres from "postgres";
 import * as schema from "../../db/schema";
 import type { PriceRow, PriceSource } from "../ingest/types";
 import type { Quote } from "../quote/types";
-import { foldKey, photoKey, type ConversationState, type ListQuotesOptions, type PriceStore, type ProductPhoto, type ProviderSummary, type QuoteFile, type ReplaceScope, type StoredContractItem } from "./types";
+import { foldKey, photoKey, type ConversationState, type ListQuotesOptions, type LoggedMessage, type MessageLogEntry, type PriceStore, type ProductPhoto, type ProviderSummary, type QuoteFile, type ReplaceScope, type StoredContractItem } from "./types";
 
 type Db = PostgresJsDatabase<typeof schema>;
 
@@ -231,7 +231,7 @@ export class PgStore implements PriceStore {
   async findLastQuoteForCustomer(opts: { email?: string; company?: string; unit?: string }): Promise<Quote | null> {
     const conds = [];
     if (opts.email) conds.push(sql`lower(${schema.quotes.customerEmail}) = ${opts.email.toLowerCase()}`);
-    if (opts.company) conds.push(sql`lower(${schema.quotes.data}->'customer'->>'company') = ${opts.company.toLowerCase()}`);
+    if (opts.company) conds.push(sql`${FOLD(sql`(${schema.quotes.data}->'customer'->>'company')`)} = ${foldKey(opts.company)}`); // "Movil Bus S.A.C." = "MOVIL BUS SAC"
     if (conds.length === 0) return null;
     let where = conds.length === 1 ? conds[0] : sql`(${conds[0]}) or (${conds[1]})`;
     if (opts.unit) where = sql`(${where}) and ${FOLD(sql`(${schema.quotes.data}->>'unit')`)} = ${foldKey(opts.unit)}`;
@@ -408,6 +408,25 @@ export class PgStore implements PriceStore {
       return del.length > 0;
     } catch (err) {
       if (isMissingTable(err)) return false;
+      throw err;
+    }
+  }
+
+  async logMessage(entry: MessageLogEntry): Promise<void> {
+    await this.db.insert(schema.messages).values({ phone: entry.phone.replace(/\D/g, ""), direction: entry.direction, kind: entry.kind, body: entry.body, fileName: entry.fileName ?? null, quoteNumber: entry.quoteNumber ?? null });
+  }
+
+  async listMessages(phone: string, limit = 30): Promise<LoggedMessage[]> {
+    try {
+      const rows = await this.db
+        .select()
+        .from(schema.messages)
+        .where(eq(schema.messages.phone, phone.replace(/\D/g, ""))) // stored as digits: uses the (phone, created_at) index
+        .orderBy(desc(schema.messages.createdAt), desc(schema.messages.id))
+        .limit(limit);
+      return rows.reverse().map((r) => ({ id: r.id, phone: r.phone, direction: r.direction as "in" | "out", kind: r.kind, body: r.body, fileName: r.fileName ?? undefined, quoteNumber: r.quoteNumber ?? undefined, createdAt: r.createdAt.toISOString() }));
+    } catch (err) {
+      if (isMissingTable(err)) return []; // messages not migrated yet
       throw err;
     }
   }

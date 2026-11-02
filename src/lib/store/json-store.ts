@@ -8,7 +8,7 @@ import path from "node:path";
 import { gunzipSync } from "node:zlib";
 import type { PriceRow } from "../ingest/types";
 import type { Quote } from "../quote/types";
-import { foldKey, photoKey, type ConversationState, type ListQuotesOptions, type PriceStore, type ProductPhoto, type ProviderSummary, type QuoteFile, type ReplaceScope, type StoredContractItem } from "./types";
+import { foldKey, photoKey, type ConversationState, type ListQuotesOptions, type LoggedMessage, type MessageLogEntry, type PriceStore, type ProductPhoto, type ProviderSummary, type QuoteFile, type ReplaceScope, type StoredContractItem } from "./types";
 
 interface Data {
   prices: Record<string, PriceRow>;
@@ -25,9 +25,13 @@ interface Data {
   quoteFiles: Record<string, QuoteFile>;
   /** "<customer>|<item id>" -> contract item (overrides config/customers.json) */
   contractPrices: Record<string, StoredContractItem & { customer: string }>;
+  /** WhatsApp messages in and out (the newest MAX_MESSAGES). */
+  messages: LoggedMessage[];
 }
 
-const EMPTY: Data = { prices: {}, quotes: {}, conversations: {}, counters: { quote: 0 }, processed: [], syncMarks: {}, syncProviders: {}, photos: {}, quoteFiles: {}, contractPrices: {} };
+const MAX_MESSAGES = 5000;
+
+const EMPTY: Data = { prices: {}, quotes: {}, conversations: {}, counters: { quote: 0 }, processed: [], syncMarks: {}, syncProviders: {}, photos: {}, quoteFiles: {}, contractPrices: {}, messages: [] };
 
 const digits = (s: string | undefined) => (s ?? "").replace(/\D/g, "");
 
@@ -149,11 +153,11 @@ export class JsonStore implements PriceStore {
   findLastQuoteForCustomer(opts: { email?: string; company?: string; unit?: string }): Promise<Quote | null> {
     return this.run(() => {
       const email = opts.email?.toLowerCase();
-      const company = opts.company?.toLowerCase();
+      const company = opts.company ? foldKey(opts.company) : ""; // "Movil Bus S.A.C." = "MOVIL BUS SAC"
       const unit = opts.unit ? foldKey(opts.unit) : "";
       if (!email && !company) return null;
       const hits = Object.values(this.data.quotes)
-        .filter((q) => (email && q.customer.email?.toLowerCase() === email) || (company && q.customer.company?.toLowerCase() === company))
+        .filter((q) => (email && q.customer.email?.toLowerCase() === email) || (company && foldKey(q.customer.company) === company))
         .filter((q) => !unit || foldKey(q.unit) === unit)
         .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
       return hits[0] ?? null;
@@ -293,6 +297,24 @@ export class JsonStore implements PriceStore {
       delete this.data.contractPrices[key];
       this.persist();
       return true;
+    });
+  }
+
+  logMessage(entry: MessageLogEntry): Promise<void> {
+    return this.run(() => {
+      const list = this.data.messages;
+      const id = (list.length ? list[list.length - 1].id : 0) + 1;
+      list.push({ ...entry, id, createdAt: new Date().toISOString() });
+      if (list.length > MAX_MESSAGES) list.splice(0, list.length - MAX_MESSAGES);
+      this.persist();
+    });
+  }
+
+  listMessages(phone: string, limit = 30): Promise<LoggedMessage[]> {
+    const p = digits(phone);
+    return this.run(() => {
+      const mine = this.data.messages.filter((m) => digits(m.phone) === p);
+      return mine.slice(Math.max(0, mine.length - limit)).map((m) => ({ ...m }));
     });
   }
 

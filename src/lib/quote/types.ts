@@ -122,6 +122,8 @@ export interface QuoteItem {
   total: number;
   /** "own" = from stock/own list, "provider" = bought to order, "manual" = price typed by the salesman, "contract" = the customer's contract price */
   origin: "own" | "provider" | "manual" | "contract";
+  /** The unit price was typed by the salesman ("precio 1 254", "precio 254" in the request), not the list's. */
+  manualPrice?: boolean;
   /** APLICACIÓN column ("DELANTERA", "MIXTA", "MONTACARGAS"...). */
   application?: string;
   /** Vehicle plate given by the customer, printed after the size ("11R22.5 18PR BVV-704"). */

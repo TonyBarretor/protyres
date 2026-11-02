@@ -178,6 +178,18 @@ function contract(name: string, make: () => Promise<PriceStore>) {
       expect(await store.findLastQuoteForCustomer({ company: "UNIDADES SAC", unit: "Lima" })).toBeNull();
     });
 
+    it("message log: appended per phone (digits compared), the last N oldest first", async () => {
+      const phone = `5199${Date.now() % 1_000_000}`;
+      for (let i = 1; i <= 5; i++) await store.logMessage({ phone, direction: i % 2 ? "in" : "out", kind: i === 4 ? "document" : "text", body: `m${i}`, fileName: i === 4 ? "Cotizacion 26 - 0031.pdf" : undefined, quoteNumber: i >= 4 ? "Q-31" : undefined });
+      await store.logMessage({ phone: "51000000000", direction: "in", kind: "text", body: "other" });
+      const last3 = await store.listMessages(`+${phone}`, 3);
+      expect(last3.map((m) => m.body)).toEqual(["m3", "m4", "m5"]);
+      expect(last3[1]).toMatchObject({ direction: "out", kind: "document", fileName: "Cotizacion 26 - 0031.pdf", quoteNumber: "Q-31" });
+      expect(typeof last3[0].id).toBe("number");
+      expect(Date.parse(last3[0].createdAt)).not.toBeNaN();
+      expect((await store.listMessages(phone)).length).toBe(5);
+    });
+
     it("deletes a provider's rows (name matched loosely) and its Drive sync marks", async () => {
       const res = await ingestExcel(fs.readFileSync(path.resolve(process.cwd(), "samples/proveedor-a-lista.xlsx")), { provider: "Llantas del Sur", sourceRef: "a.xlsx", priceDate: "2026-10-01" });
       await store.upsertRows(res.rows, { replace: { provider: "Llantas del Sur", sourceRef: "a.xlsx" } });

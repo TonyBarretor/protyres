@@ -26,7 +26,7 @@ import type { CustomerProfile, Settings } from "../settings";
 import { foldKey, photoKey, quoteCounterKey, type ConversationState, type PendingLine, type PriceStore } from "../store/types";
 import { buildQuote, displayTotal, displayUnit, formatQuoteNumber, itemFromCandidate, manualItem, quoteSerial } from "../quote/build";
 import { contractItemLabel, contractQuoteItem, contractUnitPrice, findContractItem, onlyContractLines, parseContractRequest, parseContractRequestRegex, parseNewContractItem, resolveContract, startsWithContractAlias, toStored, type Contract } from "../quote/contract";
-import { buildEmailDraft, sendQuoteEmail, type EmailAttachment, type SendResult } from "../quote/email";
+import { buildClientMessage, buildEmailDraft, sendQuoteEmail, type EmailAttachment, type SendResult } from "../quote/email";
 import { PDF_MIME, XLSX_MIME, pdfFileName, withExtension } from "../quote/files";
 import { findCandidates } from "../quote/match";
 import { renderQuotePdf } from "../quote/pdf";
@@ -34,9 +34,10 @@ import { attachPhotos, findPhoto, itemsWithoutPhoto, loadImage, searchWebPhotos,
 import { fmtMoney, r2 } from "../quote/pricing";
 import { FIELD_LABEL, askRequired, detectProfile, findProfile, hasExcelFormat, leadingProfile, missingInQuote, missingRequired, profileGuide, profileHead, profileId, profileKey, profileRequestText, shortItemLabel, type RequiredField } from "../quote/profiles";
 import { PROSEGUR_MAX_ITEMS, prosegurTooManyItems, renderProsegurXlsx } from "../quote/prosegur-xlsx";
-import { describeLine, describeRequest, parseEmail, parseRequest, parseRequestRegex, stripMargin, unparsedHintInfo } from "../quote/request";
+import { describeLine, describeRequest, parseEmail, parseQuantity, parseRequest, parseRequestRegex, stripMargin, unparsedHintInfo } from "../quote/request";
 import type { Candidate, EmailDraft, LineCandidates, Quote, QuoteItem, QuoteRequest, RequestLine } from "../quote/types";
 import type { WhatsAppClient } from "./client";
+import { LoggingWhatsAppClient, historyLine } from "./logging-client";
 import type { InboundMessage } from "./webhook";
 
 export interface HandlerDeps {
@@ -57,8 +58,11 @@ const HELP = [
   "_Fenixway 295/80R22.5 Valor 87 x4 para Transportes ABC, juan@abc.com, dscto 10%_",
   "",
   "Te muestro por cada ítem las opciones: stock propio (precio de lista menos descuento) y proveedores (Steel, JCH…).",
-  "Respondes *ok* para aceptar las primeras opciones, o eliges: *1b 2a*, *quitar 3*, *precio 3 4.50*, *dscto 15*, *margen 10*, *con igv*.",
+  "Respondes *ok* para aceptar las primeras opciones, o eliges: *1b 2a*, *quitar 3*, *precio 3 4.50*, *dscto 15*, *margen 10*, *con igv*, *agregar 11R22.5 x2* (otra llanta).",
+  "Con un solo ítem no hace falta su número: *cantidad 8* (o *x8*), *precio 254* (o *a 254*), *quitar*, *aplicación MIXT*, *foto*.",
+  "Después de cada cambio te muestro cómo queda (cliente, ítems con precio, condiciones, total); *opciones* vuelve a mostrar las opciones.",
   "Luego revisas el PDF y escribes *enviar*.",
+  "Otro pedido con una cotización abierta: te pregunto si es un *cambio*, una llanta para *agregar* o una *nueva* (otro cliente: empiezo una nueva).",
   "",
   "Prosegur: *prosegur ayacucho 1830* y debajo una línea por llanta (*2 v99*); *contrato prosegur* muestra sus precios. Va también su Excel «Formato Proveedores».",
   "Número y archivos: *número 451*, *nombre: …*, *archivo: Nombre*, *archivo excel: Nombre*.",
@@ -187,6 +191,132 @@ function parseFileCommand(text: string): { pdfName?: string; xlsxName?: string }
   return p ? { pdfName: p[1].trim() } : null;
 }
 
+/** "agregar 11R22.5 x2" / "añadir …" / "agrega …" / "+ …" (several lines allowed): the text after the keyword. */
+export function parseAddCommand(text: string): string | null {
+  const m = text.trim().match(/^(?:agregar|agrega|agregale|añadir|añade|anadir|anade|\+)(?:\s*:)?\s*([\s\S]+)$/i);
+  return m && m[1].trim() ? m[1].trim() : null;
+}
+
+/** A change to "the" item, written without its number: only valid when the quote has a single item. */
+export type BareItemCommand = { kind: "quantity"; value: number } | { kind: "price"; value: number } | { kind: "remove" } | { kind: "application"; value: string };
+
+/**
+ * "cantidad 8", "x8", "8 unidades" · "precio 254", "a 254" · "quitar" · "aplicación MIXT DEL": a change without the
+ * item's number. "x8" alone is a quantity, never a pick ("a x2, b x8" picks options). Null for anything else.
+ */
+export function parseBareItemCommand(text: string): BareItemCommand | null {
+  const t = text.trim();
+  const num = (s: string) => parseFloat(s.replace(/,(?=\d{1,2}$)/, ".").replace(/,/g, ""));
+  let m = t.match(/^(?:cantidad|cant|qty)\s*:?\s*(\d{1,4})$/i) ?? t.match(/^x\s*(\d{1,4})$/i) ?? t.match(/^(\d{1,4})\s*(?:unidades|unidad|unds?|unid|uds?|u|llantas?)\.?$/i);
+  if (m) return parseInt(m[1], 10) > 0 ? { kind: "quantity", value: parseInt(m[1], 10) } : null;
+  m = t.match(/^(?:precio|price|unitario)\s*:?\s*(?:us\$|\$|usd)?\s*(\d[\d,]*(?:\.\d{1,2})?)$/i) ?? t.match(/^a\s+(?:us\$|\$)?\s*(\d{2,}(?:[.,]\d{1,2})?)$/i);
+  if (m) return { kind: "price", value: num(m[1]) };
+  if (/^(?:quitar|quita|eliminar)$/i.test(t)) return { kind: "remove" };
+  m = t.match(/^(?:aplicaci[oó]n|aplic|app|uso)\s*:?\s+(\D.*)$/i);
+  if (m) return { kind: "application", value: m[1].trim().toUpperCase() };
+  return null;
+}
+
+/** "cantidad 2 8": how to write the same change for item 2 (the answer to "¿De qué ítem?"). */
+function withItemNumber(c: BareItemCommand): string {
+  if (c.kind === "quantity") return `cantidad 2 ${c.value}`;
+  if (c.kind === "price") return `precio 2 ${plainPrice(c.value)}`;
+  if (c.kind === "remove") return "quitar 2";
+  return `aplicación 2 ${c.value}`;
+}
+
+/** The request parser's identity of a line (identical lines are merged into one, quantities summed). */
+function lineKey(x: RequestLine): string {
+  return [x.size?.canonical ?? fold(x.text ?? ""), fold(x.brand ?? ""), fold(x.model ?? ""), x.position ?? "", x.application ?? "", x.plate ?? "", x.ub ?? "", x.unitPrice ?? "", x.contract?.id ?? ""].join("|");
+}
+
+/** Company-type endings left out when comparing / naming customers. */
+const LEGAL_SUFFIX = /[\s,]+(?:s\.?\s?a\.?\s?c\.?(?:\s?s\.?)?|s\.?\s?a\.?\s?a\.?|s\.?\s?a\.?|e\.?\s?i\.?\s?r\.?\s?l\.?|s\.?\s?r\.?\s?l\.?|ltda\.?)\s*$/i;
+
+/** "MOVIL BUS S.A.C." -> "MOVIL BUS". */
+export function shortCustomer(name: string): string {
+  const s = name.trim().replace(LEGAL_SUFFIX, "").trim();
+  return s || name.trim();
+}
+
+/** The same customer, however it is written: "Movil Bus" = "MOVIL BUS S.A.C." (a long enough name inside the other also counts). */
+export function sameCustomerName(a: string | undefined, b: string | undefined): boolean {
+  const x = foldKey(shortCustomer(a ?? ""));
+  const y = foldKey(shortCustomer(b ?? ""));
+  if (!x || !y) return false;
+  if (x === y) return true;
+  const [short, long] = x.length < y.length ? [x, y] : [y, x];
+  return short.length >= 6 && long.includes(short);
+}
+
+/** "a", "a y b", "a, b y c". */
+function joinY(parts: string[]): string {
+  return parts.length <= 1 ? (parts[0] ?? "") : `${parts.slice(0, -1).join(", ")} y ${parts[parts.length - 1]}`;
+}
+
+/** 254 -> "254", 248.5 -> "248.50" (as the salesman types prices). */
+function plainPrice(n: number): string {
+  return Number.isInteger(n) ? String(n) : n.toFixed(2);
+}
+
+/** The quote in progress, as far as telling customers apart goes. */
+interface OpenQuote {
+  number?: string;
+  company?: string;
+  name?: string;
+  email?: string;
+  /** customer profile id ("prosegur") */
+  profile?: string;
+  unit?: string;
+}
+
+/** A tyre as brand + model + size (or the text of an item that is not a tyre, or a contract code). */
+interface TyreId {
+  size?: string;
+  brand?: string;
+  model?: string;
+  text?: string;
+  contractId?: string;
+}
+
+function lineTyre(l: RequestLine): TyreId {
+  return { size: l.size?.canonical, brand: l.brand, model: l.model, text: l.size ? undefined : (l.text ?? l.raw), contractId: l.contract?.id };
+}
+
+function itemTyre(it: QuoteItem): TyreId {
+  return { size: it.size || undefined, brand: it.brand || undefined, model: it.model || undefined, text: it.size ? undefined : it.description, contractId: it.origin === "contract" ? it.code : undefined };
+}
+
+/** The new request's line `a` names the tyre `b` of the open quote (brand / model compared only when both have them). */
+function sameTyre(a: TyreId, b: TyreId): boolean {
+  if (a.contractId || b.contractId) return a.contractId === b.contractId;
+  if (a.size || b.size) {
+    if (a.size !== b.size) return false;
+    if (a.brand && b.brand && foldKey(a.brand) !== foldKey(b.brand)) return false;
+    if (a.model && b.model) {
+      const x = foldKey(a.model);
+      const y = foldKey(b.model);
+      if (!x.includes(y) && !y.includes(x)) return false;
+    }
+    return true;
+  }
+  return !!a.text && !!b.text && foldKey(a.text) === foldKey(b.text);
+}
+
+/** The line says how many ("x8", "8 unidades"), rather than the parser's default of 1. */
+function explicitQuantity(l: RequestLine): boolean {
+  return l.quantity !== 1 || parseQuantity(l.raw) !== null;
+}
+
+/** "cambiar" / "agregar" / "nueva" (with a few words around) as the answer to the new-or-change question. */
+function confirmAnswer(text: string): "change" | "add" | "new" | null {
+  const t = fold(text).replace(/^(?:es\s+(?:un|una)\s+|un\s+|una\s+|para\s+)/, "");
+  if (t.split(" ").length > 3) return null;
+  const w = t.match(/^(cambio|cambiar|cambia|cambialo|agregar|agrega|agregalo|anadir|anade|nueva|nuevo|otra)\b/)?.[1];
+  if (!w) return null;
+  return w.startsWith("camb") ? "change" : /^(?:agreg|anad)/.test(w) ? "add" : "new";
+}
+
 const STATUS_LABEL: Record<Quote["status"], string> = { draft: "borrador", sent: "enviada", cancelled: "anulada" };
 
 /** A profile chosen with a bare "prosegur" (or "prosegur ayacucho 1830": its unit / UB lines too) applies to the next request (for two hours). */
@@ -216,7 +346,7 @@ function warehouseSuffix(total: number, byWarehouse: Record<string, number> | un
   return list ? ` (${list})` : "";
 }
 
-const COMMAND_WORD = /^(?:enviar|send|ayuda|help|hola|menu|inicio|gracias|listo|dale|si|no|ok|cancelar|seguir|continuar|cotizar|confirmar|proveedores|listas|cotizaciones|contrato|contratos|fotos?|precios?|stock|cantidad|cant|quitar|quita|eliminar|aplicacion|archivo|nombre|numero|nro|reenviar|reenvia|archivos|pdf|correo|email|borrar|proveedor|dscto|descuento|margen)\b/;
+const COMMAND_WORD = /^(?:enviar|send|ayuda|help|hola|menu|inicio|gracias|listo|dale|si|no|ok|cancelar|seguir|continuar|cotizar|confirmar|proveedores|listas|cotizaciones|contrato|contratos|fotos?|precios?|stock|cantidad|cant|quitar|quita|eliminar|aplicacion|archivo|nombre|numero|nro|reenviar|reenvia|archivos|pdf|correo|email|borrar|proveedor|dscto|descuento|margen|historial|agregar|agrega|anadir|anade)\b/;
 
 /** The question for a contract item without APLICACIÓN yet ("Flama 77"). */
 function askApplication(name: string): string {
@@ -224,11 +354,13 @@ function askApplication(name: string): string {
 }
 
 export class BotHandler {
-  constructor(private deps: HandlerDeps) {}
+  /** The WhatsApp client with every outgoing message logged (the one place messages are logged). */
+  private client: LoggingWhatsAppClient;
 
-  private get client() {
-    return this.deps.client;
+  constructor(private deps: HandlerDeps) {
+    this.client = new LoggingWhatsAppClient(deps.client, deps.store, (m) => this.log(m));
   }
+
   private get store() {
     return this.deps.store;
   }
@@ -247,6 +379,7 @@ export class BotHandler {
     const text = (msg.text ?? "").trim();
     const cmd = norm(text);
     const state: ConversationState = (await this.store.getConversation(from)) ?? { phone: from, step: "idle", updatedAt: now() };
+    await this.client.logInbound(msg, state.quoteNumber);
 
     try {
       if (["ayuda", "help", "?", "hola", "menu", "inicio"].includes(cmd)) return this.reply(from, HELP);
@@ -287,6 +420,9 @@ export class BotHandler {
         const handled = await this.handleNeedFields(from, state, text);
         if (handled) return;
       }
+      if (state.step === "confirm_new" && state.resume && (await this.handleConfirmNew(from, state, text))) return;
+      const addText = parseAddCommand(text);
+      if (addText && (state.step === "choose" || state.step === "review_quote" || state.step === "need_email")) return this.addLines(from, state, addText);
       if (state.step === "choose" && state.pending) {
         const handled = await this.handleChoice(from, state, text);
         if (handled) return;
@@ -300,12 +436,25 @@ export class BotHandler {
         const files = parseFileCommand(text);
         if (files) return this.renameFiles(from, state, files);
       }
+      if (state.step === "review_quote" || state.step === "need_email") {
+        // "cantidad 8" / "x8" / "precio 254" / "a 254" / "quitar" / "aplicación MIXT" on a quote with a single item
+        const bare = parseBareItemCommand(text);
+        if (bare) {
+          const quote = state.quoteNumber ? await this.store.getQuote(state.quoteNumber) : null;
+          if (!quote) return this.reply(from, "No encuentro la cotización; escribe el pedido de nuevo.");
+          if (quote.items.length !== 1) return this.reply(from, `¿De qué ítem? (ej. ${withItemNumber(bare)})`);
+          if (bare.kind === "quantity") return this.rebuildQuote(from, state, { lineIndex: 0, quantity: bare.value });
+          if (bare.kind === "price") return this.rebuildQuote(from, state, { lineIndex: 0, unitPrice: bare.value });
+          if (bare.kind === "remove") return this.rebuildQuote(from, state, { lineIndex: 0, remove: true });
+          return this.rebuildQuote(from, state, { lineIndex: 0, application: bare.value });
+        }
+      }
       if (state.step === "review_quote") {
         if (["enviar", "send", "ok", "si", "sí", "dale", "listo"].includes(cmd)) return this.sendQuote(from, state);
         const mail = text.match(/^(?:correo|email|mail|enviar a)\s*:?\s*(\S+@\S+)/i);
         if (mail) return this.rebuildQuote(from, state, { email: mail[1] });
-        const price = text.match(/^(?:precio|price|unitario)\s*:?\s+(?:(\d{1,2})\s+)?([\d.,]+)\s*$/i);
-        if (price) return this.rebuildQuote(from, state, { lineIndex: price[1] ? parseInt(price[1], 10) - 1 : 0, unitPrice: parseFloat(price[2].replace(",", ".")) });
+        const price = text.match(/^(?:precio|price|unitario)\s*:?\s+(\d{1,2})\s+([\d.,]+)\s*$/i);
+        if (price) return this.rebuildQuote(from, state, { lineIndex: parseInt(price[1], 10) - 1, unitPrice: parseFloat(price[2].replace(",", ".")) });
         // a contract quote skips the options step: quantities and lines are corrected here
         const qty = text.match(/^(?:cantidad|cant|qty)\s+(\d{1,2})\s+(\d{1,4})\s*$/i);
         if (qty) return this.rebuildQuote(from, state, { lineIndex: parseInt(qty[1], 10) - 1, quantity: parseInt(qty[2], 10) });
@@ -326,10 +475,14 @@ export class BotHandler {
       // items sent as messages of their own ("2 v99", then "4 v89"): contract lines go into the quote just presented
       if ((state.step === "review_quote" || state.step === "need_email") && (await this.addToQuote(from, state, text))) return;
       if (!text) return this.reply(from, "No entendí el mensaje. Escribe *ayuda* para ver cómo funciona.");
+      // a new request while a quote is open: never a silent restart
+      if ((state.step === "choose" || state.step === "review_quote" || state.step === "need_email") && (await this.confirmNewRequest(from, state, text))) return;
       return this.startRequest(from, text, undefined, { profile: profileNext?.profile, header: profileNext?.header });
     } catch (err) {
       this.log(`error handling ${msg.id}: ${(err as Error).stack ?? err}`);
       await this.reply(from, `Ocurrió un error: ${(err as Error).message}. Intenta de nuevo o escribe *cancelar*.`);
+    } finally {
+      this.client.setQuote(from, undefined);
     }
   }
 
@@ -515,8 +668,9 @@ export class BotHandler {
     return `  *${letter})* ${tag}${stock} · ${name}${size}\n      ${price}${notes ? `\n      ⚠️ ${notes}` : ""}`;
   }
 
-  private renderOptions(req: QuoteRequest, lcs: LineCandidates[], pending: PendingLine[]): string {
+  private renderOptions(req: QuoteRequest, lcs: LineCandidates[], pending: PendingLine[], only?: number[]): string {
     const blocks = lcs.map((lc, i) => {
+      if (only && !only.includes(i)) return "";
       const p = pending[i];
       const head = `*${i + 1}.* ${describeLine(p.application ? { ...lc.line, application: p.application } : lc.line)}${p.removed ? " _(quitado)_" : ""}`;
       if (p.removed) return head;
@@ -535,7 +689,7 @@ export class BotHandler {
     });
     const extras = [req.customerCompany ?? req.customerName ?? "", req.customerEmail ?? "", req.discountPct !== undefined ? `dscto ${req.discountPct}%` : "", req.marginPct !== undefined ? `margen ${req.marginPct}%` : "", req.showPricesWithTax === true ? "con IGV" : req.showPricesWithTax === false ? "sin IGV" : ""].filter(Boolean);
     const unparsed = this.unparsedOf(req);
-    return `${blocks.join("\n\n")}${extras.length ? `\n\n${extras.join(" · ")}` : ""}${unparsed.length ? `\n\n${unparsedWarning(unparsed)}` : ""}\n\nResponde *ok* para cotizar con las opciones *a*, o elige: *1b* (ítem 1, opción b), *b x4* (opción b, 4 unidades), *a x2, b x8* (dos opciones del mismo ítem). También: *quitar 2*, *precio 3 4.50*, *aplicación 2 MIXT DEL*, *dscto 15*, *margen 10*, *con igv*, *cancelar*.`;
+    return `${blocks.filter(Boolean).join("\n\n")}${extras.length ? `\n\n${extras.join(" · ")}` : ""}${unparsed.length ? `\n\n${unparsedWarning(unparsed)}` : ""}\n\nResponde *ok* para cotizar con las opciones *a*, o elige: *1b* (ítem 1, opción b), *b x4* (opción b, 4 unidades), *a x2, b x8* (dos opciones del mismo ítem). También: *quitar 2*, *precio 3 4.50*, *aplicación 2 MIXT DEL*, *agregar 11R22.5 x2*, *dscto 15*, *margen 10*, *con igv*, *cancelar*.`;
   }
 
   /** The request's segments the parser did not understand, without those naming a customer profile ("coti para prosegur"). */
@@ -543,7 +697,7 @@ export class BotHandler {
     return (req.unparsed ?? []).filter((seg) => !detectProfile(this.settings, seg, { raw: seg, lines: [], parsedBy: "regex" }));
   }
 
-  private async startRequest(from: string, text: string, note?: string, opts: { profile?: string; header?: string } = {}): Promise<void> {
+  private async startRequest(from: string, text: string, note?: string, opts: { profile?: string; header?: string; lead?: string[] } = {}): Promise<void> {
     // customer profile (Prosegur…): the message starts with its alias, says "para prosegur", names it as the customer,
     // or the salesman asked for it with a bare "prosegur" (or "prosegur ayacucho 1830") just before
     let profile = findProfile(this.settings, opts.profile) ?? detectProfile(this.settings, text, parseRequestRegex(text)) ?? undefined;
@@ -583,9 +737,11 @@ export class BotHandler {
     if (remembered.lines.length) {
       text = `${text}\n${remembered.lines.join("\n")}`;
       req = await this.parseFor(text, contract);
-      note = `${note ? note + "\n" : ""}📒 Datos de la última cotización a ${remembered.who}: ${remembered.summary.join(" · ")} _(cámbialos con *atención: …*, *pago: …*, *dirección: …*${profile?.required.length ? `, ${profile.required.map((f) => `*${FIELD_LABEL[f]}: …*`).join(", ")}` : ""})_`;
+      const where = remembered.number ? `como en la ${this.shortNumber(remembered.number)} (${remembered.who})` : `como en la última a ${remembered.who}`;
+      const what = remembered.summary.some((x) => x.includes(",")) ? remembered.summary.join(" · ") : joinY(remembered.summary);
+      note = `${note ? note + "\n" : ""}📒 ${what}, ${where} _(se cambian con ${remembered.keys.slice(0, 3).map((k) => `*${k}: …*`).join(", ")})_`;
     }
-    return this.showOptions(from, text, req, profile, { note });
+    return this.showOptions(from, text, req, profile, { note, newQuote: true, lead: opts.lead });
   }
 
   /**
@@ -638,10 +794,15 @@ export class BotHandler {
    * The profile's required fields first (unidad, ub, solicitante), then the options of every line. A request made only
    * of contract items has nothing to choose: the quote is built right away.
    */
-  private async showOptions(from: string, text: string, req: QuoteRequest, profile: CustomerProfile | undefined, opts: { note?: string; skipRequired?: boolean } = {}): Promise<void> {
+  private async showOptions(from: string, text: string, req: QuoteRequest, profile: CustomerProfile | undefined, opts: { note?: string; skipRequired?: boolean; newQuote?: boolean; lead?: string[] } = {}): Promise<void> {
     const allContract = req.lines.length > 0 && req.lines.every((l) => l.contract);
+    // a new quote is announced ("🆕 Cotización nueva · MOVIL BUS S.A.C."), with the lines that explain it ("Cerré la 032 …");
+    // the short contract texts go without them (their summary is the boundary), except "Cerré …", sent on its own
+    const who = req.customerCompany ?? req.customerName;
+    const head = opts.newQuote && !allContract ? [`🆕 Cotización nueva${who ? ` · ${who}` : ""}`, ...(opts.lead ?? [])] : [];
+    if (allContract && opts.lead?.length) await this.reply(from, opts.lead.join("\n"));
     // the short contract texts leave out the memory note: the summary shows what was reused (correo, solicitante)
-    const note = opts.note && !allContract ? `${opts.note}\n` : "";
+    const note = [...head, ...(opts.note && !allContract ? [opts.note] : [])].map((l) => `${l}\n`).join("");
     const id = profile ? profileId(profile) : undefined;
     const missingFields = profile && !opts.skipRequired ? missingRequired(profile, req) : [];
     if (profile && missingFields.length) {
@@ -653,6 +814,8 @@ export class BotHandler {
     const lcs = await this.lineCandidates(req);
     // "precio 259" written on a line is its manual price from the start (as "precio 1 259")
     const pending: PendingLine[] = lcs.map((lc) => ({ candidateIds: lc.candidates.map((c) => c.row.id), chosen: lc.candidates.length ? 0 : null, quantity: lc.line.quantity, ...(lc.line.unitPrice !== undefined ? { unitPriceOverride: lc.line.unitPrice } : {}) }));
+    // a new quote to a customer quoted lately: the manual price of the same tyre is kept ("precio 254 como en la 031")
+    const carried = opts.newQuote ? await this.carryPrices(from, req, profile, lcs, pending) : [];
     const state: ConversationState = { phone: from, step: "choose", requestText: text, pending, profile: id, updatedAt: now() };
     await this.store.setConversation(from, state);
     if (allContract) {
@@ -660,8 +823,11 @@ export class BotHandler {
       return;
     }
     const missing = lcs.filter((lc) => !lc.line.contract && lc.candidates.length === 0 && lc.line.unitPrice === undefined).length;
-    const intro = `${note}Entendí:\n${describeRequest(req)}\n${missing ? `\n⚠️ ${missing} ítem(s) sin precio en las listas.\n` : ""}`;
-    await this.reply(from, `${intro}\n${this.renderOptions(req, lcs, pending)}`);
+    const intro = `${note}${carried.map((l) => `${l}\n`).join("")}Entendí:\n${describeRequest(req)}\n${missing ? `\n⚠️ ${missing} ítem(s) sin precio en las listas.\n` : ""}`;
+    // the first options message of a quote whose request (and memory) says nothing of the terms: the default, once
+    const term = this.settings.quote.paymentTerm;
+    const defaultTerm = opts.newQuote && term && req.paymentTerm === undefined && req.paymentType === undefined ? `\nPlazo ${term} por defecto (escribe plazo: 45 días para cambiarlo).` : "";
+    await this.reply(from, `${intro}\n${this.renderOptions(req, lcs, pending)}${defaultTerm}`);
   }
 
   /**
@@ -700,7 +866,7 @@ export class BotHandler {
       fieldLines = true;
     }
     const req = await this.parseFor(requestText, contract);
-    await this.showOptions(from, requestText, req, profile, { skipRequired: !fieldLines });
+    await this.showOptions(from, requestText, req, profile, { skipRequired: !fieldLines, newQuote: true });
     return true;
   }
 
@@ -761,6 +927,7 @@ export class BotHandler {
     let touched = false;
 
     if (["ok", "si", "sí", "dale", "listo", "cotizar", "confirmar"].includes(cmd)) return this.finishChoice(from, state);
+    if (["opciones", "ver opciones", "opcion", "mostrar opciones"].includes(cmd)) return this.reshow(from, state, requestText, { show: "options" });
 
     // number / name / file names of the quote about to be built
     const num = parseNumberCommand(text);
@@ -776,6 +943,25 @@ export class BotHandler {
       await this.store.setConversation(from, { ...state, files: { ...state.files, ...files }, updatedAt: now() });
       await this.reply(from, files.xlsxName ? `📎 El Excel se llamará *${withExtension(files.xlsxName, ".xlsx")}*.` : `📎 El PDF se llamará *${withExtension(files.pdfName ?? "", ".pdf")}*.`);
       return true;
+    }
+
+    // "cantidad 8" / "x8" / "precio 254" / "a 254" / "quitar" / "aplicación MIXT" on a quote with a single item
+    const bare = parseBareItemCommand(text);
+    if (bare) {
+      const active = pending.map((_, i) => i).filter((i) => !pending[i].removed);
+      const li = pending.length === 1 ? 0 : active.length === 1 ? active[0] : -1;
+      if (li < 0) {
+        await this.reply(from, `¿De qué ítem? (ej. ${withItemNumber(bare)})`);
+        return true;
+      }
+      const pl = pending[li];
+      if (bare.kind === "quantity") pl.quantity = bare.value;
+      else if (bare.kind === "price") {
+        pl.unitPriceOverride = bare.value;
+        pl.removed = false;
+      } else if (bare.kind === "remove") pl.removed = true;
+      else pl.application = bare.value;
+      return this.reshow(from, { ...state, pending }, requestText);
     }
 
     const picks = parsePicks(text, pending.length);
@@ -849,12 +1035,12 @@ export class BotHandler {
     const disc = text.match(/^(?:dscto|dcto|descuento|desc)\s*:?\s*(\d{1,2}(?:[.,]\d)?)\s*%?$/i);
     if (disc) {
       requestText = `${requestText.replace(/\b(?:dscto|dcto|descuento|desc)\.?\s*:?\s*\d{1,2}(?:[.,]\d)?\s*%?/gi, " ")}\ndscto ${disc[1]}%`;
-      return this.reshow(from, { ...state, requestText }, requestText);
+      return this.reshow(from, { ...state, requestText }, requestText, { show: "all" }); // every option's price changed
     }
     const margin = text.match(/^(?:margen|mg)\s*:?\s*(?:de\s+)?(\d{1,2}(?:[.,]\d)?)\s*%?$/i);
     if (margin) {
       requestText = `${stripMargin(requestText)}\nmargen ${margin[1]}%`;
-      return this.reshow(from, { ...state, requestText }, requestText);
+      return this.reshow(from, { ...state, requestText }, requestText, { show: "all" }); // every option's price changed
     }
     if (/^(con|sin)\s+igv$/.test(cmd)) {
       requestText = `${requestText.replace(/\b(con|sin)\s+igv\b/gi, " ")}\n${cmd}`;
@@ -904,8 +1090,15 @@ export class BotHandler {
     throw new Error("no encuentro un número de cotización libre");
   }
 
-  /** Re-rank (discount / tax may have changed) and show the options again, keeping choices. */
-  private async reshow(from: string, state: ConversationState, requestText: string): Promise<boolean> {
+  /**
+   * Re-rank (discount / tax may have changed), keeping choices, and answer the change with the quote's current state
+   * (4–6 lines). `show`: "summary" (default: nothing to choose again), "all" (+ every line's options: their prices
+   * changed), "new" (+ the options of the lines just added), "options" (only the options, nothing changed).
+   */
+  private async reshow(from: string, state: ConversationState, requestText: string, opts: { lead?: string; show?: "summary" | "all" | "new" | "options" } = {}): Promise<boolean> {
+    const lead = opts.lead;
+    const show = opts.show ?? "summary";
+    const before = state.pending?.length ?? 0;
     const req = await this.parseFor(requestText, await this.contractFor(findProfile(this.settings, state.profile)));
     const lcs = await this.lineCandidates(req);
     const pending: PendingLine[] = lcs.map((lc, i) => {
@@ -915,9 +1108,73 @@ export class BotHandler {
       const extra = (prev?.extra ?? []).map((x) => ({ chosen: ids.indexOf(prev!.candidateIds[x.chosen]), quantity: x.quantity })).filter((x) => x.chosen >= 0);
       return { candidateIds: ids, chosen: keep >= 0 ? keep : ids.length ? 0 : null, quantity: prev?.quantity ?? lc.line.quantity, unitPriceOverride: prev?.unitPriceOverride ?? lc.line.unitPrice, removed: prev?.removed, application: prev?.application, extra: extra.length ? extra : undefined };
     });
-    await this.store.setConversation(from, { ...state, step: "choose", requestText, pending, updatedAt: now() });
-    await this.reply(from, this.renderOptions(req, lcs, pending));
+    await this.store.setConversation(from, { ...state, step: "choose", requestText, pending, confirmText: undefined, resume: undefined, updatedAt: now() });
+    const summary = show === "options" ? "" : this.chooseSummary(req, lcs, pending);
+    const options = show === "all" || show === "options" ? this.renderOptions(req, lcs, pending) : show === "new" ? this.renderOptions(req, lcs, pending, lcs.map((_, i) => i).filter((i) => i >= before)) : "";
+    const footer = options ? "" : `\n\nResponde *ok* para armar el PDF, o *opciones* para ver las opciones.${this.unparsedOf(req).length ? `\n${unparsedWarning(this.unparsedOf(req))}` : ""}`;
+    await this.reply(from, [lead, summary, options].filter(Boolean).join("\n\n") + footer);
     return true;
+  }
+
+  /** "Pago: Factura crédito · Plazo: 45 días · Entrega: 48 hrs post OC". */
+  private termsLine(t: { paymentType?: string; paymentTerm?: string; deliveryTerm?: string }): string {
+    const d = this.settings.quote;
+    return `Pago: ${t.paymentType || d.paymentType || "—"} · Plazo: ${t.paymentTerm || d.paymentTerm || "—"} · Entrega: ${t.deliveryTerm || d.deliveryTerm || "—"}`;
+  }
+
+  /** "Fenixway FLAMA 77 315/80R22.5 20PR MIXT placa ABC-123 x8". */
+  private static itemName(x: { brand?: string; model?: string; sizeDisplay?: string; ply?: number; description?: string; application?: string; plate?: string; ub?: string }, quantity: number, quoteUb?: string): string {
+    const name = x.sizeDisplay ? [x.brand, x.model, `${x.sizeDisplay}${x.ply ? ` ${x.ply}PR` : ""}`].filter(Boolean).join(" ") : (x.description ?? "");
+    const refs = [x.application, x.plate ? `placa ${x.plate}` : "", x.ub && x.ub !== quoteUb ? `UB ${x.ub}` : ""].filter(Boolean).join(" ");
+    return `${name}${refs ? ` ${refs}` : ""} x${quantity}`;
+  }
+
+  /**
+   * The quote being chosen, compactly: customer · atención, one line per item with its unit price, the terms and the
+   * total, e.g. "1. Fenixway FLAMA 77 315/80R22.5 x8 @ US$ 254.00 (precio manual)".
+   */
+  private chooseSummary(req: QuoteRequest, lcs: LineCandidates[], pending: PendingLine[]): string {
+    const withTax = req.showPricesWithTax ?? this.settings.pricing.showPricesWithTax;
+    const shown = (n: number) => (withTax ? r2(n * (1 + this.settings.pricing.taxPct / 100)) : n);
+    let total = 0;
+    let unpriced = false;
+    const lines: string[] = [];
+    lcs.forEach((lc, i) => {
+      const p = pending[i];
+      if (!p) return;
+      const line = p.application ? { ...lc.line, application: p.application } : lc.line;
+      const cand = p.chosen !== null ? lc.candidates.find((c) => c.row.id === p.candidateIds[p.chosen!]) : undefined;
+      const what = cand ? { ...cand.row, application: line.application, plate: line.plate, ub: line.ub } : { brand: line.brand, model: line.model, sizeDisplay: line.size?.display, ply: line.ply, description: line.text ?? line.raw, application: line.application, plate: line.plate, ub: line.ub };
+      const label = `${i + 1}. ${BotHandler.itemName(what, p.quantity, req.ub)}`;
+      if (p.removed) return lines.push(`${label} _(quitado)_`);
+      const unit = p.unitPriceOverride ?? (line.contract ? contractUnitPrice(line.contract, this.settings.pricing) : cand?.unitNet);
+      if (unit === undefined) {
+        unpriced = true;
+        return lines.push(`${label} · sin precio`);
+      }
+      const tag = p.unitPriceOverride !== undefined ? " (precio manual)" : line.contract ? " (contrato)" : "";
+      lines.push(`${label} @ ${fmtMoney(shown(unit), this.cur)}${tag}`);
+      total += shown(unit) * p.quantity;
+      for (const x of p.extra ?? []) {
+        const more = lc.candidates.find((c) => c.row.id === p.candidateIds[x.chosen]);
+        if (!more) continue;
+        lines.push(`   + ${BotHandler.itemName({ ...more.row, application: line.application }, x.quantity)} @ ${fmtMoney(shown(more.unitNet), this.cur)}`);
+        total += shown(more.unitNet) * x.quantity;
+      }
+    });
+    const who = [req.customerCompany ?? req.customerName, req.attention].filter(Boolean).join(" · ");
+    const tax = `${withTax ? "con" : "sin"} ${this.settings.pricing.taxLabel}`;
+    return [who, ...lines, this.termsLine(req), `Total ${fmtMoney(r2(total), this.cur)} ${tax}${unpriced ? " (falta precio)" : ""}`].filter(Boolean).join("\n");
+  }
+
+  /** The presented quote, compactly (same form as chooseSummary). */
+  private quoteSummary(q: Quote): string {
+    const lines = q.items.map((it, i) => {
+      const tag = it.origin === "contract" ? " (contrato)" : it.manualPrice || it.origin === "manual" ? " (precio manual)" : "";
+      return `${i + 1}. ${BotHandler.itemName(it.sizeDisplay ? it : { ...it, description: it.description }, it.quantity, q.ub)} @ ${fmtMoney(displayUnit(it, q), q.currency)}${tag}`;
+    });
+    const who = [q.customer.company ?? q.customer.name, q.customer.attention].filter(Boolean).join(" · ");
+    return [who, ...lines, this.termsLine(q), `Total ${fmtMoney(displayTotal(q), q.currency)} ${q.pricesIncludeTax ? "con" : "sin"} ${q.taxLabel}`].filter(Boolean).join("\n");
   }
 
   private async finishChoice(from: string, state: ConversationState): Promise<boolean> {
@@ -995,7 +1252,8 @@ export class BotHandler {
     return true;
   }
 
-  private async presentQuote(from: string, quote: Quote): Promise<void> {
+  private async presentQuote(from: string, quote: Quote, opts: { lead?: string; summary?: boolean } = {}): Promise<void> {
+    this.client.setQuote(from, quote.number);
     const profile = findProfile(this.settings, quote.customerProfile);
     quote.emailDraft = buildEmailDraft(quote, this.settings);
     await attachPhotos(quote, this.store);
@@ -1004,7 +1262,10 @@ export class BotHandler {
     await this.store.saveQuote(quote);
     const pdf = await renderQuotePdf(quote, this.settings, { photos: !process.env.PHOTOS_DISABLED });
     await this.deps.onPdf?.(quote, pdf);
-    const summary = quote.items.length === 1 ? `${quote.items[0].description} x${quote.items[0].quantity}` : `${quote.items.length} ítems`;
+    // for the salesman: what each item goes at, the terms and the total
+    const shortItem = (it: QuoteItem) => `${it.quantity} × ${it.model || it.brand || it.description.split(" ").slice(0, 3).join(" ")} @ ${fmtMoney(displayUnit(it, quote), quote.currency)}${it.origin === "contract" ? " (contrato)" : it.manualPrice || it.origin === "manual" ? " (precio manual)" : ""}`;
+    const summary = [...quote.items.slice(0, 3).map(shortItem), quote.items.length > 3 ? `y ${quote.items.length - 3} ítems más` : ""].filter(Boolean).join(" · ");
+    const pay = [quote.paymentType, quote.paymentTerm].filter(Boolean).join(" ").toLowerCase();
     const taxNote = quote.pricesIncludeTax ? `inc. ${quote.taxLabel}` : `sin ${quote.taxLabel}`;
     const noPhoto = itemsWithoutPhoto(quote);
     const photoNote =
@@ -1012,7 +1273,9 @@ export class BotHandler {
         ? `\n📷 Fotos: ${quote.items.length - noPhoto.length}/${quote.items.length}${noPhoto.length ? ` · sin foto: ${noPhoto.map((it) => [it.brand, it.model].filter(Boolean).join(" ") || it.description).join(", ")} → mándame la imagen con el texto *foto ${[noPhoto[0].brand, noPhoto[0].model].filter(Boolean).join(" ")}*${webSearchAvailable() ? ` o escribe *foto buscar ${quote.items.indexOf(noPhoto[0]) + 1}*` : ""}` : ""}`
         : "";
     // a profile's quote keeps its texts short (the salesman found them too long): no photo hints in the caption
-    await this.client.sendDocument(from, pdf, pdfFileName(quote, this.settings), `Cotización ${quote.number} · ${summary} · Total ${fmtMoney(displayTotal(quote), quote.currency)} (${taxNote})${profile ? "" : photoNote}`, PDF_MIME);
+    // two messages the salesman can forward as they are: the description for the customer, then the PDF
+    await this.reply(from, buildClientMessage(quote, this.settings));
+    await this.client.sendDocument(from, pdf, pdfFileName(quote, this.settings), `Cotización ${quote.number} · ${summary}${pay ? ` · Pago ${pay}` : ""} · Total ${fmtMoney(displayTotal(quote), quote.currency)} (${taxNote})${profile ? "" : photoNote}`, PDF_MIME);
     if (xlsx && profile) await this.client.sendDocument(from, xlsx.buffer, xlsx.fileName, `Formato ${profile.name} · ${xlsx.fileName}`, XLSX_MIME);
     if (!quote.customer.email) {
       await this.store.setConversation(from, { phone: from, step: "need_email", quoteNumber: quote.number, updatedAt: now() });
@@ -1021,7 +1284,9 @@ export class BotHandler {
     await this.store.setConversation(from, { phone: from, step: "review_quote", quoteNumber: quote.number, updatedAt: now() });
     const d = quote.emailDraft;
     const excelMissing = xlsx && profile ? missingInQuote(profile, quote) : [];
-    if (profile) return this.reply(from, this.profileReview(quote, profile, d.to, excelMissing));
+    // a profile's review is already the compact state; the others get it first after a change
+    if (profile) return this.reply(from, `${opts.lead ? `${opts.lead}\n` : ""}${this.profileReview(quote, profile, d.to, excelMissing)}`);
+    const lead = [opts.lead, opts.summary ? this.quoteSummary(quote) : ""].filter(Boolean).map((l) => `${l}\n\n`).join("");
     const missing: string[] = [];
     if (!quote.customer.attention && !quote.customer.name) missing.push("*atención: Sr. Pérez*");
     if (!quote.customer.address) missing.push("*dirección: Av. … , Lima*");
@@ -1034,7 +1299,7 @@ export class BotHandler {
     ]
       .filter(Boolean)
       .join("\n");
-    await this.reply(from, `📧 *Para:* ${d.to}\n*Asunto:* ${d.subject}\n\n${d.body}\n\n${check}\n\n—\nResponde *enviar* para mandarlo, *precio 2 480* para cambiar un unitario, *aplicación 2 POST ON/OFF* para la columna aplicación, *correo x@y.com* para cambiar el destinatario, *con igv* / *sin igv*, *número 452* o *nombre: …* para el número, *archivo: Nombre* para el nombre del PDF, *foto 1* para ver la foto de un ítem, o *cancelar*.`);
+    await this.reply(from, `${lead}📧 *Para:* ${d.to}\n*Asunto:* ${d.subject}\n\n${d.body}\n\n${check}\n\n—\nResponde *enviar* para mandarlo, *precio 2 480* para cambiar un unitario, *agregar 11R22.5 x2* para sumar una llanta, *aplicación 2 POST ON/OFF* para la columna aplicación, *correo x@y.com* para cambiar el destinatario, *con igv* / *sin igv*, *número 452* o *nombre: …* para el número, *archivo: Nombre* para el nombre del PDF, *foto 1* para ver la foto de un ítem, o *cancelar*.`);
   }
 
   /**
@@ -1087,26 +1352,35 @@ export class BotHandler {
    * already sets them. A profile's units have their own requester and contact (Prosegur): when the request names a
    * unit, the last quote of that unit; if the unit has none yet, only the customer's email is reused.
    */
-  private async rememberCustomer(req: QuoteRequest, profile?: CustomerProfile): Promise<{ lines: string[]; summary: string[]; who: string }> {
-    const out = { lines: [] as string[], summary: [] as string[], who: "" };
-    if (!req.customerEmail && !req.customerCompany) return out;
+  private async rememberCustomer(req: QuoteRequest, profile?: CustomerProfile): Promise<{ lines: string[]; summary: string[]; keys: string[]; who: string; number?: string }> {
+    const out = { lines: [] as string[], summary: [] as string[], keys: [] as string[], who: "", number: undefined as string | undefined };
+    const name = req.customerCompany ?? (profile ? undefined : req.customerName);
+    if (!req.customerEmail && !name) return out;
     const who = { email: req.customerEmail, company: req.customerCompany };
     const perUnit = !!profile && !!req.unit;
-    const last = await this.store.findLastQuoteForCustomer(perUnit ? { ...who, unit: req.unit } : who);
+    let last = await this.store.findLastQuoteForCustomer(perUnit ? { ...who, unit: req.unit } : who);
+    if (!last && name && !perUnit) {
+      // written another way ("Movil Bus" for "MOVIL BUS S.A.C."), or a person's name
+      const recent = await this.store.listQuotes(req.customerCompany ? { company: shortCustomer(req.customerCompany), limit: 50 } : { limit: 200 });
+      last = recent.find((q) => sameCustomerName(q.customer.company ?? q.customer.name, name)) ?? null;
+    }
     if (!last) {
       const any = perUnit && !req.customerEmail ? await this.store.findLastQuoteForCustomer(who) : null;
       if (any?.customer.email) {
         out.who = any.customer.company || any.customer.name || any.customer.email;
         out.lines.push(`correo ${any.customer.email}`);
         out.summary.push(`correo ${any.customer.email}`);
+        out.keys.push("correo");
       }
       return out;
     }
+    out.number = last.number;
     out.who = [last.customer.company || last.customer.name || last.customer.email || "", perUnit ? last.unit : ""].filter(Boolean).join(" · ");
     const add = (key: string, label: string, value: string | undefined, already: unknown) => {
       if (!value || already) return;
       out.lines.push(`${key}: ${value}`);
       out.summary.push(`${label} ${value}`);
+      out.keys.push(key);
     };
     // the attention goes with its requester: not carried over when it only repeated the requester, nor to a new requester
     const sameRequester = !req.requester || foldKey(req.requester) === foldKey(last.requester);
@@ -1123,8 +1397,222 @@ export class BotHandler {
     if (!req.customerEmail && last.customer.email) {
       out.lines.push(`correo ${last.customer.email}`);
       out.summary.push(`correo ${last.customer.email}`);
+      out.keys.push("correo");
     }
     return out;
+  }
+
+  // ---------- a new request while a quote is open ----------
+
+  /** "032" for "OCTUBRE 2026 - 032" (the counter as the salesman says it); the number itself when it has none. */
+  private shortNumber(number: string): string {
+    const n = quoteSerial(number, this.settings.quote.numberFormat);
+    return n !== undefined ? String(n).padStart(3, "0") : number;
+  }
+
+  /** The quote in progress (choosing options, or presented): its number and customer. Null when it cannot be found. */
+  private async openQuote(state: ConversationState): Promise<OpenQuote | null> {
+    if (state.step === "choose") {
+      const req = this.parseForRegex(state.requestText ?? "", await this.contractFor(findProfile(this.settings, state.profile)));
+      return { company: req.customerCompany, name: req.customerName, email: req.customerEmail, profile: state.profile, unit: req.unit };
+    }
+    const q = state.quoteNumber ? await this.store.getQuote(state.quoteNumber) : null;
+    return q ? { number: q.number, company: q.customer.company, name: q.customer.name, email: q.customer.email, profile: q.customerProfile, unit: q.unit } : null;
+  }
+
+  /**
+   * Whether a new request is for the open quote's customer: by customer profile (Prosegur, and its unit), else by name (company or
+   * person, "Movil Bus" = "MOVIL BUS S.A.C."), else by email. "unknown" when the request names nobody.
+   */
+  private customerRelation(open: OpenQuote, req: QuoteRequest, profile: CustomerProfile | undefined): "same" | "different" | "unknown" {
+    const newProfile = profile ? profileId(profile) : undefined;
+    const newWho = req.customerCompany ?? req.customerName;
+    const openWho = open.company ?? open.name;
+    if (newProfile || open.profile) {
+      // a profile's units are quoted apart (own requester, contact and Excel): another unit is another customer
+      if (newProfile && open.profile) return newProfile !== open.profile || (!!req.unit && !!open.unit && foldKey(req.unit) !== foldKey(open.unit)) ? "different" : "same";
+      return (newProfile ? openWho || open.email : newWho || req.customerEmail) ? "different" : "unknown";
+    }
+    if (newWho && openWho) return sameCustomerName(newWho, openWho) ? "same" : "different";
+    if (req.customerEmail && open.email) return req.customerEmail.toLowerCase() === open.email.toLowerCase() ? "same" : "different";
+    return "unknown";
+  }
+
+  /**
+   * A message that looks like a new request arrived while a quote is open. Another customer: the new quote starts
+   * right away ("Cerré la 032 (MOVIL BUS) y empiezo una nueva."). The same customer, or none named: the bot asks
+   * whether it is a *cambio*, a tyre to *agregar* or a *nueva* quote, and waits (confirm_new). False when the text is
+   * not a request (no tyre in it): it goes on as before.
+   */
+  private async confirmNewRequest(from: string, state: ConversationState, text: string): Promise<boolean> {
+    const profile = detectProfile(this.settings, text, parseRequestRegex(text)) ?? undefined;
+    const contract = await this.contractFor(profile);
+    const req = this.parseForRegex(profile ? this.applyProfile(text, profile, contract).text : text, contract);
+    if (!req.lines.length && !leadingProfile(this.settings, text)) return false;
+    const open = await this.openQuote(state);
+    if (!open) return false;
+    const who = open.company ?? open.name;
+    const which = open.number ? `la ${this.shortNumber(open.number)}` : "la cotización en curso";
+    if (this.customerRelation(open, req, profile) === "different") {
+      const label = [who ? shortCustomer(who) : "", open.profile ? open.unit : ""].filter(Boolean).join(" · ");
+      await this.startRequest(from, text, undefined, { lead: [`Cerré ${which}${label ? ` (${label})` : ""} y empiezo una nueva.`] });
+      return true;
+    }
+    await this.store.setConversation(from, { phone: from, step: "confirm_new", confirmText: text, resume: state, quoteNumber: state.quoteNumber, profile: state.profile, updatedAt: now() });
+    const open1 = open.number ? `Tienes la cotización ${this.shortNumber(open.number)}${who ? ` (${who})` : ""} abierta.` : `Tienes una cotización en curso${who ? ` (${who})` : ""}.`;
+    await this.reply(from, `${open1} ¿Es un *cambio* en esa, una llanta para *agregar*, o una cotización *nueva*?`);
+    return true;
+  }
+
+  /** The answer to "¿cambio, agregar o nueva?". Returns false for anything else that the rest of the flow should see. */
+  private async handleConfirmNew(from: string, state: ConversationState, text: string): Promise<boolean> {
+    const resume = state.resume!;
+    const pendingText = state.confirmText ?? "";
+    const answer = confirmAnswer(text);
+    if (answer === "new") {
+      await this.startRequest(from, pendingText);
+      return true;
+    }
+    if (answer === "add") {
+      await this.store.setConversation(from, resume);
+      await this.addLines(from, resume, pendingText);
+      return true;
+    }
+    if (answer === "change") {
+      await this.applyAsChange(from, state, pendingText);
+      return true;
+    }
+    // "agregar <otra llanta>": that one goes into the open quote
+    const add = parseAddCommand(text);
+    if (add) {
+      await this.store.setConversation(from, resume);
+      await this.addLines(from, resume, add);
+      return true;
+    }
+    if (parseRequestRegex(text).lines.length) {
+      // yet another request: it is the one waiting now
+      await this.store.setConversation(from, { ...state, confirmText: text, updatedAt: now() });
+    }
+    await this.reply(from, "Responde *cambiar* (cambio en la cotización abierta), *agregar* (otra llanta en ella) o *nueva* (otra cotización) — o *cancelar*.");
+    return true;
+  }
+
+  /**
+   * The new request applied as changes to the open quote: every tyre in it must be one of the quote's (brand + model +
+   * size); a different quantity or a "precio N" changes that line (as "cantidad N" / "precio N"), and the terms it
+   * states (pago, plazo, entrega, atención, dirección, correo, con/sin IGV…) replace the quote's. When it cannot be
+   * applied the bot says why and the question stands.
+   */
+  private async applyAsChange(from: string, state: ConversationState, text: string): Promise<void> {
+    const resume = state.resume!;
+    const number = resume.quoteNumber ? this.shortNumber(resume.quoteNumber) : "";
+    const which = number ? `la ${number}` : "la cotización en curso";
+    const cannot = (why: string) => this.reply(from, `No puedo aplicarlo como cambio: ${why}. Responde *agregar* (otra llanta en ${which}) o *nueva* (otra cotización).`);
+    const quote = resume.step === "choose" ? null : resume.quoteNumber ? await this.store.getQuote(resume.quoteNumber) : null;
+    if (resume.step !== "choose" && !quote) return cannot("no encuentro la cotización");
+    const profile = findProfile(this.settings, resume.step === "choose" ? resume.profile : quote?.customerProfile);
+    const contract = await this.contractFor(profile);
+    const req = await this.parseFor(profile ? this.applyProfile(text, profile, contract).text : text, contract);
+    // the tyres of the open quote, by position
+    const openReq = resume.step === "choose" ? this.parseForRegex(resume.requestText ?? "", contract) : null;
+    const tyres: (TyreId | null)[] = openReq ? openReq.lines.map((l, i) => (resume.pending?.[i] && !resume.pending[i].removed ? lineTyre(l) : null)) : quote!.items.map(itemTyre);
+    const edits: { index: number; quantity?: number; unitPrice?: number }[] = [];
+    const said: string[] = [];
+    for (const l of req.lines) {
+      const hits = tyres.map((t, i) => (t && sameTyre(lineTyre(l), t) ? i : -1)).filter((i) => i >= 0);
+      if (hits.length !== 1) return cannot(hits.length ? `«${describeLine(l)}» está más de una vez en ${which}` : `«${describeLine(l)}» no está en ${which}`);
+      const k = hits[0];
+      const cur = openReq ? { quantity: resume.pending![k].quantity, unitPrice: resume.pending![k].unitPriceOverride } : { quantity: quote!.items[k].quantity, unitPrice: quote!.items[k].unitPrice };
+      const e: { index: number; quantity?: number; unitPrice?: number } = { index: k };
+      if (explicitQuantity(l) && l.quantity !== cur.quantity) {
+        e.quantity = l.quantity;
+        said.push(`cantidad ${l.quantity}`);
+      }
+      if (l.unitPrice !== undefined && l.unitPrice !== cur.unitPrice) {
+        e.unitPrice = l.unitPrice;
+        said.push(`precio ${plainPrice(l.unitPrice)}`);
+      }
+      if (e.quantity !== undefined || e.unitPrice !== undefined) edits.push(e);
+    }
+    // the terms the request states and the open quote does not have yet
+    const d = this.settings.quote;
+    const cur = openReq ? { ...openReq, paymentType: openReq.paymentType ?? d.paymentType, paymentTerm: openReq.paymentTerm ?? d.paymentTerm, deliveryTerm: openReq.deliveryTerm ?? d.deliveryTerm, validityDays: openReq.validityDays ?? d.validityDays } : { paymentType: quote!.paymentType, paymentTerm: quote!.paymentTerm, deliveryTerm: quote!.deliveryTerm, validityDays: quote!.validityDays, attention: quote!.customer.attention, address: quote!.customer.address, exchangeRate: quote!.exchangeRate, customerEmail: quote!.customer.email, showPricesWithTax: quote!.pricesIncludeTax, discountPct: undefined, marginPct: undefined };
+    const differs = (a: unknown, b: unknown) => a !== undefined && a !== null && a !== "" && foldKey(String(a)) !== foldKey(String(b ?? ""));
+    const termLinesOut: string[] = [];
+    const term = (key: string, value: unknown, now: unknown, label = key) => {
+      if (!differs(value, now)) return;
+      termLinesOut.push(`${key}: ${value}`);
+      said.push(`${label} ${value}`);
+    };
+    term("pago", req.paymentType, cur.paymentType);
+    term("plazo", req.paymentTerm, cur.paymentTerm);
+    term("entrega", req.deliveryTerm, cur.deliveryTerm);
+    term("validez", req.validityDays !== undefined ? `${req.validityDays} días` : undefined, cur.validityDays !== undefined ? `${cur.validityDays} días` : undefined);
+    term("atención", req.attention, cur.attention);
+    term("dirección", req.address, cur.address);
+    term("tc", req.exchangeRate, cur.exchangeRate);
+    const email = differs(req.customerEmail, cur.customerEmail) ? req.customerEmail : undefined;
+    if (email) said.push(`correo ${email}`);
+    const tax = req.showPricesWithTax !== undefined && req.showPricesWithTax !== (cur.showPricesWithTax ?? this.settings.pricing.showPricesWithTax) ? req.showPricesWithTax : undefined;
+    if (tax !== undefined) said.push(tax ? "con IGV" : "sin IGV");
+    const discount = openReq && differs(req.discountPct, cur.discountPct) ? req.discountPct : undefined;
+    if (discount !== undefined) said.push(`dscto ${discount}%`);
+    const margin = openReq && differs(req.marginPct, cur.marginPct) ? req.marginPct : undefined;
+    if (margin !== undefined) said.push(`margen ${margin}%`);
+    if (!said.length) {
+      await this.store.setConversation(from, resume);
+      await this.reply(from, `Es igual a ${which}: no cambié nada.`);
+      return;
+    }
+    const lead = `✏️ Cambié en ${which}: ${said.join(", ")}.`;
+    if (openReq) {
+      const pending = resume.pending!.map((p) => ({ ...p }));
+      for (const e of edits) {
+        if (e.quantity !== undefined) pending[e.index].quantity = e.quantity;
+        if (e.unitPrice !== undefined) pending[e.index].unitPriceOverride = e.unitPrice;
+      }
+      let requestText = resume.requestText ?? "";
+      if (termLinesOut.length) requestText += `\n${termLinesOut.join("\n")}`;
+      if (email) requestText = `${requestText.replace(/[\w.+-]+@[\w-]+(?:\.[\w-]+)+/g, " ")}\ncorreo ${email}`;
+      if (tax !== undefined) requestText = `${requestText.replace(/\b(con|sin)\s+igv\b/gi, " ")}\n${tax ? "con" : "sin"} igv`;
+      if (discount !== undefined) requestText = `${requestText.replace(/\b(?:dscto|dcto|descuento|desc)\.?\s*:?\s*\d{1,2}(?:[.,]\d)?\s*%?/gi, " ")}\ndscto ${discount}%`;
+      if (margin !== undefined) requestText = `${stripMargin(requestText)}\nmargen ${margin}%`;
+      await this.reshow(from, { ...resume, pending }, requestText, { lead });
+      return;
+    }
+    await this.store.setConversation(from, resume);
+    await this.rebuildQuote(from, resume, { edits, extraText: termLinesOut.length ? termLinesOut.join("\n") : undefined, email, pricesIncludeTax: tax, lead });
+  }
+
+  /**
+   * A new quote to a customer this salesman quoted in the last 30 days: a tyre (brand + model + size) that went at a
+   * price he typed gets that price again. Returns the notice lines ("💲 precio 254 como en la 031 a este cliente …").
+   */
+  private async carryPrices(from: string, req: QuoteRequest, profile: CustomerProfile | undefined, lcs: LineCandidates[], pending: PendingLine[]): Promise<string[]> {
+    const who = req.customerCompany ?? req.customerName;
+    if (!who && !req.customerEmail && !profile) return [];
+    const since = Date.now() - 30 * 86400_000;
+    const sameCustomer = (q: Quote) =>
+      profile ? q.customerProfile === profileId(profile) : (!!who && sameCustomerName(q.customer.company ?? q.customer.name, who)) || (!!req.customerEmail && q.customer.email?.toLowerCase() === req.customerEmail.toLowerCase());
+    const quotes = (await this.store.listQuotes({ requestedBy: from, limit: 200 })).filter((q) => Date.parse(q.createdAt) >= since && sameCustomer(q));
+    if (!quotes.length) return [];
+    const notes: string[] = [];
+    lcs.forEach((lc, i) => {
+      const p = pending[i];
+      if (!p || p.unitPriceOverride !== undefined || lc.line.contract) return;
+      const c = lc.candidates[0];
+      const id = c ? { size: c.row.size, brand: c.row.brand, model: c.row.model } : { size: lc.line.size?.canonical, brand: lc.line.brand, model: lc.line.model };
+      if (!id.size || !id.brand || !id.model) return; // the same tyre means brand + model + size
+      for (const q of quotes) {
+        const it = q.items.find((x) => (x.manualPrice || x.origin === "manual") && x.size === id.size && foldKey(x.brand) === foldKey(id.brand) && foldKey(x.model) === foldKey(id.model));
+        if (!it) continue;
+        p.unitPriceOverride = it.unitPrice;
+        const back = c ? `escribe *precio ${i + 1} ${plainPrice(c.unitNet)}* para volver a lista` : `escribe *precio ${i + 1} …* para cambiarlo`;
+        notes.push(`💲 precio ${plainPrice(it.unitPrice)} como en la ${this.shortNumber(q.number)} a este cliente (${back})`);
+        break;
+      }
+    });
+    return notes;
   }
 
   // ---------- product photos ----------
@@ -1182,7 +1670,15 @@ export class BotHandler {
       return this.searchPhoto(from, state, target.brand, target.model);
     }
 
-    const target = await this.photoTarget(state, arg);
+    let ref = arg;
+    if (!ref) {
+      // "foto" alone: the only item of the quote in progress
+      const quote = state.step !== "choose" && state.quoteNumber ? await this.store.getQuote(state.quoteNumber) : null;
+      const count = state.step === "choose" ? (state.pending ?? []).filter((p) => !p.removed).length : (quote?.items.length ?? 0);
+      if (count > 1) return this.reply(from, "¿De qué ítem? (ej. foto 2)");
+      if (count === 1) ref = String(state.step === "choose" ? (state.pending ?? []).findIndex((p) => !p.removed) + 1 : 1);
+    }
+    const target = await this.photoTarget(state, ref);
     if (!target) return this.reply(from, "Escribe *foto 1b* (opción), *foto 2* (ítem de la cotización) o *foto Marca Modelo*.");
     const found = target.url ? { url: target.url, sheetUrl: target.sheetUrl, source: target.source ?? "" } : await findPhoto(this.store, target.brand, target.model);
     if (!found) {
@@ -1241,6 +1737,56 @@ export class BotHandler {
   }
 
   /**
+   * "agregar <línea de llanta>" (several lines allowed) on the quote in progress. While choosing: the lines join the
+   * request (a tyre already in it adds to its quantity) and the options are shown again. On a presented quote: a
+   * contract customer's items go through addToQuote; other lines are quoted with their first option (or the "precio N"
+   * written on them) and the quote is rebuilt and sent again.
+   */
+  private async addLines(from: string, state: ConversationState, text: string): Promise<void> {
+    const example = "Ejemplo: *agregar 295/80R22.5 Fenixway x4*";
+    if (state.step === "choose") {
+      const profile = findProfile(this.settings, state.profile);
+      const contract = await this.contractFor(profile);
+      const added = await this.parseFor(text, contract);
+      if (!added.lines.length) return this.reply(from, `No encontré ninguna llanta en «${text}». ${example}`);
+      const requestText = state.requestText ?? "";
+      const before = this.parseForRegex(requestText, contract).lines.map(lineKey);
+      const pending = (state.pending ?? []).map((p) => ({ ...p }));
+      for (const l of added.lines) {
+        const k = before.indexOf(lineKey(l));
+        if (k >= 0 && pending[k]) {
+          // the same tyre: the parser merges it into that line, so its quantity grows
+          pending[k].quantity += l.quantity;
+          pending[k].removed = false;
+        }
+      }
+      await this.reshow(from, { ...state, pending }, `${requestText}\n${text}`, { show: "new" }); // the new lines' options
+      return;
+    }
+    const quote = state.quoteNumber ? await this.store.getQuote(state.quoteNumber) : null;
+    if (!quote) return this.reply(from, "No encuentro la cotización; escribe el pedido de nuevo.");
+    const profile = findProfile(this.settings, quote.customerProfile);
+    if (profile && (await this.addToQuote(from, state, text))) return;
+    const contract = await this.contractFor(profile);
+    const added = await this.parseFor(text, contract);
+    if (!added.lines.length) return this.reply(from, `No encontré ninguna llanta en «${text}». ${example}`);
+    // priced like the quote: its discount / margin
+    const base = this.parseForRegex(quote.requestText ?? "", contract);
+    const lcs = await this.lineCandidates({ ...base, lines: added.lines });
+    const items: QuoteItem[] = [];
+    const unpriced: string[] = [];
+    for (const lc of lcs) {
+      const line = lc.line;
+      if (line.contract) items.push(contractQuoteItem(line, line.quantity, this.settings, line.unitPrice));
+      else if (lc.candidates[0]) items.push(itemFromCandidate(lc.candidates[0], line.quantity, this.settings, line.unitPrice, line));
+      else if (line.unitPrice !== undefined) items.push(manualItem(line, line.unitPrice, undefined, this.settings));
+      else unpriced.push(describeLine(line));
+    }
+    if (unpriced.length) return this.reply(from, `No hay precio en las listas para ${unpriced.map((d) => `«${d}»`).join(", ")}. Agrégala con su precio: *agregar ${unpriced[0]} precio 123*.`);
+    await this.rebuildQuote(from, state, { addItems: items });
+  }
+
+  /**
    * Items sent in a message of their own after the quote was presented ("2 v99", then "4 v89"): a message made only of
    * contract lines of the quote's customer adds them to the draft, which is presented again. An item without APLICACIÓN
    * is asked about first. Returns false for anything else.
@@ -1261,7 +1807,7 @@ export class BotHandler {
     return true;
   }
 
-  private async rebuildQuote(from: string, state: ConversationState, change: { unitPrice?: number; lineIndex?: number; email?: string; pricesIncludeTax?: boolean; extraText?: string; application?: string; quantity?: number; remove?: boolean; add?: RequestLine[]; addText?: string }): Promise<void> {
+  private async rebuildQuote(from: string, state: ConversationState, change: { unitPrice?: number; lineIndex?: number; email?: string; pricesIncludeTax?: boolean; extraText?: string; application?: string; quantity?: number; remove?: boolean; add?: RequestLine[]; addText?: string; addItems?: QuoteItem[]; edits?: { index: number; quantity?: number; unitPrice?: number }[]; lead?: string }): Promise<void> {
     const quote = state.quoteNumber ? await this.store.getQuote(state.quoteNumber) : null;
     if (!quote) return this.reply(from, "No encuentro la cotización; escribe el pedido de nuevo.");
     const at = change.lineIndex ?? 0;
@@ -1274,16 +1820,26 @@ export class BotHandler {
     const profile = findProfile(this.settings, quote.customerProfile);
     const req = await this.parseFor(requestText, await this.contractFor(profile));
     req.customerEmail = change.email ?? quote.customer.email;
+    const priced = (it: QuoteItem, unitPrice: number): QuoteItem => {
+      if (it.origin === "contract") return { ...it, unitPrice, discountPct: 0, total: r2(unitPrice * it.quantity) }; // a price below the contract's is not a "discount"
+      const discountPct = it.listPrice ? Math.round((1 - unitPrice / it.listPrice) * 10000) / 100 : it.discountPct;
+      return { ...it, unitPrice, discountPct: Math.max(0, discountPct), total: Math.round(unitPrice * it.quantity * 100) / 100, origin: it.listPrice ? it.origin : "manual", manualPrice: true };
+    };
     let items = quote.items.map((it, i) => {
       if (i !== at) return it;
       if (change.application !== undefined) return { ...it, application: change.application };
       if (change.quantity !== undefined) return { ...it, quantity: change.quantity, total: r2(it.unitPrice * change.quantity) };
       if (change.unitPrice === undefined) return it;
-      const unitPrice = change.unitPrice;
-      if (it.origin === "contract") return { ...it, unitPrice, discountPct: 0, total: r2(unitPrice * it.quantity) }; // a price below the contract's is not a "discount"
-      const discountPct = it.listPrice ? Math.round((1 - unitPrice / it.listPrice) * 10000) / 100 : it.discountPct;
-      return { ...it, unitPrice, discountPct: Math.max(0, discountPct), total: Math.round(unitPrice * it.quantity * 100) / 100, origin: it.listPrice ? it.origin : ("manual" as const) };
+      return priced(it, change.unitPrice);
     });
+    // several items at once (a request applied as a change to the quote)
+    for (const e of change.edits ?? []) {
+      let it = items[e.index];
+      if (!it) continue;
+      if (e.quantity !== undefined) it = { ...it, quantity: e.quantity, total: r2(it.unitPrice * e.quantity) };
+      if (e.unitPrice !== undefined) it = priced(it, e.unitPrice);
+      items[e.index] = it;
+    }
     if (change.remove) items = items.filter((_, i) => i !== at);
     // contract items sent after the quote was presented: the same item, UB and plate adds to its quantity
     const ubOf = (ub: string | undefined) => ub ?? req.ub ?? "";
@@ -1292,14 +1848,20 @@ export class BotHandler {
       if (k < 0) items.push(contractQuoteItem(line, line.quantity, this.settings));
       else items[k] = { ...items[k], application: items[k].application ?? line.application, quantity: items[k].quantity + line.quantity, total: r2(items[k].unitPrice * (items[k].quantity + line.quantity)) };
     }
-    if (change.add?.length && hasExcelFormat(profile) && items.length > PROSEGUR_MAX_ITEMS) return this.reply(from, prosegurTooManyItems(items.length));
+    // "agregar …" on the presented quote: the same list row at the same price adds to its quantity
+    for (const add of change.addItems ?? []) {
+      const k = items.findIndex((it) => it.origin !== "contract" && !!add.rowId && it.rowId === add.rowId && it.unitPrice === add.unitPrice && (it.application ?? "") === (add.application ?? "") && (it.plate ?? "") === (add.plate ?? ""));
+      if (k < 0) items.push(add);
+      else items[k] = { ...items[k], quantity: items[k].quantity + add.quantity, total: r2(items[k].unitPrice * (items[k].quantity + add.quantity)) };
+    }
+    if ((change.add?.length || change.addItems?.length) && hasExcelFormat(profile) && items.length > PROSEGUR_MAX_ITEMS) return this.reply(from, prosegurTooManyItems(items.length));
     if (!items.length) {
       await this.store.setConversation(from, null);
       return this.reply(from, "No quedó ningún ítem para cotizar. Escribe el pedido de nuevo.");
     }
     const rebuilt = buildQuote({ number: quote.number, request: req, items, settings: this.settings, today: quote.date, requestedBy: quote.requestedBy ?? from, pricesIncludeTax: change.pricesIncludeTax ?? quote.pricesIncludeTax, customerProfile: quote.customerProfile, files: quote.files });
     rebuilt.createdAt = quote.createdAt;
-    await this.presentQuote(from, rebuilt);
+    await this.presentQuote(from, rebuilt, { lead: change.lead, summary: true });
   }
 
   /** The documents of a quote: its PDF, plus the customer's Excel format when its profile has one. */
@@ -1361,6 +1923,11 @@ export class BotHandler {
       await this.deleteProvider(from, del[1].trim());
       return true;
     }
+    const hist = text.trim().match(/^historial\b\s*(.*)$/i);
+    if (hist) {
+      await this.replyHistory(from, hist[1]);
+      return true;
+    }
     const list = text.match(/^cotizaciones(?:\s+(?:de\s+)?(.+))?$/i);
     if (list && !findTyreSizes(text).length) {
       await this.replyQuoteList(from, list[1]?.trim());
@@ -1372,6 +1939,25 @@ export class BotHandler {
       return true;
     }
     return false;
+  }
+
+  /**
+   * "historial" (own number), "historial 51955344340", "historial 51955344340 50": the last 30 (or N, max 100)
+   * messages in and out of that number, newest last. Admins only.
+   */
+  private async replyHistory(from: string, args: string): Promise<void> {
+    if (!isAdmin(from)) return this.reply(from, "Solo el administrador puede ver el historial.");
+    let phone = from.replace(/\D/g, "");
+    let limit = 30;
+    for (const arg of args.split(/\s+/).filter(Boolean)) {
+      const d = arg.replace(/[^\d]/g, "");
+      if (!d || d.length !== arg.replace(/[+\-.()]/g, "").length) return this.reply(from, "Escribe *historial 51955344340* (y opcionalmente cuántos mensajes, máx. 100: *historial 51955344340 50*).");
+      if (d.length >= 7) phone = d.length === 9 && d.startsWith("9") ? `51${d}` : d; // a Peruvian mobile without the country code
+      else limit = Math.min(100, Math.max(1, parseInt(d, 10)));
+    }
+    const msgs = await this.store.listMessages(phone, limit);
+    if (!msgs.length) return this.reply(from, `No hay mensajes registrados de ${phone}.`);
+    await this.reply(from, [`*Historial ${phone}* (${msgs.length})`, ...msgs.map((m) => historyLine(m))].join("\n"));
   }
 
   // ---------- contracts ----------
@@ -1502,6 +2088,7 @@ export class BotHandler {
   private async resendQuote(from: string, ref: string): Promise<void> {
     const quote = await this.findQuoteByRef(from, ref);
     if (!quote) return this.reply(from, `No encuentro la cotización *${ref}*. Escribe *cotizaciones* para ver las últimas.`);
+    this.client.setQuote(from, quote.number);
     const stored = await this.store.getQuoteFiles(quote.number).catch(() => []);
     const files: EmailAttachment[] = stored.length
       ? stored.map((f) => ({ filename: f.fileName, content: Buffer.from(f.data, "base64"), contentType: f.mimeType }))

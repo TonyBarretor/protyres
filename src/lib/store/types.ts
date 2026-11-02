@@ -34,8 +34,10 @@ export interface ConversationState {
   /**
    * need_fields: a customer profile's required fields (unidad, ub, solicitante) are missing from the request.
    * need_application: a contract item has no APLICACIÓN yet; the bot asked for it (`askItem`) before building.
+   * confirm_new: a new request arrived while a quote of the same customer was open; the bot asked whether it is a
+   * *cambio*, a tyre to *agregar* or a *nueva* quote (`confirmText` waits, `resume` is the open quote's state).
    */
-  step: "idle" | "choose" | "need_provider" | "review_quote" | "need_email" | "need_fields" | "need_application";
+  step: "idle" | "choose" | "need_provider" | "review_quote" | "need_email" | "need_fields" | "need_application" | "confirm_new";
   /** The salesman's original request text (on "idle": the unit / UB lines of a bare "prosegur ayacucho 1830"). */
   requestText?: string;
   /** need_application: id of the contract item asked about ("f77"). */
@@ -44,6 +46,10 @@ export interface ConversationState {
   applicationAsked?: string[];
   /** need_application while items are added to the quote already presented ("4 v89" after the PDF): that message. */
   addText?: string;
+  /** confirm_new: the request waiting for the answer. */
+  confirmText?: string;
+  /** confirm_new: the state of the quote that was open (restored for *cambiar* / *agregar*). */
+  resume?: ConversationState;
   /** Customer profile of the request (config/customers.json id, e.g. "prosegur"); on "idle", the one the next request uses. */
   profile?: string;
   /**
@@ -157,6 +163,27 @@ export interface StoredContractItem {
   updatedAt?: string;
 }
 
+/** One WhatsApp message in or out of the bot (never media bytes: only the file name). */
+export interface MessageLogEntry {
+  /** The salesman's WhatsApp number. */
+  phone: string;
+  /** "in" = from the salesman, "out" = the bot's reply. */
+  direction: "in" | "out";
+  /** "text" | "document" | "image" | "audio" | "video" | … */
+  kind: string;
+  /** Text, caption, or a short description of the media. */
+  body: string;
+  fileName?: string;
+  /** The quote the message belongs to, when known. */
+  quoteNumber?: string;
+}
+
+export interface LoggedMessage extends MessageLogEntry {
+  id: number;
+  /** ISO timestamp */
+  createdAt: string;
+}
+
 export interface PriceStore {
   upsertRows(rows: PriceRow[], opts?: { replace?: ReplaceScope }): Promise<{ inserted: number; removed: number }>;
   allRows(): Promise<PriceRow[]>;
@@ -172,7 +199,7 @@ export interface PriceStore {
   /** Keys of every stored photo (to skip downloads already done). */
   photoKeys(): Promise<Set<string>>;
   /**
-   * Most recent quote sent to this customer (by email, else by company name). With `unit`, only quotes for that unit of
+   * Most recent quote made for this customer (by email, else by company name compared with foldKey). With `unit`, only quotes for that unit of
    * the customer (case / accent-insensitive): Prosegur's requester and contact differ per unit.
    */
   findLastQuoteForCustomer(opts: { email?: string; company?: string; unit?: string }): Promise<Quote | null>;
@@ -202,6 +229,10 @@ export interface PriceStore {
   setContractItem(customer: string, item: StoredContractItem): Promise<void>;
   /** Removes a stored contract item; false when there was none. */
   deleteContractItem(customer: string, itemId: string): Promise<boolean>;
+  /** Appends a message to the log (table messages). */
+  logMessage(entry: MessageLogEntry): Promise<void>;
+  /** The last `limit` messages of a phone (digits compared), oldest first (newest last). */
+  listMessages(phone: string, limit?: number): Promise<LoggedMessage[]>;
   getConversation(phone: string): Promise<ConversationState | null>;
   setConversation(phone: string, state: ConversationState | null): Promise<void>;
   /** Returns false when this message id was already processed (webhook retries). */

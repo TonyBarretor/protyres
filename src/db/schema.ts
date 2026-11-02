@@ -1,4 +1,4 @@
-import { boolean, integer, jsonb, numeric, pgTable, primaryKey, text, timestamp } from "drizzle-orm/pg-core";
+import { boolean, index, integer, jsonb, numeric, pgTable, primaryKey, serial, text, timestamp } from "drizzle-orm/pg-core";
 
 export const prices = pgTable("prices", {
   id: text("id").primaryKey(),
@@ -131,6 +131,24 @@ export const contractPrices = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow(),
   },
   (t) => [primaryKey({ columns: [t.customer, t.itemId] })],
+);
+
+/** Every WhatsApp message in and out of the bot ("historial 51955344340"); media as file names only, never bytes. */
+export const messages = pgTable(
+  "messages",
+  {
+    id: serial("id").primaryKey(),
+    phone: text("phone").notNull(),
+    /** "in" | "out" */
+    direction: text("direction").notNull(),
+    /** "text" | "document" | "image" | "audio" | … */
+    kind: text("kind").notNull().default("text"),
+    body: text("body").notNull().default(""),
+    fileName: text("file_name"),
+    quoteNumber: text("quote_number"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("messages_phone_created_idx").on(t.phone, t.createdAt)],
 );
 
 export const _pk = primaryKey;

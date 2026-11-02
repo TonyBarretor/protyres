@@ -111,6 +111,17 @@ const STATEMENTS = [
     updated_at timestamptz default now(),
     primary key (customer, item_id)
   )`,
+  `create table if not exists messages (
+    id serial primary key,
+    phone text not null,
+    direction text not null,
+    kind text not null default 'text',
+    body text not null default '',
+    file_name text,
+    quote_number text,
+    created_at timestamptz not null default now()
+  )`,
+  `create index if not exists messages_phone_created_idx on messages (phone, created_at)`,
 ];
 
 async function main() {
@@ -127,7 +138,8 @@ async function main() {
     const [{ rows }] = await sql`select count(*)::int as rows from prices`;
     const [{ files }] = await sql`select count(*)::int as files from quote_files`;
     const [{ contracts }] = await sql`select count(*)::int as contracts from contract_prices`;
-    console.log(`\nListo. Filas de precios: ${rows} (con foto: ${photos}). Archivos de cotizaciones enviadas: ${files}. Precios de contrato cambiados desde WhatsApp: ${contracts}. Si las fotos están en 0, vuelve a ingerir la lista de Steel.`);
+    const [{ msgs }] = await sql`select count(*)::int as msgs from messages`;
+    console.log(`\nListo. Filas de precios: ${rows} (con foto: ${photos}). Archivos de cotizaciones enviadas: ${files}. Precios de contrato cambiados desde WhatsApp: ${contracts}. Mensajes registrados: ${msgs}. Si las fotos están en 0, vuelve a ingerir la lista de Steel.`);
   } finally {
     await sql.end({ timeout: 5 });
   }

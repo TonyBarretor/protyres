@@ -61,6 +61,39 @@ export function buildEmailDraft(quote: Quote, settings: Settings): EmailDraft {
   return { to: quote.customer.email ?? "", subject, body: lines.join("\n") };
 }
 
+/**
+ * The text the salesman forwards to the customer together with the PDF, as it is (no bot commands, no emojis):
+ *
+ *   Estimados señores MOVIL BUS S.A.C.
+ *   Atención: Sr. Jonathan Matta
+ *   Adjunto la cotización OCTUBRE 2026 - 032:
+ *   • 8 × Fenixway Flama 77 315/80R22.5 20PR – US$ 254.00 c/u
+ *   Total: US$ 2,032.00 + IGV
+ *   Forma de pago: Factura crédito, 45 días · Entrega: 48 hrs post OC · Validez: 7 días
+ *   Quedo atento a cualquier consulta.
+ *   Frank Melek Rodríguez Mirano · 360 by Professional Tyres · 955 344 340
+ *
+ * A customer with units (Prosegur) also gets its unit / UB line, and each item its own UB when it has another.
+ */
+export function buildClientMessage(quote: Quote, settings: Settings): string {
+  const c = quote.customer;
+  const greeting = c.company ? `Estimados señores ${c.company}` : c.name ? `Estimado/a ${c.name}` : "Estimados señores";
+  const attention = c.attention && c.attention !== c.name ? `Atención: ${c.attention}` : c.attention && c.company ? `Atención: ${c.attention}` : "";
+  const unit = quote.customerProfile && (quote.unit || quote.ub) ? [quote.unit ? `Unidad: ${quote.unit}` : "", quote.ub ? `UB ${quote.ub}` : ""].filter(Boolean).join(" · ") : "";
+  const items = quote.items.map((i) => {
+    const measure = i.size ? `${i.sizeDisplay || i.size}${i.ply ? ` ${i.ply}PR` : ""}` : "";
+    const name = i.size ? [i.brand, i.model, measure].filter(Boolean).join(" ") : i.description;
+    const refs = [quote.customerProfile ? i.application : "", i.plate ? `placa ${i.plate}` : "", i.ub && i.ub !== quote.ub ? `UB ${i.ub}` : ""].filter(Boolean).join(" ");
+    return `• ${i.quantity} × ${name}${refs ? ` ${refs}` : ""} – ${fmtMoney(displayUnit(i, quote), quote.currency)} c/u`;
+  });
+  const tax = quote.pricesIncludeTax ? `inc. ${quote.taxLabel}` : `+ ${quote.taxLabel}`;
+  const pay = [quote.paymentType, quote.paymentTerm].filter(Boolean).join(", ");
+  const terms = [pay ? `Forma de pago: ${pay}` : "", quote.deliveryTerm ? `Entrega: ${quote.deliveryTerm}` : "", `Validez: ${quote.validityDays} días`].filter(Boolean).join(" · ");
+  const sp = quote.salesperson;
+  const signature = [sp.name, settings.company.signatureName || settings.company.tradeName || settings.company.name, sp.phone].filter(Boolean).join(" · ");
+  return [greeting, attention, unit, `Adjunto la cotización ${quote.number}:`, ...items, `Total: ${fmtMoney(displayTotal(quote), quote.currency)} ${tax}`, terms, "Quedo atento a cualquier consulta.", signature].filter(Boolean).join("\n");
+}
+
 export interface SendResult {
   sent: boolean;
   id?: string;

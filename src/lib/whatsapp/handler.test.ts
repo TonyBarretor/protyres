@@ -13,7 +13,8 @@ import type { Quote } from "../quote/types";
 import { loadCustomerProfiles, SettingsSchema, type Settings } from "../settings";
 import { JsonStore } from "../store/json-store";
 import { FakeWhatsAppClient } from "./client";
-import { BotHandler } from "./handler";
+import { BotHandler, parseBareItemCommand, parsePicks } from "./handler";
+import { historyLine, limaTime } from "./logging-client";
 import { parseWebhook, verifyChallenge, verifySignature, type InboundMessage } from "./webhook";
 import { createHmac } from "node:crypto";
 
@@ -262,8 +263,7 @@ describe("bot conversation (synthetic lists)", () => {
 
     await bot.handle(text("Michelin 11R22.5 XZE2+ x2, juan@abc.com"));
     const options = client.last()?.body ?? "";
-    expect(options).toContain("📒 Datos de la última cotización a Transportes ABC");
-    expect(options).toContain("atención Sra. Karen Ordoñez");
+    expect(options).toContain("📒 atención Sra. Karen Ordoñez · dirección Av. Argentina 1500, Callao · pago letras 60 días, como en la 001 (Transportes ABC) _(se cambian con *atención: …*, *dirección: …*, *pago: …*)_");
     await bot.handle(text("ok"));
     const q = await store.getQuote("COT-0002");
     expect(q?.customer.attention).toBe("Sra. Karen Ordoñez");
@@ -319,7 +319,8 @@ describe("bot conversation (synthetic lists)", () => {
     expect(client.last()?.body).toContain("Falta precio en el ítem 3");
     await bot.handle(text("precio 3 3.5"));
     body = client.last()?.body ?? "";
-    expect(body).toContain("precio manual US$ 3.50");
+    expect(body).toContain("3. PARCHE RS-35 VIPAL x25 @ US$ 3.50 (precio manual)"); // the state, not the options again
+    expect(body).not.toContain("*a)*");
     await bot.handle(text("quitar 2"));
     expect(client.last()?.body).toContain("_(quitado)_");
     await bot.handle(text("ok"));
@@ -353,7 +354,7 @@ describe("bot conversation (synthetic lists)", () => {
     // typed afterwards while choosing, "precio 1 300" overrides the request's price
     await bot.handle(text("Fenixway Flama 77 315/80R22.5 x4 precio 259 para Transportes Lima S.A.C., c@lima.pe"));
     await bot.handle(text("precio 1 300"));
-    expect(client.last()?.body).toContain("→ elegido *a* · precio manual US$ 300.00");
+    expect(client.last()?.body).toContain("1. Fenixway FLAMA 77 315/80R22.5 x4 @ US$ 300.00 (precio manual)");
     await bot.handle(text("dscto 5")); // a re-show keeps the override
     expect(client.last()?.body).toContain("precio manual US$ 300.00");
     await bot.handle(text("ok"));
@@ -421,6 +422,299 @@ describe("bot conversation (synthetic lists)", () => {
     } finally {
       delete process.env.ADMIN_NUMBERS;
     }
+  });
+
+  it("message log: every message in and out is logged (files by name); 'historial' is for admins, compact, Lima time", async () => {
+    await bot.handle(text("Michelin 11R22.5 XZE2+ x4 para Transportes ABC, juan@abc.com"));
+    await bot.handle(text("ok"));
+    const log = await store.listMessages(PHONE, 100);
+    expect(log[0]).toMatchObject({ direction: "in", kind: "text", body: "Michelin 11R22.5 XZE2+ x4 para Transportes ABC, juan@abc.com" });
+    expect(log[1]).toMatchObject({ direction: "out", kind: "text" });
+    expect(log[1].body).toContain("Entendí:");
+    const doc = log.find((m) => m.kind === "document");
+    expect(doc).toMatchObject({ direction: "out", fileName: "Cotizacion 26 - 0001.pdf", quoteNumber: "COT-0001" });
+    expect(JSON.stringify(log)).not.toContain("JVBER"); // never the PDF bytes
+    expect(log.filter((m) => m.direction === "out").length).toBe(client.sent.length);
+    // an inbound document: only its name
+    await bot.handle({ id: "wamid.doclog", from: PHONE, timestamp: "1", type: "audio", forwarded: false, media: { id: "aud1", mimeType: "audio/ogg" } });
+    expect((await store.listMessages(PHONE, 2))[0]).toMatchObject({ direction: "in", kind: "audio", body: "(audio)" });
+
+    await bot.handle(text("historial"));
+    expect(client.last()?.body).toBe("Solo el administrador puede ver el historial.");
+    process.env.ADMIN_NUMBERS = "18605180534";
+    try {
+      const admin = (body: string): InboundMessage => ({ ...text(body), from: "18605180534" });
+      await bot.handle(admin(`historial ${PHONE}`));
+      const lines = (client.last()?.body ?? "").split("\n");
+      expect(lines[0]).toMatch(new RegExp(`^\\*Historial ${PHONE}\\* \\(\\d+\\)$`));
+      expect(lines[1]).toMatch(/^\d\d\/\d\d \d\d:\d\d ← Michelin 11R22\.5 XZE2\+ x4 para Transportes ABC, juan@abc\.com$/);
+      expect(lines.some((l) => /^\d\d\/\d\d \d\d:\d\d → Cotización COT-0001 .*\(PDF: Cotizacion 26 - 0001\.pdf\)$/.test(l))).toBe(true);
+      expect(lines.slice(1).every((l) => l.length <= 12 + 80 + 45)).toBe(true); // bodies truncated to 80 chars
+      expect(lines.slice(-2)).toEqual([expect.stringMatching(/← historial$/), expect.stringMatching(/→ Solo el administrador puede ver el historial\.$/)]); // the non-admin's attempt, newest last
+      await bot.handle(admin(`historial ${PHONE} 2`));
+      expect((client.last()?.body ?? "").split("\n").length).toBe(3);
+      await bot.handle(admin("historial 955344340 2")); // without the country code
+      expect(client.last()?.body).toContain(`*Historial ${PHONE}*`);
+      await bot.handle(admin("historial"));
+      expect(client.last()?.body).toMatch(/^\*Historial 18605180534\* \(\d+\)\n.*← historial 51955344340\n/);
+    } finally {
+      delete process.env.ADMIN_NUMBERS;
+    }
+  });
+
+  it("history lines: Lima time, arrows, truncated body, file label; a failing log never breaks the bot", async () => {
+    expect(limaTime("2026-10-30T22:16:00Z")).toBe("30/10 17:16");
+    expect(historyLine({ direction: "out", kind: "document", body: "*1.* Fenixway Flama 77", fileName: "Cotizacion 26 - 0031.pdf", createdAt: "2026-10-30T22:16:00Z" })).toBe("30/10 17:16 → *1.* Fenixway Flama 77 (PDF: Cotizacion 26 - 0031.pdf)");
+    const long = historyLine({ direction: "in", kind: "text", body: "a\nb ".repeat(60), createdAt: "2026-10-30T05:01:00Z" });
+    expect(long).toMatch(/^30\/10 00:01 ← a b a b .*…$/);
+    expect(long.length).toBe("30/10 00:01 ← ".length + 80);
+
+    const broken = Object.assign(JsonStore.memory(), { logMessage: async () => Promise.reject(new Error("db down")) });
+    const c2 = new FakeWhatsAppClient();
+    const logs: string[] = [];
+    const b2 = new BotHandler({ client: c2, store: broken, settings, log: (m) => logs.push(m) });
+    await b2.handle(text("hola"));
+    expect(c2.last()?.body).toContain("Cotizador Protyres");
+    expect(logs.some((l) => l.includes("db down"))).toBe(true);
+  });
+
+  it("'agregar …' adds tyres to the quote in progress: while choosing (options again) and on the presented quote (PDF again)", async () => {
+    await bot.handle(text("Michelin 11R22.5 XZE2+ x4 para Transportes ABC, juan@abc.com"));
+    await bot.handle(text("agregar Bridgestone 11R22.5 R268 x2"));
+    let body = client.last()?.body ?? "";
+    expect(body).toMatch(/^Transportes ABC\n1\. Michelin XZE2\+ 11R22\.5 x4 @ US\$ 457\.70\n2\. Bridgestone R268 11R22\.5 x2 @ US\$ 442\.75\n/); // the state…
+    expect(body).toContain("*2.* Bridgestone 11R22.5 R268 x2"); // …and the options of the new line only
+    expect(body).not.toContain("*1.* Michelin");
+    expect((await store.getConversation(PHONE))?.pending?.length).toBe(2);
+    await bot.handle(text("+ Michelin 11R22.5 XZE2+ x2")); // the same tyre: its quantity grows
+    expect((await store.getConversation(PHONE))?.pending?.map((p) => p.quantity)).toEqual([6, 2]);
+    await bot.handle(text("agregar algo"));
+    expect(client.last()?.body).toContain("No encontré ninguna llanta en «algo»");
+    await bot.handle(text("ok"));
+    let q = await store.getQuote("COT-0001");
+    expect(q?.items.map((i) => [i.brand, i.quantity])).toEqual([
+      ["Michelin", 6],
+      ["Bridgestone", 2],
+    ]);
+
+    // on the presented quote: several lines at once; the quote is rebuilt and its PDF sent again
+    const docsBefore = client.sent.filter((m) => m.kind === "document").length;
+    await bot.handle(text("añadir 295/80R22.5 x2\nFenixway Flama 77 315/80R22.5 x4 precio 259"));
+    expect(client.sent.filter((m) => m.kind === "document").length).toBe(docsBefore + 1);
+    q = await store.getQuote("COT-0001");
+    expect(q?.items.length).toBe(4);
+    expect(q?.items[2].size).toBe("295/80R22.5");
+    expect(q?.items[3]).toMatchObject({ brand: "Fenixway", quantity: 4, unitPrice: 259, origin: "manual" });
+    expect((await store.getConversation(PHONE))?.step).toBe("review_quote");
+    await bot.handle(text("agregar Michelin 13R22.5 x2"));
+    expect(client.last()?.body).toContain("No hay precio en las listas para «Michelin 13R22.5 x2»");
+    expect((await store.getQuote("COT-0001"))?.items.length).toBe(4);
+  });
+
+  describe("quote boundaries: a new request while a quote is open", () => {
+    const flama: PriceRow = { id: "fenix-31580r225-flama77", provider: "Llantas del Sur", kind: "provider", description: "315/80R22.5 FENIXWAY FLAMA 77", brand: "Fenixway", model: "FLAMA 77", size: "315/80R22.5", sizeDisplay: "315/80R22.5", sizeRaw: "315/80R22.5", isTyre: true, cost: 230, priceIncludesTax: false, currency: "USD", stock: 10, priceDate: "2026-10-01", source: "excel", sourceRef: "a.xlsx" };
+    const state = async () => (await store.getConversation(PHONE))?.step;
+    const QUESTION = "Tienes la cotización 001 (MOVIL BUS S.A.C.) abierta. ¿Es un *cambio* en esa, una llanta para *agregar*, o una cotización *nueva*?";
+    beforeEach(async () => {
+      await store.upsertRows([flama]);
+      // quote 001: Flama 77 x4 at a typed price, as in the incident
+      await bot.handle(text("Fenixway Flama 77 315/80R22.5 x4 para MOVIL BUS S.A.C., atención: Sr. Jonathan Matta, compras@movilbus.pe"));
+      await bot.handle(text("precio 1 254"));
+      await bot.handle(text("ok"));
+    });
+
+    it("the first options message of a new quote has the header; later ones do not", async () => {
+      const first = client.texts().find((t) => t.includes("Entendí:")) ?? "";
+      expect(first).toMatch(/^🆕 Cotización nueva · MOVIL BUS S\.A\.C\.\nEntendí:/);
+      expect(client.texts().filter((t) => t.includes("🆕")).length).toBe(1); // not on "precio 1 254"
+    });
+
+    it("after a change the reply shows the quote's state: customer, items with prices, terms, total", async () => {
+      const STATE = "MOVIL BUS S.A.C. · Sr. Jonathan Matta\n1. Fenixway FLAMA 77 315/80R22.5 x8 @ US$ 254.00 (precio manual)\nPago: — · Plazo: 45 días · Entrega: —\nTotal US$ 2,032.00 sin IGV";
+      await bot.handle(text("plazo: 45 días"));
+      await bot.handle(text("x8"));
+      expect(client.last()?.body?.startsWith(`${STATE}\n\n📧 *Para:* compras@movilbus.pe`)).toBe(true);
+      await bot.handle(text("con igv"));
+      expect(client.last()?.body).toContain("1. Fenixway FLAMA 77 315/80R22.5 x8 @ US$ 299.72 (precio manual)\nPago: — · Plazo: 45 días · Entrega: —\nTotal US$ 2,397.76 con IGV");
+
+      // while choosing: the state replaces the options (nothing to choose again)
+      await bot.handle(text("cancelar"));
+      await bot.handle(text("Fenixway Flama 77 315/80R22.5 x4 para MOVIL BUS S.A.C., atención: Sr. Jonathan Matta"));
+      await bot.handle(text("cantidad 1 8"));
+      await bot.handle(text("precio 254"));
+      await bot.handle(text("plazo: 45 días"));
+      expect(client.last()?.body).toBe(`${STATE}\n\nResponde *ok* para armar el PDF, o *opciones* para ver las opciones.`);
+      await bot.handle(text("opciones"));
+      expect(client.last()?.body).toContain("*a)* 🚚 Llantas del Sur");
+      expect(client.last()?.body).not.toContain("Total US$");
+    });
+
+    it("same customer → asks; 'cambiar' updates quantity / price / terms of the open quote", async () => {
+      await bot.handle(text("Fenixway Flama 77 315/80R22.5 x8 para Movil Bus"));
+      expect(client.last()?.body).toBe(QUESTION);
+      expect(await state()).toBe("confirm_new");
+      await bot.handle(text("cambiar"));
+      let q = await store.getQuote("COT-0001");
+      expect(q?.items.map((i) => [i.quantity, i.unitPrice])).toEqual([[8, 254]]);
+      expect(client.last()?.body).toMatch(/^✏️ Cambié en la 001: cantidad 8\.\n/);
+      expect(await store.getQuote("COT-0002")).toBeNull();
+      expect(await state()).toBe("review_quote");
+
+      await bot.handle(text("Fenixway Flama 77 315/80R22.5 x8 precio 260 para MOVIL BUS S.A.C.\nplazo: 45 días"));
+      await bot.handle(text("es un cambio"));
+      q = await store.getQuote("COT-0001");
+      expect(q?.items.map((i) => [i.quantity, i.unitPrice, i.manualPrice])).toEqual([[8, 260, true]]);
+      expect(q?.paymentTerm).toBe("45 días");
+      expect(client.last()?.body).toContain("✏️ Cambié en la 001: precio 260, plazo 45 días.");
+
+      await bot.handle(text("Fenixway Flama 77 315/80R22.5 x8 MOVIL BUS S.A.C."));
+      await bot.handle(text("cambio"));
+      expect(client.last()?.body).toBe("Es igual a la 001: no cambié nada.");
+      expect(await state()).toBe("review_quote");
+    });
+
+    it("'cambiar' with a tyre the quote does not have says so; 'agregar' then adds it", async () => {
+      await bot.handle(text("Michelin 11R22.5 XZE2+ x2 para Movil Bus"));
+      expect(client.last()?.body).toBe(QUESTION);
+      await bot.handle(text("cambiar"));
+      expect(client.last()?.body).toBe("No puedo aplicarlo como cambio: «Michelin 11R22.5 XZE2+ x2» no está en la 001. Responde *agregar* (otra llanta en la 001) o *nueva* (otra cotización).");
+      expect(await state()).toBe("confirm_new");
+      await bot.handle(text("agregar"));
+      expect((await store.getQuote("COT-0001"))?.items.map((i) => [i.brand, i.quantity])).toEqual([
+        ["Fenixway", 4],
+        ["Michelin", 2],
+      ]);
+      expect(await state()).toBe("review_quote");
+    });
+
+    it("'nueva' starts a new quote: header, the typed price and the plazo of the last quote to that customer carried over (overridable)", async () => {
+      await bot.handle(text("plazo: 45 días"));
+      await bot.handle(text("Fenixway Flama 77 315/80R22.5 x8 para Movil Bus"));
+      await bot.handle(text("nueva"));
+      const body = client.last()?.body ?? "";
+      const list = body.match(/\*US\$ ([\d.,]+)\*/)?.[1];
+      expect(body).toMatch(/^🆕 Cotización nueva · Movil Bus\n📒 /);
+      expect(body).toContain("plazo 45 días");
+      expect(body).toContain(", como en la 001 (MOVIL BUS S.A.C.)");
+      expect(body).toContain(`💲 precio 254 como en la 001 a este cliente (escribe *precio 1 ${list}* para volver a lista)`);
+      expect(body).toContain("→ elegido *a* · precio manual US$ 254.00");
+      await bot.handle(text("ok"));
+      const q = await store.getQuote("COT-0002");
+      expect(q?.items.map((i) => [i.quantity, i.unitPrice])).toEqual([[8, 254]]);
+      expect(q?.paymentTerm).toBe("45 días");
+      expect(q?.customer.attention).toBe("Sr. Jonathan Matta");
+
+      // typed values win over the remembered ones
+      await bot.handle(text("Fenixway Flama 77 315/80R22.5 x2 precio 250 para Movil Bus\nplazo: 60 días"));
+      await bot.handle(text("nueva"));
+      expect(client.last()?.body).not.toContain("💲");
+      await bot.handle(text("ok"));
+      expect((await store.getQuote("COT-0003"))?.items[0].unitPrice).toBe(250);
+      expect((await store.getQuote("COT-0003"))?.paymentTerm).toBe("60 días");
+    });
+
+    it("a manual price older than 30 days is not carried over", async () => {
+      const q = (await store.getQuote("COT-0001"))!;
+      await store.saveQuote({ ...q, createdAt: new Date(Date.now() - 31 * 86400_000).toISOString() });
+      await bot.handle(text("cancelar"));
+      await bot.handle(text("Fenixway Flama 77 315/80R22.5 x8 para Movil Bus"));
+      expect(client.last()?.body).not.toContain("💲");
+    });
+
+    it("another customer → the new quote starts at once with the 'Cerré' line; while choosing, the same customer is asked about", async () => {
+      await bot.handle(text("Michelin 11R22.5 XZE2+ x2 para Transportes ABC, juan@abc.com"));
+      expect(client.last()?.body).toMatch(/^🆕 Cotización nueva · Transportes ABC\nCerré la 001 \(MOVIL BUS\) y empiezo una nueva\.\nEntendí:/);
+      expect(await state()).toBe("choose");
+      await bot.handle(text("Michelin 11R22.5 XZE2+ x4 para Transportes ABC"));
+      expect(client.last()?.body).toBe("Tienes una cotización en curso (Transportes ABC). ¿Es un *cambio* en esa, una llanta para *agregar*, o una cotización *nueva*?");
+      await bot.handle(text("qué?"));
+      expect(client.last()?.body).toContain("Responde *cambiar*");
+      await bot.handle(text("cambiar"));
+      expect(client.last()?.body).toMatch(/^✏️ Cambié en la cotización en curso: cantidad 4\.\n/);
+      expect((await store.getConversation(PHONE))?.pending?.[0].quantity).toBe(4);
+      await bot.handle(text("Michelin 11R22.5 XZE2+ x4 para Transportes ABC"));
+      await bot.handle(text("cancelar"));
+      expect(await store.getConversation(PHONE)).toBeNull();
+    });
+  });
+
+  it("a single item takes 'cantidad 8' / 'x8' / '8 unidades' / 'precio 254' / 'a 254' / 'aplicación …' / 'quitar' / 'foto' without its number", async () => {
+    const pend = async () => (await store.getConversation(PHONE))?.pending?.[0];
+    await bot.handle(text("Michelin 11R22.5 XZE2+ x4 para Transportes ABC, juan@abc.com"));
+    await bot.handle(text("cantidad 8"));
+    expect((await pend())?.quantity).toBe(8);
+    await bot.handle(text("x6"));
+    expect((await pend())?.quantity).toBe(6);
+    await bot.handle(text("10 unidades"));
+    expect((await pend())?.quantity).toBe(10);
+    await bot.handle(text("precio 254"));
+    expect((await pend())?.unitPriceOverride).toBe(254);
+    await bot.handle(text("a 250.50"));
+    expect((await pend())?.unitPriceOverride).toBe(250.5);
+    await bot.handle(text("aplicación MIXT DEL"));
+    expect((await pend())?.application).toBe("MIXT DEL");
+    await bot.handle(text("foto"));
+    expect(client.last()?.body).toContain("No tengo foto de *Michelin XZE2+*"); // the only item's photo
+    expect((await store.getConversation(PHONE))?.step).toBe("choose");
+    await bot.handle(text("ok"));
+    let q = await store.getQuote("COT-0001");
+    expect(q?.items.map((i) => [i.quantity, i.unitPrice, i.application])).toEqual([[10, 250.5, "MIXT DEL"]]);
+
+    // on the presented quote
+    await bot.handle(text("x8"));
+    q = await store.getQuote("COT-0001");
+    expect(q?.items.map((i) => [i.quantity, i.total])).toEqual([[8, 2004]]);
+    await bot.handle(text("a 254"));
+    expect((await store.getQuote("COT-0001"))?.items[0].unitPrice).toBe(254);
+    await bot.handle(text("cantidad 4"));
+    await bot.handle(text("precio 260"));
+    q = await store.getQuote("COT-0001");
+    expect(q?.items.map((i) => [i.quantity, i.unitPrice, i.manualPrice])).toEqual([[4, 260, true]]);
+    await bot.handle(text("aplicación POST"));
+    expect((await store.getQuote("COT-0001"))?.items[0].application).toBe("POST");
+    await bot.handle(text("quitar"));
+    expect(client.last()?.body).toBe("No quedó ningún ítem para cotizar. Escribe el pedido de nuevo.");
+  });
+
+  it("bare item commands are not option picks, and picks are not bare commands", () => {
+    expect(parseBareItemCommand("x8")).toEqual({ kind: "quantity", value: 8 });
+    expect(parseBareItemCommand("8 unidades")).toEqual({ kind: "quantity", value: 8 });
+    expect(parseBareItemCommand("precio 1,254.50")).toEqual({ kind: "price", value: 1254.5 });
+    expect(parseBareItemCommand("precio 4,50")).toEqual({ kind: "price", value: 4.5 });
+    for (const t of ["a x2, b x8", "b x4", "precio 1 254", "cantidad 1 8", "quitar 2", "aplicación 2 MIXT", "a 2", "2"]) expect(parseBareItemCommand(t)).toBeNull();
+    expect(parsePicks("a x2, b x8", 1)).toEqual([
+      { line: 0, option: 0, quantity: 2 },
+      { line: 0, option: 1, quantity: 8 },
+    ]);
+    expect(parsePicks("x8", 1)).toBeNull();
+  });
+
+  it("with two or more items the number is required: '¿De qué ítem?'", async () => {
+    await bot.handle(text("Michelin 11R22.5 XZE2+ x4; Bridgestone 11R22.5 R268 x2 para Transportes ABC, juan@abc.com"));
+    for (const [cmd, ask] of [
+      ["cantidad 8", "cantidad 2 8"],
+      ["x8", "cantidad 2 8"],
+      ["8 unidades", "cantidad 2 8"],
+      ["precio 254", "precio 2 254"],
+      ["a 254", "precio 2 254"],
+      ["quitar", "quitar 2"],
+      ["aplicación MIXT", "aplicación 2 MIXT"],
+    ]) {
+      await bot.handle(text(cmd));
+      expect(client.last()?.body).toBe(`¿De qué ítem? (ej. ${ask})`);
+    }
+    await bot.handle(text("foto"));
+    expect(client.last()?.body).toBe("¿De qué ítem? (ej. foto 2)");
+    expect((await store.getConversation(PHONE))?.pending?.map((p) => p.quantity)).toEqual([4, 2]);
+    // 'a x2, b x8' still picks options; 'quitar 2' leaves one item, so a bare command applies to it
+    await bot.handle(text("quitar 2"));
+    await bot.handle(text("x3"));
+    expect((await store.getConversation(PHONE))?.pending?.map((p) => p.quantity)).toEqual([3, 2]);
+    await bot.handle(text("ok"));
+    await bot.handle(text("agregar Bridgestone 11R22.5 R268 x2"));
+    await bot.handle(text("precio 254"));
+    expect(client.last()?.body).toBe("¿De qué ítem? (ej. precio 2 254)");
+    expect((await store.getQuote("COT-0001"))?.items.map((i) => i.unitPrice)).not.toContain(254);
   });
 
   it("info commands", async () => {
@@ -627,10 +921,62 @@ describe("Prosegur quotes: profile, numbering, Excel, stored files, history", ()
     // the same salesman's next quote is 452; unidad / UB / solicitante / correo come from the last Prosegur quote
     await bot.handle(text("prosegur\nMichelin 295/80R22.5 X Multi Z x1"));
     body = client.last()?.body ?? "";
-    expect(body).toContain("📒 Datos de la última cotización a PROSEGUR SA");
+    expect(body).toContain(`, como en la 451 (PROSEGUR SA)`);
+    expect(body).toMatch(/^🆕 Cotización nueva · PROSEGUR SA\n📒 /);
     expect(body).toContain("unidad Ayacucho · UB 1830 · solicitante Johann Castañeda");
     await bot.handle(text("ok"));
     expect(docs().slice(-2).map((d) => d.fileName)).toEqual([pdfName(452), xlsName(452)]);
+  });
+
+  it("the quote comes as two messages: a text for the customer, then the PDF with the salesman's caption; then the review", async () => {
+    const flama: PriceRow = { id: "fenix-31580r225-flama77", provider: "Llantas del Sur", kind: "provider", description: "315/80R22.5 FENIXWAY FLAMA 77", brand: "Fenixway", model: "FLAMA 77", size: "315/80R22.5", sizeDisplay: "315/80R22.5", sizeRaw: "315/80R22.5", isTyre: true, cost: 230, priceIncludesTax: false, currency: "USD", stock: 10, priceDate: today(), source: "excel", sourceRef: "a.xlsx" };
+    await store.upsertRows([flama]);
+    await bot.handle(text("Fenixway Flama 77 315/80R22.5 x8 precio 254 para MOVIL BUS S.A.C., atención: Sr. Jonathan Matta, compras@movilbus.pe"));
+    const before = client.sent.length;
+    await bot.handle(text("ok"));
+    const out = client.sent.slice(before);
+    expect(out.map((m) => m.kind)).toEqual(["text", "document", "text"]);
+    const forCustomer = [
+      "Estimados señores MOVIL BUS S.A.C.",
+      "Atención: Sr. Jonathan Matta",
+      `Adjunto la cotización ${num(16)}:`,
+      "• 8 × Fenixway FLAMA 77 315/80R22.5 – US$ 254.00 c/u",
+      "Total: US$ 2,032.00 + IGV",
+      "Forma de pago: Factura crédito, 30 días · Entrega: 48 hrs post OC · Validez: 7 días",
+      "Quedo atento a cualquier consulta.",
+      "Frank Melek Rodríguez Mirano · 360 by Professional Tyres · 955 344 340",
+    ];
+    expect(out[0].body).toBe(forCustomer.join("\n"));
+    expect(out[0].body).not.toMatch(/[*_]|\p{Extended_Pictographic}/u); // forwardable as is: no bot formatting, no emojis
+    expect(out[1].caption).toMatch(new RegExp(`^Cotización ${num(16)} · 8 × FLAMA 77 @ US\\$ 254\\.00 \\(precio manual\\) · Pago factura crédito 30 días · Total US\\$ 2,032\\.00 \\(sin IGV\\)\n📷 Fotos: 0/1`));
+    expect(out[2].body).toContain("📧 *Para:* compras@movilbus.pe");
+
+    await bot.handle(text("con igv")); // a rebuild sends both again
+    const again = client.sent.slice(-3);
+    expect(again.map((m) => m.kind)).toEqual(["text", "document", "text"]);
+    expect(again[0].body).toContain("• 8 × Fenixway FLAMA 77 315/80R22.5 – US$ 299.72 c/u\nTotal: US$ 2,397.76 inc. IGV");
+    expect(again[1].caption).toContain("Total US$ 2,397.76 (inc. IGV)");
+  });
+
+  it("a request without plazo / pago ends its first options message with the default plazo, once", async () => {
+    const HINT = "Plazo 30 días por defecto (escribe plazo: 45 días para cambiarlo).";
+    await bot.handle(text("Michelin 11R22.5 XZE2+ x4 para Transportes ABC, juan@abc.com"));
+    expect(client.last()?.body?.endsWith(`*cancelar*.\n${HINT}`)).toBe(true);
+    await bot.handle(text("dscto 5"));
+    expect(client.last()?.body).not.toContain(HINT); // only once per quote
+    await bot.handle(text("cancelar"));
+    for (const t of ["Michelin 11R22.5 XZE2+ x4 para Transportes ABC, juan@abc.com\nplazo: 60 días", "Michelin 11R22.5 XZE2+ x4 para Transportes ABC, juan@abc.com\npago: contado"]) {
+      await bot.handle(text(t));
+      expect(client.last()?.body).not.toContain("por defecto");
+      await bot.handle(text("cancelar"));
+    }
+    // a customer whose last quote had another plazo: remembered, so no hint
+    await bot.handle(text("Michelin 11R22.5 XZE2+ x4 para Transportes ABC, juan@abc.com\nplazo: 45 días"));
+    await bot.handle(text("ok"));
+    await bot.handle(text("enviar"));
+    await bot.handle(text("Michelin 11R22.5 XZE2+ x2 para Transportes ABC"));
+    expect(client.last()?.body).toContain("📒 plazo 45 días");
+    expect(client.last()?.body).not.toContain("por defecto");
   });
 
   it("a bare 'prosegur' gets a three-line guide and makes the next request Prosegur's", async () => {
@@ -743,9 +1089,25 @@ describe("Prosegur quotes: profile, numbering, Excel, stored files, history", ()
     let before = client.sent.length;
     await bot.handle(text("prosegur ayacucho 1830\n2 v99\n4 v89"));
     const replies = client.sent.slice(before);
-    expect(replies.map((m) => m.kind)).toEqual(["document", "document", "text"]);
-    expect(replies.map((m) => m.fileName ?? "")).toEqual([pdfName(17), xlsName(17), ""]);
-    expect(replies[2].body).toBe(
+    expect(replies.map((m) => m.kind)).toEqual(["text", "document", "document", "text"]);
+    expect(replies.map((m) => m.fileName ?? "")).toEqual(["", pdfName(17), xlsName(17), ""]);
+    // first the text for the customer, with the unit and UB
+    expect(replies[0].body).toBe(
+      [
+        "Estimados señores PROSEGUR SA",
+        "Atención: Johann Castañeda",
+        "Unidad: Ayacucho · UB 1830",
+        `Adjunto la cotización ${num(17)}:`,
+        "• 2 × Fenixway Valor 99 215/75R17.5 18PR MIXT – US$ 123.17 c/u",
+        "• 4 × Fenixway Valor 89 215/75R17.5 18PR POST – US$ 126.42 c/u",
+        "Total: US$ 752.02 + IGV",
+        "Forma de pago: FACTURA, 30 días · Entrega: 48 HRS POST OC · Validez: 7 días",
+        "Quedo atento a cualquier consulta.",
+        "Frank Melek Rodríguez Mirano · 360 by Professional Tyres · 955 344 340",
+      ].join("\n"),
+    );
+    expect(replies[1].caption).toBe(`Cotización ${num(17)} · 2 × Valor 99 @ US$ 123.17 (contrato) · 4 × Valor 89 @ US$ 126.42 (contrato) · Pago factura 30 días · Total US$ 752.02 (sin IGV)`);
+    expect(replies[3].body).toBe(
       [
         "Prosegur · Ayacucho · UB 1830 · solicitante Johann Castañeda",
         "1. 215/75R17.5 18PR Fenixway Valor 99 MIXT x2 · US$ 123.17",
@@ -754,7 +1116,7 @@ describe("Prosegur quotes: profile, numbering, Excel, stored files, history", ()
         "Responde *enviar*, o corrige: *precio 2 130*, *cantidad 1 3*, *aplicación 2 MIXT*, *atención: …*, *número 18*, *cancelar*",
       ].join("\n"),
     );
-    const ws = await sheet(replies[1].file!);
+    const ws = await sheet(replies[2].file!);
     expect(["C19", "F19", "G19", "K19", "F20", "G20", "K20", "G6", "K5"].map((a) => ws.getCell(a).value)).toEqual([1830, "215/75R17.5 18PR FENIXWAY VALOR 99", 2, 123.17, "215/75R17.5 18PR FENIXWAY VALOR 89", 4, 126.42, "AYACUCHO", "JOHANN CASTAÑEDA"]);
     const q = await store.getQuote(num(17));
     expect(q?.items.map((i) => [i.origin, i.provider, i.code, i.unitPrice, i.listPrice, i.discountPct, i.application, i.description])).toEqual([
@@ -770,7 +1132,7 @@ describe("Prosegur quotes: profile, numbering, Excel, stored files, history", ()
     // the salesman's counter continues
     before = client.sent.length;
     await bot.handle(text("prosegur ayacucho 1830, 1 v99"));
-    expect(client.sent.slice(before).map((m) => m.fileName)).toEqual([pdfName(18), xlsName(18), undefined]);
+    expect(client.sent.slice(before).map((m) => m.fileName)).toEqual([undefined, pdfName(18), xlsName(18), undefined]);
   });
 
   it("contract: solicitante and atención come from the last quote of the same unit; a new unit is asked once", async () => {
@@ -818,7 +1180,7 @@ describe("Prosegur quotes: profile, numbering, Excel, stored files, history", ()
 
     const before = client.sent.length;
     await bot.handle(text("prosegur ayacucho 1830\n1 f77"));
-    expect(client.sent.slice(before).map((m) => m.kind)).toEqual(["document", "document", "text"]); // not asked again
+    expect(client.sent.slice(before).map((m) => m.kind)).toEqual(["text", "document", "document", "text"]); // not asked again
     expect(client.last()?.body).toContain("Flama 77 POST x1");
   });
 
@@ -887,6 +1249,8 @@ describe("Prosegur quotes: profile, numbering, Excel, stored files, history", ()
     await bot.handle(text("1b"));
     expect(client.last()?.body).toBe("El ítem 1 no tiene opción *b*.");
     await bot.handle(text("precio 1 130"));
+    expect(client.last()?.body).toContain("1. Fenixway Valor 99 215/75R17.5 18PR MIXT x2 @ US$ 130.00 (precio manual)");
+    await bot.handle(text("opciones"));
     expect(client.last()?.body).toContain("📑 contrato · precio manual US$ 130.00");
     await bot.handle(text("ok"));
     expect((await store.getQuote(num(16)))?.items.map((i) => [i.origin, i.unitPrice, i.quantity])).toEqual([
@@ -961,6 +1325,16 @@ describe("Prosegur quotes: profile, numbering, Excel, stored files, history", ()
     );
     await bot.handle(text("Luis Quispe"));
     expect(client.last()?.body).toContain(`Prosegur · Arequipa · UB 2100 · solicitante Luis Quispe\n1. 215/75R17.5 18PR Fenixway Valor 99 MIXT x2 · US$ 123.17\n2. 215/75R17.5 18PR Fenixway Valor 89 POST x4 · US$ 126.42\nTotal US$ 752.02 sin IGV · ${num(18)} · correo: compras@prosegur.com`);
+  });
+
+  it("contract: 'agregar 4 v89' on the presented quote goes through the contract (keeps the Excel)", async () => {
+    await bot.handle(text("prosegur ayacucho 1830\n2 v99\nsolicitante: Johann Castañeda\ncorreo compras@prosegur.com"));
+    await bot.handle(text("agregar 4 v89"));
+    expect(docs().slice(-2).map((d) => d.fileName)).toEqual([pdfName(16), xlsName(16)]);
+    expect((await store.getQuote(num(16)))?.items.map((i) => [i.code, i.quantity])).toEqual([
+      ["v99", 2],
+      ["v89", 4],
+    ]);
   });
 
   it("contract: items sent while the bot asks for an APLICACIÓN join the quote; the question stands", async () => {
