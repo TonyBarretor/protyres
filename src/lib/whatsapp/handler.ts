@@ -1262,30 +1262,24 @@ export class BotHandler {
     await this.store.saveQuote(quote);
     const pdf = await renderQuotePdf(quote, this.settings, { photos: !process.env.PHOTOS_DISABLED });
     await this.deps.onPdf?.(quote, pdf);
-    // for the salesman: what each item goes at, the terms and the total
-    const shortItem = (it: QuoteItem) => `${it.quantity} × ${it.model || it.brand || it.description.split(" ").slice(0, 3).join(" ")} @ ${fmtMoney(displayUnit(it, quote), quote.currency)}${it.origin === "contract" ? " (contrato)" : it.manualPrice || it.origin === "manual" ? " (precio manual)" : ""}`;
-    const summary = [...quote.items.slice(0, 3).map(shortItem), quote.items.length > 3 ? `y ${quote.items.length - 3} ítems más` : ""].filter(Boolean).join(" · ");
-    const pay = [quote.paymentType, quote.paymentTerm].filter(Boolean).join(" ").toLowerCase();
-    const taxNote = quote.pricesIncludeTax ? `inc. ${quote.taxLabel}` : `sin ${quote.taxLabel}`;
-    const noPhoto = itemsWithoutPhoto(quote);
-    const photoNote =
-      quote.items.length - noPhoto.length > 0 || noPhoto.length > 0
-        ? `\n📷 Fotos: ${quote.items.length - noPhoto.length}/${quote.items.length}${noPhoto.length ? ` · sin foto: ${noPhoto.map((it) => [it.brand, it.model].filter(Boolean).join(" ") || it.description).join(", ")} → mándame la imagen con el texto *foto ${[noPhoto[0].brand, noPhoto[0].model].filter(Boolean).join(" ")}*${webSearchAvailable() ? ` o escribe *foto buscar ${quote.items.indexOf(noPhoto[0]) + 1}*` : ""}` : ""}`
-        : "";
-    // a profile's quote keeps its texts short (the salesman found them too long): no photo hints in the caption
-    // two messages the salesman can forward as they are: the description for the customer, then the PDF
+    const noPhoto = profile ? [] : itemsWithoutPhoto(quote); // a profile's quote keeps its texts short: no photo hints
+    const photoHint = noPhoto.length
+      ? `sin foto: ${noPhoto.map((it) => [it.brand, it.model].filter(Boolean).join(" ") || it.description).join(", ")} → mándame la imagen con el texto *foto ${[noPhoto[0].brand, noPhoto[0].model].filter(Boolean).join(" ")}*${webSearchAvailable() ? ` o escribe *foto buscar ${quote.items.indexOf(noPhoto[0]) + 1}*` : ""}`
+      : "";
+    const recap = [this.quoteRecap(quote), photoHint].filter(Boolean).join("\n");
+    // the description for the customer and the documents, forwardable as they are (no caption); what the salesman needs comes last
     await this.reply(from, buildClientMessage(quote, this.settings));
-    await this.client.sendDocument(from, pdf, pdfFileName(quote, this.settings), `Cotización ${quote.number} · ${summary}${pay ? ` · Pago ${pay}` : ""} · Total ${fmtMoney(displayTotal(quote), quote.currency)} (${taxNote})${profile ? "" : photoNote}`, PDF_MIME);
-    if (xlsx && profile) await this.client.sendDocument(from, xlsx.buffer, xlsx.fileName, `Formato ${profile.name} · ${xlsx.fileName}`, XLSX_MIME);
+    await this.client.sendDocument(from, pdf, pdfFileName(quote, this.settings), "", PDF_MIME);
+    if (xlsx && profile) await this.client.sendDocument(from, xlsx.buffer, xlsx.fileName, "", XLSX_MIME);
     if (!quote.customer.email) {
       await this.store.setConversation(from, { phone: from, step: "need_email", quoteNumber: quote.number, updatedAt: now() });
-      return this.reply(from, `El pedido no tiene correo del cliente. *¿A qué correo lo envío?* (o *cancelar*)`);
+      return this.reply(from, `${recap}\n\nEl pedido no tiene correo del cliente. *¿A qué correo lo envío?* (o *cancelar*)`);
     }
     await this.store.setConversation(from, { phone: from, step: "review_quote", quoteNumber: quote.number, updatedAt: now() });
     const d = quote.emailDraft;
     const excelMissing = xlsx && profile ? missingInQuote(profile, quote) : [];
     // a profile's review is already the compact state; the others get it first after a change
-    if (profile) return this.reply(from, `${opts.lead ? `${opts.lead}\n` : ""}${this.profileReview(quote, profile, d.to, excelMissing)}`);
+    if (profile) return this.reply(from, `${recap}\n\n${opts.lead ? `${opts.lead}\n` : ""}${this.profileReview(quote, profile, d.to, excelMissing)}`);
     const lead = [opts.lead, opts.summary ? this.quoteSummary(quote) : ""].filter(Boolean).map((l) => `${l}\n\n`).join("");
     const missing: string[] = [];
     if (!quote.customer.attention && !quote.customer.name) missing.push("*atención: Sr. Pérez*");
@@ -1299,7 +1293,27 @@ export class BotHandler {
     ]
       .filter(Boolean)
       .join("\n");
-    await this.reply(from, `${lead}📧 *Para:* ${d.to}\n*Asunto:* ${d.subject}\n\n${d.body}\n\n${check}\n\n—\nResponde *enviar* para mandarlo, *precio 2 480* para cambiar un unitario, *agregar 11R22.5 x2* para sumar una llanta, *aplicación 2 POST ON/OFF* para la columna aplicación, *correo x@y.com* para cambiar el destinatario, *con igv* / *sin igv*, *número 452* o *nombre: …* para el número, *archivo: Nombre* para el nombre del PDF, *foto 1* para ver la foto de un ítem, o *cancelar*.`);
+    const next = "Reenvía al cliente el texto y el PDF. O responde *enviar* (correo), *agregar …*, *precio 2 250*, *cancelar*.";
+    await this.reply(from, `${recap}\n\n${next}\n\n${lead}📧 *Para:* ${d.to}\n*Asunto:* ${d.subject}\n\n${d.body}\n\n${check}`);
+  }
+
+  /**
+   * What the salesman needs to see of a quote, in three lines (photos only without a profile):
+   *   *OCTUBRE 2026 - 032* · MOVIL BUS S.A.C.
+   *   8 × Flama 77 @ US$ 254.00 (precio manual) · 4 × FG01 @ US$ 255.00
+   *   Pago factura 45 días · Total US$ 3,052.00 (sin IGV) · Fotos 2/2
+   */
+  private quoteRecap(quote: Quote): string {
+    const shortItem = (it: QuoteItem) => `${it.quantity} × ${it.model || it.brand || it.description.split(" ").slice(0, 3).join(" ")} @ ${fmtMoney(displayUnit(it, quote), quote.currency)}${it.origin === "contract" ? " (contrato)" : it.manualPrice || it.origin === "manual" ? " (precio manual)" : ""}`;
+    const items = [...quote.items.slice(0, 3).map(shortItem), quote.items.length > 3 ? `y ${quote.items.length - 3} ítems más` : ""].filter(Boolean).join(" · ");
+    const pay = [quote.paymentType, quote.paymentTerm].filter(Boolean).join(" ").toLowerCase();
+    const tax = quote.pricesIncludeTax ? `inc. ${quote.taxLabel}` : `sin ${quote.taxLabel}`;
+    const photos = findProfile(this.settings, quote.customerProfile) ? "" : `Fotos ${quote.items.length - itemsWithoutPhoto(quote).length}/${quote.items.length}`;
+    return [
+      [`*${quote.number}*`, quote.customer.company || quote.customer.name].filter(Boolean).join(" · "),
+      items,
+      [pay ? `Pago ${pay}` : "", `Total ${fmtMoney(displayTotal(quote), quote.currency)} (${tax})`, photos].filter(Boolean).join(" · "),
+    ].join("\n");
   }
 
   /**
@@ -2093,11 +2107,8 @@ export class BotHandler {
     const files: EmailAttachment[] = stored.length
       ? stored.map((f) => ({ filename: f.fileName, content: Buffer.from(f.data, "base64"), contentType: f.mimeType }))
       : await this.renderQuoteFiles(quote, { photos: !process.env.PHOTOS_DISABLED });
-    const profile = findProfile(this.settings, quote.customerProfile);
-    for (const f of files) {
-      const caption = f.contentType === XLSX_MIME ? `Formato ${profile?.name ?? "Excel"} · ${f.filename}` : `Cotización ${quote.number} · ${STATUS_LABEL[quote.status]}${stored.length ? "" : " (regenerada)"}`;
-      await this.client.sendDocument(from, f.content, f.filename, caption, f.contentType ?? PDF_MIME);
-    }
+    for (const f of files) await this.client.sendDocument(from, f.content, f.filename, "", f.contentType ?? PDF_MIME);
+    await this.reply(from, this.quoteRecap(quote));
     if (!stored.length) await this.reply(from, `No tenía guardados los archivos de *${quote.number}* (se guardan al enviarla); los generé de nuevo con sus datos.`);
   }
 

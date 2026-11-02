@@ -240,7 +240,9 @@ describe("bot conversation (synthetic lists)", () => {
     expect(quote?.items[0].photoUrl?.startsWith("data:image/png;base64,")).toBe(true);
     expect(quote?.items[0].photoSource).toBe("WhatsApp");
     const doc = client.sent.find((m) => m.kind === "document");
-    expect(doc?.caption).toContain("📷 Fotos: 1/1");
+    expect(doc?.caption).toBe("");
+    expect(client.last()?.body).toContain("· Fotos 1/1\n\nReenvía al cliente");
+    expect(client.last()?.body).not.toContain("sin foto:");
     expect(client.last()?.body).toContain("⚠️ Falta en el PDF: *atención: Sr. Pérez*");
     expect(client.last()?.body).toContain("Validez: 7 días");
 
@@ -448,7 +450,7 @@ describe("bot conversation (synthetic lists)", () => {
       const lines = (client.last()?.body ?? "").split("\n");
       expect(lines[0]).toMatch(new RegExp(`^\\*Historial ${PHONE}\\* \\(\\d+\\)$`));
       expect(lines[1]).toMatch(/^\d\d\/\d\d \d\d:\d\d ← Michelin 11R22\.5 XZE2\+ x4 para Transportes ABC, juan@abc\.com$/);
-      expect(lines.some((l) => /^\d\d\/\d\d \d\d:\d\d → Cotización COT-0001 .*\(PDF: Cotizacion 26 - 0001\.pdf\)$/.test(l))).toBe(true);
+      expect(lines.some((l) => /^\d\d\/\d\d \d\d:\d\d → \(PDF: Cotizacion 26 - 0001\.pdf\)$/.test(l))).toBe(true);
       expect(lines.slice(1).every((l) => l.length <= 12 + 80 + 45)).toBe(true); // bodies truncated to 80 chars
       expect(lines.slice(-2)).toEqual([expect.stringMatching(/← historial$/), expect.stringMatching(/→ Solo el administrador puede ver el historial\.$/)]); // the non-admin's attempt, newest last
       await bot.handle(admin(`historial ${PHONE} 2`));
@@ -533,7 +535,7 @@ describe("bot conversation (synthetic lists)", () => {
       const STATE = "MOVIL BUS S.A.C. · Sr. Jonathan Matta\n1. Fenixway FLAMA 77 315/80R22.5 x8 @ US$ 254.00 (precio manual)\nPago: — · Plazo: 45 días · Entrega: —\nTotal US$ 2,032.00 sin IGV";
       await bot.handle(text("plazo: 45 días"));
       await bot.handle(text("x8"));
-      expect(client.last()?.body?.startsWith(`${STATE}\n\n📧 *Para:* compras@movilbus.pe`)).toBe(true);
+      expect(client.last()?.body).toContain(`*cancelar*.\n\n${STATE}\n\n📧 *Para:* compras@movilbus.pe`);
       await bot.handle(text("con igv"));
       expect(client.last()?.body).toContain("1. Fenixway FLAMA 77 315/80R22.5 x8 @ US$ 299.72 (precio manual)\nPago: — · Plazo: 45 días · Entrega: —\nTotal US$ 2,397.76 con IGV");
 
@@ -556,7 +558,7 @@ describe("bot conversation (synthetic lists)", () => {
       await bot.handle(text("cambiar"));
       let q = await store.getQuote("COT-0001");
       expect(q?.items.map((i) => [i.quantity, i.unitPrice])).toEqual([[8, 254]]);
-      expect(client.last()?.body).toMatch(/^✏️ Cambié en la 001: cantidad 8\.\n/);
+      expect(client.last()?.body).toContain("*cancelar*.\n\n✏️ Cambié en la 001: cantidad 8.\n");
       expect(await store.getQuote("COT-0002")).toBeNull();
       expect(await state()).toBe("review_quote");
 
@@ -872,7 +874,8 @@ describe("Prosegur quotes: profile, numbering, Excel, stored files, history", ()
     const [pdfDoc, xlsDoc] = docs();
     expect(pdfDoc.fileName).toBe(pdfName(451)); // "Cotizacion 26 - 0451.pdf"
     expect(xlsDoc.fileName).toBe(xlsName(451));
-    expect(xlsDoc.caption).toBe(`Formato Prosegur · ${xlsDoc.fileName}`);
+    expect(pdfDoc.caption).toBe("");
+    expect(xlsDoc.caption).toBe("");
     expect(xlsDoc.mimeType).toBe(XLSX_MIME);
     const wb = new ExcelJS.Workbook();
     await wb.xlsx.load(xlsDoc.file as unknown as ArrayBuffer);
@@ -880,7 +883,9 @@ describe("Prosegur quotes: profile, numbering, Excel, stored files, history", ()
     expect([ws.getCell("G5").value, ws.getCell("G6").value, ws.getCell("K5").value, ws.getCell("C19").value, ws.getCell("G20").value]).toEqual([451, "AYACUCHO", "JOHANN CASTAÑEDA", 1830, 4]);
     expect(String(ws.getCell("F19").value)).toMatch(/^295\/80R22\.5 .*MICHELIN X MULTI Z$/);
     // Prosegur's review is the short one (contract addendum §4): head, items, total + number + email, commands
-    const preview = client.last()?.body ?? "";
+    const [recap, preview, ...more] = (client.last()?.body ?? "").split("\n\n");
+    expect(more).toEqual([]);
+    expect(recap).toMatch(new RegExp(`^\\*${num(451)}\\* · PROSEGUR SA\n.*\nPago factura 30 días · Total US\\$ [\\d,.]+ \\(sin IGV\\)$`)); // no photo notes
     expect(preview.split("\n").length).toBeLessThanOrEqual(6);
     expect(preview).toContain("Prosegur · Ayacucho · UB 1830 · solicitante Johann Castañeda\n1. 295/80R22.5");
     expect(preview).toContain(`sin IGV · ${num(451)} · correo: flota@prosegur.com.pe`);
@@ -906,6 +911,8 @@ describe("Prosegur quotes: profile, numbering, Excel, stored files, history", ()
     const resent = docs().slice(before);
     expect(resent.map((d) => d.fileName)).toEqual([pdfDoc.fileName, xlsDoc.fileName]);
     expect(resent[0].file?.equals(Buffer.from(stored[0].data, "base64"))).toBe(true);
+    expect(resent.map((d) => d.caption)).toEqual(["", ""]);
+    expect(client.last()).toMatchObject({ kind: "text", body: recap }); // the summary comes after, in its own message
     await bot.handle(text(`pdf ${num(451)}`)); // the full number works too
     expect(docs().length).toBe(before + 4);
 
@@ -928,7 +935,7 @@ describe("Prosegur quotes: profile, numbering, Excel, stored files, history", ()
     expect(docs().slice(-2).map((d) => d.fileName)).toEqual([pdfName(452), xlsName(452)]);
   });
 
-  it("the quote comes as two messages: a text for the customer, then the PDF with the salesman's caption; then the review", async () => {
+  it("the quote comes as three messages: a text for the customer, the PDF without a caption, then the summary and the review", async () => {
     const flama: PriceRow = { id: "fenix-31580r225-flama77", provider: "Llantas del Sur", kind: "provider", description: "315/80R22.5 FENIXWAY FLAMA 77", brand: "Fenixway", model: "FLAMA 77", size: "315/80R22.5", sizeDisplay: "315/80R22.5", sizeRaw: "315/80R22.5", isTyre: true, cost: 230, priceIncludesTax: false, currency: "USD", stock: 10, priceDate: today(), source: "excel", sourceRef: "a.xlsx" };
     await store.upsertRows([flama]);
     await bot.handle(text("Fenixway Flama 77 315/80R22.5 x8 precio 254 para MOVIL BUS S.A.C., atención: Sr. Jonathan Matta, compras@movilbus.pe"));
@@ -948,14 +955,37 @@ describe("Prosegur quotes: profile, numbering, Excel, stored files, history", ()
     ];
     expect(out[0].body).toBe(forCustomer.join("\n"));
     expect(out[0].body).not.toMatch(/[*_]|\p{Extended_Pictographic}/u); // forwardable as is: no bot formatting, no emojis
-    expect(out[1].caption).toMatch(new RegExp(`^Cotización ${num(16)} · 8 × FLAMA 77 @ US\\$ 254\\.00 \\(precio manual\\) · Pago factura crédito 30 días · Total US\\$ 2,032\\.00 \\(sin IGV\\)\n📷 Fotos: 0/1`));
+    expect(out[1].caption).toBe("");
+    expect(
+      out[2].body?.startsWith(
+        [
+          `*${num(16)}* · MOVIL BUS S.A.C.`,
+          "8 × FLAMA 77 @ US$ 254.00 (precio manual)",
+          "Pago factura crédito 30 días · Total US$ 2,032.00 (sin IGV) · Fotos 0/1",
+          "sin foto: Fenixway FLAMA 77 → mándame la imagen con el texto *foto Fenixway FLAMA 77*",
+          "",
+          "Reenvía al cliente el texto y el PDF. O responde *enviar* (correo), *agregar …*, *precio 2 250*, *cancelar*.",
+          "",
+        ].join("\n"),
+      ),
+    ).toBe(true);
     expect(out[2].body).toContain("📧 *Para:* compras@movilbus.pe");
 
     await bot.handle(text("con igv")); // a rebuild sends both again
     const again = client.sent.slice(-3);
     expect(again.map((m) => m.kind)).toEqual(["text", "document", "text"]);
     expect(again[0].body).toContain("• 8 × Fenixway FLAMA 77 315/80R22.5 – US$ 299.72 c/u\nTotal: US$ 2,397.76 inc. IGV");
-    expect(again[1].caption).toContain("Total US$ 2,397.76 (inc. IGV)");
+    expect(again[1].caption).toBe("");
+    expect(again[2].body).toContain("Total US$ 2,397.76 (inc. IGV)");
+
+    // "reenviar": the documents without a caption, then the summary (a draft has no stored files: regenerated, and it says so)
+    const mark = client.sent.length;
+    await bot.handle(text("reenviar 16"));
+    const resent = client.sent.slice(mark);
+    expect(resent.map((m) => m.kind)).toEqual(["document", "text", "text"]);
+    expect(resent[0].caption).toBe("");
+    expect(resent[1].body).toBe(`*${num(16)}* · MOVIL BUS S.A.C.\n8 × FLAMA 77 @ US$ 299.72 (precio manual)\nPago factura crédito 30 días · Total US$ 2,397.76 (inc. IGV) · Fotos 0/1`);
+    expect(resent[2].body).toContain("los generé de nuevo");
   });
 
   it("a request without plazo / pago ends its first options message with the default plazo, once", async () => {
@@ -1106,9 +1136,13 @@ describe("Prosegur quotes: profile, numbering, Excel, stored files, history", ()
         "Frank Melek Rodríguez Mirano · 360 by Professional Tyres · 955 344 340",
       ].join("\n"),
     );
-    expect(replies[1].caption).toBe(`Cotización ${num(17)} · 2 × Valor 99 @ US$ 123.17 (contrato) · 4 × Valor 89 @ US$ 126.42 (contrato) · Pago factura 30 días · Total US$ 752.02 (sin IGV)`);
+    expect(replies.slice(1, 3).map((m) => m.caption)).toEqual(["", ""]);
     expect(replies[3].body).toBe(
       [
+        `*${num(17)}* · PROSEGUR SA`,
+        "2 × Valor 99 @ US$ 123.17 (contrato) · 4 × Valor 89 @ US$ 126.42 (contrato)",
+        "Pago factura 30 días · Total US$ 752.02 (sin IGV)",
+        "",
         "Prosegur · Ayacucho · UB 1830 · solicitante Johann Castañeda",
         "1. 215/75R17.5 18PR Fenixway Valor 99 MIXT x2 · US$ 123.17",
         "2. 215/75R17.5 18PR Fenixway Valor 89 POST x4 · US$ 126.42",

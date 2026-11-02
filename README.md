@@ -31,13 +31,13 @@ bot       →  1. Fenixway 295/80R22.5 VALOR 87 x4
                a) 🏭 STOCK · stock 34 · Fenixway Valor 87 295/80R22.5 18PR   US$ 315.25 (lista US$ 350.28 −10%)
                b) 🚚 Steel · stock 8 · …                                       US$ 220.58 (costo … Steel)
 vendedor  →  "ok"            (o "1b", "quitar 2", "precio 3 4.50", "dscto 15", "con igv")
-bot       →  1) texto para el cliente (se reenvía tal cual)  2) PDF  3) vista previa del correo
+bot       →  1) texto para el cliente (se reenvía tal cual)  2) PDF sin leyenda  3) resumen y vista previa del correo
 vendedor  →  "enviar"        (o "correo otro@x.com", "cancelar")
 bot       →  "Enviado ✔"
 ```
 
-Al armar la cotización (y cada vez que se rearma) llegan **dos mensajes para reenviar al cliente tal cual** y luego la
-revisión:
+Al armar la cotización (y cada vez que se rearma) llegan **dos mensajes para reenviar al cliente tal cual** y luego uno
+para el vendedor:
 
 1. Un texto escrito para el cliente, sin comandos ni emojis:
    ```
@@ -51,8 +51,18 @@ revisión:
    Frank Melek Rodríguez Mirano · 360 by Professional Tyres · 955 344 340
    ```
    (`inc. IGV` cuando los precios van con IGV; Prosegur agrega `Unidad: … · UB …`; el asesor sale de `salespeople`).
-2. El PDF, con un pie para el vendedor: `Cotización OCTUBRE 2026 - 032 · 8 × Flama 77 @ US$ 254.00 (precio manual) ·
-   Pago factura crédito 30 días · Total US$ 2,032.00 (sin IGV)` y la nota de fotos. Prosegur: además su Excel.
+2. El PDF, sin leyenda. Prosegur: además su Excel, también sin leyenda.
+3. El resumen para el vendedor, con la vista previa del correo debajo:
+   ```
+   *OCTUBRE 2026 - 032* · MOVIL BUS S.A.C.
+   8 × Flama 77 @ US$ 254.00 (precio manual) · 4 × FG01 @ US$ 255.00
+   Pago factura 45 días · Total US$ 3,052.00 (sin IGV) · Fotos 2/2
+
+   Reenvía al cliente el texto y el PDF. O responde *enviar* (correo), *agregar …*, *precio 2 250*, *cancelar*.
+   ```
+   Si faltan fotos, va una línea más después del total: `sin foto: … → mándame la imagen con el texto *foto Marca Modelo*`.
+   Prosegur: las mismas líneas de resumen (sin fotos) seguidas de su revisión corta. Sin correo del cliente: el resumen y
+   la pregunta `¿A qué correo lo envío?`.
 
 Cada cotización nueva empieza con `🆕 Cotización nueva · CLIENTE`. Si llega otro pedido mientras hay una cotización
 abierta (eligiendo opciones o con el PDF ya enviado al vendedor), el bot no empieza otra en silencio:
@@ -220,10 +230,10 @@ Variables de entorno: copiar `.env.example` a `.env`. Nada es obligatorio para e
 | `archivo: Nombre` · `archivo excel: Nombre` | nombre del PDF (por defecto "Cotizacion 26 - 0456.pdf") y del Excel del cliente ("Cotizacion 456 Ayacucho - UB 1830.xlsx") |
 | `enviar` | manda el correo con el PDF (y el Excel de Prosegur); los archivos enviados quedan guardados |
 | `cotizaciones` · `cotizaciones Prosegur` | tus últimas 10 / las últimas 10 de esa empresa (número · fecha · total · estado · ítems), en cualquier momento |
-| `reenviar 451` · `archivos 451` · `pdf 451` (o el número completo) | te reenvía los archivos guardados (o los genera de nuevo) |
+| `reenviar 451` · `archivos 451` · `pdf 451` (o el número completo) | te reenvía los archivos guardados (o los genera de nuevo), sin leyenda, y después el resumen en un mensaje aparte |
 | mensaje reenviado / PDF / Excel / foto de lista | carga de precios: solo de proveedores conocidos (JCH, Steel, Protyres o los ya cargados); una cotización no se carga |
 | `proveedor nuevo: NOMBRE` · `borrar proveedor NOMBRE` | solo administradores (`ADMIN_NUMBERS`) |
-| `historial 51955344340` · `historial` (tu número) · `historial 51955344340 50` | solo administradores: los últimos 30 (o N, máx. 100) mensajes de ese número, el más reciente al final, hora de Lima: `30/10 17:16 ← precio 1 254` · `30/10 17:16 → Cotización … (PDF: Cotizacion 26 - 0031.pdf)` |
+| `historial 51955344340` · `historial` (tu número) · `historial 51955344340 50` | solo administradores: los últimos 30 (o N, máx. 100) mensajes de ese número, el más reciente al final, hora de Lima: `30/10 17:16 ← precio 1 254` · `30/10 17:16 → (PDF: Cotizacion 26 - 0031.pdf)` |
 | `contrato prosegur` · `contrato prosegur v99 125.50` (admin) | precios de contrato de Prosegur: ver (cualquiera) / cambiar (administradores); ver "Prosegur (contrato)" |
 | `precios 11R22.5` · `stock 295/80R22.5` | todas las opciones para una medida |
 | otro pedido con una cotización abierta | otro cliente: empieza una nueva (`Cerré la 032 …`); el mismo cliente: pregunta y se responde `cambiar` · `agregar` · `nueva` |

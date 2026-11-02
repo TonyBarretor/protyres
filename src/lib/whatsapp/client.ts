@@ -87,7 +87,7 @@ export class GraphWhatsAppClient implements WhatsAppClient {
       recipient_type: "individual",
       to,
       type: "document",
-      document: { id, filename: fileName, caption },
+      document: { id, filename: fileName, caption: caption || undefined }, // no caption: the field is left out
     });
   }
 
