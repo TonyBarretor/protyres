@@ -35,11 +35,30 @@ const QuotesSchema = z.object({
   followUpBusinessDays: z.number().int().min(1).max(30).default(3),
 });
 
+/** Meta de ventas (monto en `goals.currency`, sin IGV como las ventas). */
+const GoalSchema = z.object({
+  monthly: z.number().min(0).nullable().default(null),
+  yearly: z.number().min(0).nullable().default(null),
+});
+
+/**
+ * Metas del tablero (bloque C2). `users`: clave = WhatsApp (solo dígitos) o nombre del usuario (se compara sin tildes ni
+ * mayúsculas, también por palabras: "Frank" vale para "Frank Rodríguez"). `_ejemplo: true` = valores de ejemplo: la UI y
+ * el bot los muestran como "Meta de ejemplo" hasta que se pongan las metas reales y se quite la marca.
+ */
+const GoalsSchema = z.looseObject({
+  currency: z.string().min(1).default("USD"),
+  company: GoalSchema.prefault({}),
+  users: z.record(z.string(), GoalSchema).default({}),
+  _ejemplo: z.boolean().default(false),
+});
+
 export const PortalConfigSchema = z.looseObject({
   import: ImportSchema.prefault({}),
   appointments: AppointmentsSchema.prefault({}),
   techLead: TechLeadSchema.prefault({}),
   quotes: QuotesSchema.prefault({}),
+  goals: GoalsSchema.prefault({}),
   /** Feriados ("AAAA-MM-DD") que no cuentan como días hábiles. */
   holidays: z.array(z.string().regex(/^\d{4}-\d{2}-\d{2}$/)).default([]),
 });
@@ -49,6 +68,7 @@ export type PortalImportConfig = PortalConfig["import"];
 export type PortalAppointmentsConfig = PortalConfig["appointments"];
 export type PortalTechLeadConfig = PortalConfig["techLead"];
 export type PortalQuotesConfig = PortalConfig["quotes"];
+export type PortalGoalsConfig = PortalConfig["goals"];
 
 export function portalConfigPath(): string {
   return process.env.PORTAL_CONFIG || path.join(process.cwd(), "config", "portal.json");

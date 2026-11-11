@@ -48,6 +48,7 @@ import type {
   PurchaseOrderPatch,
   PurchaseOrderSummary,
   Sale,
+  SalesAggRow,
   SaleInput,
   Sector,
   StageHistoryEntry,
@@ -569,6 +570,26 @@ export class PgPortalStore implements PortalStore {
     return out;
   }
 
+  async salesAggregate(since: Date | IsoDate, until: Date | IsoDate): Promise<SalesAggRow[]> {
+    const rows = await this.sql`
+      select ruc, fecha::text as fecha, vendedor, max(razon_social) as razon_social, sum(cantidad)::float8 as cantidad,
+        coalesce(sum(coalesce(total, precio_unitario * cantidad)), 0)::float8 as monto,
+        (count(*) filter (where total is null and precio_unitario is null))::int as sin_monto, bool_or(is_demo) as demo, count(*)::int as filas
+      from sales where fecha >= ${toIsoDate(since)}::date and fecha <= ${toIsoDate(until)}::date
+      group by ruc, fecha, vendedor`;
+    return rows.map((r) => ({
+      ruc: String(r.ruc),
+      fecha: String(r.fecha),
+      vendedor: str(r.vendedor),
+      razonSocial: str(r.razon_social),
+      cantidad: Number(r.cantidad ?? 0),
+      monto: Number(r.monto ?? 0),
+      sinMonto: Number(r.sin_monto ?? 0),
+      demo: Boolean(r.demo),
+      filas: Number(r.filas ?? 0),
+    }));
+  }
+
   // ── usuarios y sesiones ──
 
   async upsertUser(input: UserInput): Promise<PortalUser> {
@@ -725,6 +746,13 @@ export class PgPortalStore implements PortalStore {
 
   async stageHistory(opportunityId: number): Promise<StageHistoryEntry[]> {
     const rows = await this.sql`select * from opportunity_stage_history where opportunity_id = ${opportunityId} order by entered_at asc, id asc`;
+    return rows.map(toHistory);
+  }
+
+  async stageHistoryFor(opportunityIds: number[]): Promise<StageHistoryEntry[]> {
+    const ids = [...new Set(opportunityIds)];
+    if (!ids.length) return [];
+    const rows = await this.sql`select * from opportunity_stage_history where opportunity_id in ${this.sql(ids)} order by opportunity_id asc, entered_at asc, id asc`;
     return rows.map(toHistory);
   }
 

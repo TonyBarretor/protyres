@@ -96,7 +96,13 @@ export default async function EmpresaPage({ params, searchParams }: Props) {
               RUC {company.ruc} · {sectorLabel(company.sector)} · {company.departamento ?? "—"} {company.esCliente && <span className="pt-tag pt-tag-client">cliente</span>}
             </div>
           </div>
-          <TempChip t={company.temperatura} />
+          <div className="pt-row">
+            <TempChip t={company.temperatura} />
+            {/* route handler: descarga el PDF (Content-Disposition attachment) o vuelve aquí con ?error= si falta un dato */}
+            <a className="pt-btn pt-btn-primary" href={`/portal/empresas/${company.id}/prepropuesta`}>
+              Generar pre-propuesta
+            </a>
+          </div>
         </div>
       </div>
 

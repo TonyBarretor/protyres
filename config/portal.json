@@ -25,6 +25,16 @@
     "_comment": "Cotización enlazada: aviso al vendedor cuando una cotización enlazada lleva estos días hábiles (lun–vie, Lima) sin respuesta registrada ni cambio de etapa.",
     "followUpBusinessDays": 3
   },
+  "goals": {
+    "_nota": "VALORES DE EJEMPLO — reemplazar por las metas reales y poner \"_ejemplo\": false.",
+    "_comment": "Tablero y comando avance: metas de venta en 'currency' (sin IGV, como las ventas). 'users': clave = WhatsApp (solo dígitos) o nombre del usuario (sin tildes ni mayúsculas; 'Frank' vale para 'Frank Rodríguez'). 'company' = meta del equipo (la ve el supervisor).",
+    "_ejemplo": true,
+    "currency": "USD",
+    "company": { "monthly": 100000, "yearly": 1200000 },
+    "users": {
+      "Frank Rodríguez": { "monthly": 50000, "yearly": 600000 }
+    }
+  },
   "holidays": [],
   "sales": {
     "_comment": "Subir ventas (.xlsx): para cada campo, encabezados posibles del Excel (sin importar mayúsculas, tildes ni espacios). Obligatorios: fecha, ruc, cantidad. Primer encabezado que coincide gana.",

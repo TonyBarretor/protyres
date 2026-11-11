@@ -1,0 +1,152 @@
+{
+  "_comment": "Textos fijos de la pre-propuesta en PDF (bloque C1). Se editan aquí sin tocar código. Regla: ninguna cifra inventada; cada cifra de los casos cita su documento y página en 'fuente'. {empresa} se reemplaza por la razón social.",
+  "documento": {
+    "titulo": "Pre-propuesta",
+    "subtitulo": "Gestión integral de neumáticos para su flota",
+    "saludo": "Estimados señores de {empresa}:",
+    "introduccion": "Le presentamos a 360° Tyres, lo que hemos logrado con flotas que ya atendemos y lo que proponemos para la suya. Es un primer paso: los datos de su flota salen del padrón público del MTC y los confirmaremos juntos en la inspección.",
+    "pie": "360° Tyres · Cal. López de Ayala Nro. 1098 Int. 301, San Borja, Lima · www.360tyres.pe",
+    "pieFuente": "INFORME_EJECUTIVO_COMERCIAL_SEPTIEMBRE.pdf, pie de página"
+  },
+  "quienesSomos": {
+    "titulo": "Quiénes somos",
+    "puntos": [
+      { "destacado": "Más de 25 años", "texto": "Empresa peruana, con más de 25 años de experiencia.", "fuente": "PPT_360_TYRES.pptx, diapositiva 3" },
+      { "destacado": "Más de 20 mil unidades al año", "texto": "Facturamos más de 20 mil unidades al año entre auto, camioneta, camión, bus y línea amarilla.", "fuente": "PPT_360_TYRES.pptx, diapositiva 3" },
+      { "destacado": "Cobertura nacional", "texto": "Nuestra logística y experiencia nos permiten dar cobertura a nivel nacional a todos nuestros clientes que lo requieren.", "fuente": "PPT_360_TYRES.pptx, diapositiva 3" },
+      { "destacado": "Bureau Veritas y HODELPE", "texto": "Empresa certificada por Bureau Veritas y HODELPE.", "fuente": "PPT_360_TYRES.pptx, diapositivas 3 y 4" },
+      { "destacado": "Más de 24 años", "texto": "Contamos con clientes que trabajan con nosotros más de 24 años de forma ininterrumpida.", "fuente": "PPT_360_TYRES.pptx, diapositiva 3" },
+      { "destacado": "La solución en llantas", "texto": "Nuestro core business está orientado a ser la solución en llantas para cada uno de nuestros clientes.", "fuente": "PPT_360_TYRES.pptx, diapositiva 3" }
+    ],
+    "serviciosTitulo": "Servicios in house",
+    "serviciosIntro": "Taller integral bajo estándares de seguridad y servicios dentro de los horarios del cliente.",
+    "servicios": [
+      "Taller integral",
+      "Enllante",
+      "Balanceo (balanceadora 3D de última generación para camión)",
+      "Alineamiento 3D",
+      "Monitoreo y gestión de neumáticos",
+      "Software de gestión para neumáticos",
+      "Reporte mensual con informe",
+      "Análisis del costo por kilómetro (CPK)",
+      "Reporte de scrap",
+      "Reporte de mejoras",
+      "Marcado de llantas con sistema láser",
+      "Despachos a sucursales a nivel nacional"
+    ],
+    "serviciosFuente": "PPT_360_TYRES.pptx, diapositivas 8 y 10",
+    "productos": "Llantas para todo tipo de vehículo, accesorios, herramientas y más.",
+    "productosFuente": "PPT_360_TYRES.pptx, diapositiva 9",
+    "marcasTitulo": "Nuestras marcas",
+    "marcas": ["Continental", "Fenixway", "Pirelli", "Yokohama", "Dunlop", "Kumho", "Toyo Tires", "Falken", "General Tire", "Marshal", "Tesche"],
+    "marcasFuente": "PPT_360_TYRES.pptx, diapositiva 11 (logos)"
+  },
+  "casos": {
+    "titulo": "Resultados que ya medimos",
+    "principal": {
+      "cliente": "ANCRO S.R.L.",
+      "titulo": "Gestión integral de neumáticos",
+      "contexto": "Gestionamos los neumáticos de su flota con inspecciones, informes mensuales, análisis de CPK, software TireVision y taller in house.",
+      "contextoFuente": { "documento": "Informe ejecutivo semestral ANCRO S.R.L. (marzo – agosto 2026)", "archivo": "INFORME_EJECUTIVO_COMERCIAL_SEPTIEMBRE.pdf", "pagina": "1-2" },
+      "comparativos": [
+        {
+          "etiqueta": "Costo promedio por neumático",
+          "antes": { "valor": 290, "texto": "US$ 290", "periodo": "Periodo 2023-24" },
+          "despues": { "valor": 247, "texto": "US$ 247", "periodo": "1er sem. 2026-27" },
+          "variacion": "−15%",
+          "fuente": { "documento": "Informe ejecutivo semestral ANCRO S.R.L.", "archivo": "INFORME_EJECUTIVO_COMERCIAL_SEPTIEMBRE.pdf", "pagina": "1" }
+        },
+        {
+          "etiqueta": "Inversión anual en neumáticos",
+          "antes": { "valor": 151048, "texto": "US$ 151,048", "periodo": "Periodo 2023-24" },
+          "despues": { "valor": 95456, "texto": "US$ 95,456", "periodo": "Periodo 2025-26" },
+          "variacion": "−37%",
+          "fuente": { "documento": "Informe ejecutivo semestral ANCRO S.R.L.", "archivo": "INFORME_EJECUTIVO_COMERCIAL_SEPTIEMBRE.pdf", "pagina": "1" }
+        }
+      ],
+      "indicadores": [
+        {
+          "valor": "23–44%",
+          "texto": "menor costo por kilómetro de Fenixway frente a Continental, según operación",
+          "fuente": { "documento": "Informe ejecutivo semestral ANCRO S.R.L.", "archivo": "INFORME_EJECUTIVO_COMERCIAL_SEPTIEMBRE.pdf", "pagina": "1" }
+        },
+        {
+          "valor": "394",
+          "texto": "unidades inspeccionadas en el semestre (marzo – agosto 2026)",
+          "fuente": { "documento": "Informe ejecutivo semestral ANCRO S.R.L.", "archivo": "INFORME_EJECUTIVO_COMERCIAL_SEPTIEMBRE.pdf", "pagina": "1" }
+        },
+        {
+          "valor": "6 de 6",
+          "texto": "informes mensuales entregados (semáforo, rendimientos, CPK y recomendaciones)",
+          "fuente": { "documento": "Informe ejecutivo semestral ANCRO S.R.L.", "archivo": "INFORME_EJECUTIVO_COMERCIAL_SEPTIEMBRE.pdf", "pagina": "1" }
+        }
+      ],
+      "detalle": "CPK de Fenixway frente a Continental: Comercialización -31% · Succión -43% · Transporte -44% · Intercambiador -23%.",
+      "detalleFuente": { "documento": "Informe ejecutivo semestral ANCRO S.R.L.", "archivo": "INFORME_EJECUTIVO_COMERCIAL_SEPTIEMBRE.pdf", "pagina": "2" },
+      "nota": "Montos sin IGV. Desde el periodo 2023-24, el costo promedio por neumático bajó de US$ 290 a US$ 247 (−15%) y la inversión anual en neumáticos se redujo 37% (US$ 151,048 a US$ 95,456).",
+      "notaFuente": { "documento": "Informe ejecutivo semestral ANCRO S.R.L., primer semestre 2026-2027 (marzo – agosto 2026)", "archivo": "INFORME_EJECUTIVO_COMERCIAL_SEPTIEMBRE.pdf", "pagina": "1" }
+    },
+    "secundario": {
+      "cliente": "Innova Ambiental S.A.",
+      "titulo": "Prueba del sellador Ultraseal",
+      "contexto": "Entre marzo y setiembre de 2026, las 4 llantas de tracción de la compactadora IA-5254 operaron con el sellador preventivo Ultraseal. Durante 170 días y 29,564 km no se registró ningún auxilio mecánico por pinchazo ni llanta baja, y los 4 cascos aprobaron el reencauche.",
+      "contextoFuente": { "documento": "Informe técnico Prueba de sellador Ultraseal, Innova Ambiental S.A.", "archivo": "INFORME_PRUEBA_ULTRASEAL_INNOVA_IA-5254.pdf", "pagina": "3" },
+      "indicadores": [
+        {
+          "valor": "0",
+          "texto": "auxilios por pinchazo en 170 días",
+          "fuente": { "documento": "Informe técnico Prueba de sellador Ultraseal", "archivo": "INFORME_PRUEBA_ULTRASEAL_INNOVA_IA-5254.pdf", "pagina": "3" }
+        },
+        {
+          "valor": "+17%",
+          "texto": "km por mm frente a la misma llanta en flota",
+          "fuente": { "documento": "Informe técnico Prueba de sellador Ultraseal", "archivo": "INFORME_PRUEBA_ULTRASEAL_INNOVA_IA-5254.pdf", "pagina": "3" }
+        },
+        {
+          "valor": "6.43 x",
+          "texto": "ahorro por cada dólar invertido en Ultraseal",
+          "fuente": { "documento": "Informe técnico Prueba de sellador Ultraseal", "archivo": "INFORME_PRUEBA_ULTRASEAL_INNOVA_IA-5254.pdf", "pagina": "3" }
+        },
+        {
+          "valor": "US$ 144 mil",
+          "texto": "ahorro neto anual proyectado en la flota",
+          "fuente": { "documento": "Informe técnico Prueba de sellador Ultraseal", "archivo": "INFORME_PRUEBA_ULTRASEAL_INNOVA_IA-5254.pdf", "pagina": "3" }
+        }
+      ],
+      "detalle": "Costo operativo 43% menor: de US$ 19.44 a US$ 11.02 por cada 1,000 km, considerando llanta, sellador, reparaciones y paradas.",
+      "detalleFuente": { "documento": "Informe técnico Prueba de sellador Ultraseal", "archivo": "INFORME_PRUEBA_ULTRASEAL_INNOVA_IA-5254.pdf", "pagina": "3" },
+      "nota": "La prueba corresponde a 4 llantas de una sola unidad; la proyección económica se basa en promedios históricos de Innova.",
+      "notaFuente": { "documento": "Informe técnico Prueba de sellador Ultraseal, sección 8 (limitaciones)", "archivo": "INFORME_PRUEBA_ULTRASEAL_INNOVA_IA-5254.pdf", "pagina": "8" }
+    }
+  },
+  "flota": {
+    "titulo": "Su flota hoy",
+    "intro": "Esto es lo que el padrón público del MTC muestra de la flota de {empresa}.",
+    "nota": "Unidades, ejes y llantas: datos públicos del MTC; la medida es una estimación a confirmar en la inspección.",
+    "flotaTitulo": "Flota por marca",
+    "medidasTitulo": "Medidas probables",
+    "participacionTexto": "neumáticos comprados a 360° Tyres en los últimos 12 meses",
+    "demoEtiqueta": "DEMO"
+  },
+  "propuesta": {
+    "titulo": "Qué proponemos",
+    "intro": "Un camino corto, sin compromiso, para que {empresa} decida con datos de su propia flota.",
+    "pasos": [
+      {
+        "titulo": "Inspección sin costo de 5 unidades",
+        "texto": "Nuestro Departamento Técnico revisa 5 unidades de su flota: presión, remanente y desgaste de cada llanta, y confirma las medidas que usan."
+      },
+      {
+        "titulo": "Informe con semáforo y recomendaciones",
+        "texto": "Le entregamos el estado de cada llanta en semáforo con recomendaciones de rotación, alineamiento, reparación o cambio, como en los informes mensuales que ya entregamos."
+      },
+      {
+        "titulo": "Propuesta por medida con esquema 70/20/10",
+        "texto": "Para cada medida, la mayor parte en la opción de menor costo por kilómetro, una parte en una alternativa y una parte pequeña a prueba, para comparar en su operación."
+      }
+    ],
+    "cierre": "Agradecemos su gentil atención. Quedamos atentos a sus gratas órdenes para coordinar la fecha de la inspección.",
+    "contactoTitulo": "Su asesor comercial",
+    "firma": "360 by Professional Tyres"
+  }
+}

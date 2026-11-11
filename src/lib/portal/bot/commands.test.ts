@@ -235,7 +235,7 @@ describe("comandos del portal por WhatsApp", () => {
     await bot.handle(text(FRANK, "ayuda portal"));
     for (const c of ["*portal*", "*empresa", "*asignarme", "*contacto", "*hoy*", "*cita", "*oc", "*avance*", "*prepropuesta", "*aprende", "*nota de voz*"]) expect(last()).toContain(c);
     await bot.handle(text(FRANK, "avance"));
-    expect(last()).toContain("*avance* estará disponible pronto");
+    expect(last()).toContain("💰 *Vendido");
     await bot.handle(text(FRANK, "ayuda"));
     expect(last()).toContain("Cotizador Protyres"); // la ayuda del cotizador no cambia
   });

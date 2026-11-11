@@ -1,5 +1,5 @@
 "use client";
-/** Navegación del portal; marca la sección actual. "Tablero" llega en la fase C. */
+/** Navegación del portal; marca la sección actual. */
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
@@ -7,6 +7,7 @@ const LINKS = [
   { href: "/portal", label: "Prospectos", match: (p: string) => p === "/portal" || p.startsWith("/portal/empresas") },
   { href: "/portal/pipeline", label: "Pipeline", match: (p: string) => p.startsWith("/portal/pipeline") },
   { href: "/portal/hoy", label: "Hoy", match: (p: string) => p.startsWith("/portal/hoy") },
+  { href: "/portal/tablero", label: "Tablero", match: (p: string) => p.startsWith("/portal/tablero") },
   { href: "/portal/ventas", label: "Subir ventas", match: (p: string) => p.startsWith("/portal/ventas") },
 ];
 
@@ -19,9 +20,6 @@ export function Nav() {
           {l.label}
         </Link>
       ))}
-      <span className="pt-nav-soon" title="Disponible en la fase C">
-        Tablero
-      </span>
     </nav>
   );
 }

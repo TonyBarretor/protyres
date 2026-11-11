@@ -40,7 +40,7 @@ igual
 ninguna
 # 9. Avance del mes (C2) y pre-propuesta (C1)
 #TODO C2: avance
-#TODO C1: prepropuesta zbuss
+prepropuesta zbuss
 # 10. Pendientes del día y ayuda
 hoy
 ayuda portal

@@ -1,0 +1,74 @@
+/* Tablero (bloque C2). Cuelga de .pt-shell (variables de portal.css); una sola serie azul, lo esperado en tinta. */
+.pt-shell .tb {
+  --tb-bar: #2a78d6;
+  --tb-track: #eceef2;
+  --tb-mark: var(--ink);
+}
+
+.tb-picker select { font: inherit; padding: 0.35rem 0.5rem; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); max-width: 100%; }
+.tb-demo-note { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
+.tb-tag-example { background: #eef0f3; color: #4a505a; border: 1px dashed #9aa0aa; }
+
+.tb-grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 1rem 1.5rem; }
+.tb-grid3 { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 1rem; }
+
+/* Cumplimiento */
+.tb-compliance { display: grid; gap: 0.45rem; min-width: 0; }
+.tb-compliance-head { display: flex; justify-content: space-between; align-items: center; gap: 0.4rem; flex-wrap: wrap; }
+.tb-compliance-head h3 { margin: 0; }
+.tb-figure { display: flex; gap: 0.5rem; align-items: baseline; flex-wrap: wrap; }
+.tb-figure-value { font-family: var(--font-title); font-size: 1.6rem; font-weight: 700; font-variant-numeric: tabular-nums; margin: 0; }
+.tb-progress { position: relative; height: 14px; background: var(--tb-track); border-radius: 4px; margin: 0.35rem 0 0.2rem; }
+.tb-progress-fill { position: absolute; inset: 0 auto 0 0; background: var(--tb-bar); border-radius: 4px; }
+.tb-progress-mark { position: absolute; top: -5px; bottom: -5px; width: 3px; margin-left: -1.5px; background: var(--tb-mark); border-radius: 2px; box-shadow: 0 0 0 2px var(--surface); }
+.tb-progress-goal { position: absolute; top: 0; bottom: 0; width: 2px; margin-left: -1px; background: var(--muted); }
+.tb-dl { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.3rem 0.8rem; margin: 0; }
+.tb-dl dt { color: var(--muted); }
+.tb-dl dd { margin: 0; font-weight: 600; font-variant-numeric: tabular-nums; }
+.tb-legend { display: flex; align-items: center; gap: 0.35rem; flex-wrap: wrap; color: var(--muted); margin-top: 0.8rem; }
+.tb-key { display: inline-block; vertical-align: middle; }
+.tb-key-fill { width: 14px; height: 10px; background: var(--tb-bar); border-radius: 2px; }
+.tb-key-mark { width: 3px; height: 14px; background: var(--tb-mark); border-radius: 2px; margin-left: 0.6rem; }
+
+/* Por vendedor */
+.tb-vendors { display: grid; gap: 0.6rem; }
+.tb-vendor { display: grid; gap: 0.3rem; padding: 0.7rem; border: 1px solid var(--line); border-radius: 8px; text-decoration: none; }
+.tb-vendor:hover { border-color: #c5c9d1; background: #fafbfc; }
+.tb-vendor-head { display: flex; justify-content: space-between; gap: 0.4rem; flex-wrap: wrap; }
+.tb-vendor-nums { display: flex; gap: 0.3rem 1rem; flex-wrap: wrap; color: var(--muted); }
+
+/* Barras horizontales */
+.tb-hbar { height: 10px; background: var(--tb-track); border-radius: 4px; overflow: hidden; min-width: 0; }
+.tb-hbar-fill { height: 100%; background: var(--tb-bar); border-radius: 0 4px 4px 0; }
+
+/* Desglose por etapa */
+.tb-stages { display: grid; gap: 0.15rem; }
+.tb-stage { display: grid; grid-template-columns: minmax(0, 1.6fr) 3rem minmax(0, 1fr) minmax(0, 1fr); gap: 0.2rem 0.6rem; align-items: center; padding: 0.35rem 0; border-bottom: 1px solid var(--line); font-size: 0.9rem; }
+.tb-stage-head { border-bottom: 1px solid var(--line); }
+.tb-stage-bar { grid-column: 1 / -1; }
+.tb-notes { margin: 0.7rem 0 0; padding-left: 1.1rem; display: grid; gap: 0.2rem; }
+
+/* Semanas (SVG) */
+.tb-weeks { margin: 0; min-width: 0; }
+.tb-weeks figcaption { margin-bottom: 0.2rem; }
+.tb-weeks svg { display: block; height: auto; overflow: visible; }
+.tb-bar { fill: var(--tb-bar); }
+.tb-axis { stroke: #c5c9d1; stroke-width: 1; }
+.tb-val { font-size: 11px; font-weight: 600; fill: var(--ink); font-variant-numeric: tabular-nums; }
+.tb-tick { font-size: 10px; fill: var(--muted); }
+.tb-table { margin-top: 0.4rem; }
+.tb-kvlist { list-style: none; margin: 0 0 0.3rem; padding: 0; display: grid; gap: 0.15rem; }
+.tb-kvlist li { display: flex; justify-content: space-between; gap: 0.5rem; border-bottom: 1px solid var(--line); padding: 0.25rem 0; }
+
+/* Participación */
+.tb-part { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.1rem; }
+.tb-part-row { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1.2fr) 4.5rem 6.5rem; gap: 0.3rem 0.7rem; align-items: center; padding: 0.4rem 0; border-bottom: 1px solid var(--line); font-size: 0.9rem; }
+.tb-part-name { min-width: 0; overflow-wrap: anywhere; }
+
+@media (max-width: 720px) {
+  .tb-figure-value { font-size: 1.35rem; }
+  .tb-stage { grid-template-columns: minmax(0, 1fr) 2.5rem minmax(0, 1fr) minmax(0, 1fr); font-size: 0.85rem; }
+  .tb-part-row { grid-template-columns: minmax(0, 1fr) 4rem 6rem; }
+  .tb-part-row .tb-part-name { grid-column: 1 / -1; }
+  .tb-part-head { display: none; }
+}

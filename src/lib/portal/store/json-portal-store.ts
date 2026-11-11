@@ -49,6 +49,7 @@ import type {
   PurchaseOrderPatch,
   PurchaseOrderSummary,
   Sale,
+  SalesAggRow,
   SaleInput,
   StageHistoryEntry,
   UpsertCompaniesResult,
@@ -580,6 +581,26 @@ export class JsonPortalStore implements PortalStore {
     return this.participationSync([...new Set(rucs.map(digits))], toIsoDate(since));
   }
 
+  async salesAggregate(since: Date | IsoDate, until: Date | IsoDate): Promise<SalesAggRow[]> {
+    const from = toIsoDate(since);
+    const to = toIsoDate(until);
+    const groups = new Map<string, SalesAggRow>();
+    for (const s of this.sales) {
+      if (s.fecha < from || s.fecha > to) continue;
+      const key = `${s.ruc}|${s.fecha}|${s.vendedor ?? "\u0000"}`;
+      let g = groups.get(key);
+      if (!g) groups.set(key, (g = { ruc: s.ruc, fecha: s.fecha, vendedor: s.vendedor, razonSocial: null, cantidad: 0, monto: 0, sinMonto: 0, demo: false, filas: 0 }));
+      const monto = s.total ?? (s.precioUnitario !== null ? s.precioUnitario * s.cantidad : null);
+      g.cantidad += s.cantidad;
+      if (monto === null) g.sinMonto++;
+      else g.monto += monto;
+      if (s.razonSocial && (!g.razonSocial || s.razonSocial > g.razonSocial)) g.razonSocial = s.razonSocial;
+      if (s.isDemo) g.demo = true;
+      g.filas++;
+    }
+    return [...groups.values()];
+  }
+
   // ── usuarios y sesiones ──
 
   async upsertUser(input: UserInput): Promise<PortalUser> {
@@ -771,6 +792,14 @@ export class JsonPortalStore implements PortalStore {
       .filter((h) => h.opportunityId === opportunityId)
       .map(copy)
       .sort((a, b) => time(a.enteredAt) - time(b.enteredAt) || a.id - b.id);
+  }
+
+  async stageHistoryFor(opportunityIds: number[]): Promise<StageHistoryEntry[]> {
+    const ids = new Set(opportunityIds);
+    return this.stageHistoryRows
+      .filter((h) => ids.has(h.opportunityId))
+      .map(copy)
+      .sort((a, b) => a.opportunityId - b.opportunityId || time(a.enteredAt) - time(b.enteredAt) || a.id - b.id);
   }
 
   // ── actividades ──

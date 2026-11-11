@@ -228,6 +228,26 @@ export interface Participation {
   demo: boolean;
 }
 
+/**
+ * Ventas agregadas por (RUC, fecha, vendedor) en una ventana (tablero, bloque C2). `monto` = suma de `total` o, si falta,
+ * `precioUnitario × cantidad`; las filas sin ninguno de los dos no suman monto y se cuentan en `sinMonto`.
+ */
+export interface SalesAggRow {
+  ruc: string;
+  fecha: IsoDate;
+  /** Texto tal como llegó en la venta (sin normalizar); null si no tenía. */
+  vendedor: string | null;
+  /** Una razón social de las ventas del grupo (la mayor alfabéticamente). */
+  razonSocial: string | null;
+  cantidad: number;
+  monto: number;
+  /** Filas sin total ni precio unitario. */
+  sinMonto: number;
+  /** true si alguna venta del grupo es demo. */
+  demo: boolean;
+  filas: number;
+}
+
 export interface SalesRepo {
   insertSales(rows: SaleInput[]): Promise<number>;
   deleteDemoSales(): Promise<number>;
@@ -239,6 +259,8 @@ export interface SalesRepo {
   salesByRuc(ruc: string, since?: Date | IsoDate): Promise<Sale[]>;
   /** RUC -> neumáticos vendidos desde `since`; solo trae los RUC con ventas. */
   participation(rucs: string[], since: Date | IsoDate): Promise<Record<string, Participation>>;
+  /** Ventas con fecha entre `since` y `until` (ambas inclusive) agrupadas por (RUC, fecha, vendedor); sin orden garantizado. */
+  salesAggregate(since: Date | IsoDate, until: Date | IsoDate): Promise<SalesAggRow[]>;
 }
 
 // ── Usuarios y sesiones ──
@@ -390,6 +412,8 @@ export interface OpportunityRepo {
   updateOpportunity(id: number, patch: OpportunityPatch): Promise<Opportunity | null>;
   /** Más antigua primero. */
   stageHistory(opportunityId: number): Promise<StageHistoryEntry[]>;
+  /** Historial de varias oportunidades en una consulta (tablero); por oportunidad y, dentro, la más antigua primero. */
+  stageHistoryFor(opportunityIds: number[]): Promise<StageHistoryEntry[]>;
 }
 
 export type ActivityTipo = "visita" | "llamada" | "nota" | "cotizacion" | "oc" | "cita" | (string & {});
