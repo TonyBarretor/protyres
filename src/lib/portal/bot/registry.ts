@@ -7,6 +7,7 @@
  *   registerCompanyAction("cita", async (ctx, company, args) => { ... });        // tras elegir empresa de una lista
  *   setReportHandler(async (ctx, text, { occurredAt }) => { ... });
  */
+import type { MessageLogEntry } from "../../store/types";
 import type { InboundMessage } from "../../whatsapp/webhook";
 import type { Company, PortalStore, PortalUser } from "../store/types";
 import type { PortalCommandName } from "./router";
@@ -31,6 +32,10 @@ export interface PortalContext {
   env: Record<string, string | undefined>;
   now: Date;
   log(msg: string): void;
+  /** Descarga un medio de WhatsApp (nota de voz). Opcional: sin él, el intérprete usa la Graph API (o lo inyectado con configureReportBot). */
+  downloadMedia?(mediaId: string): Promise<{ data: Buffer; mimeType: string; fileName?: string }>;
+  /** Registra un mensaje en `messages` (la transcripción de una nota de voz). Opcional: sin él, el store del cotizador. */
+  logMessage?(entry: MessageLogEntry): Promise<void>;
 }
 
 export type PortalCommandHandler = (ctx: PortalContext, args: string) => Promise<void>;
@@ -81,11 +86,18 @@ export const placeholderReportHandler: ReportHandler = async (ctx, text, opts) =
   await ctx.reply(`📝 Recibí ${what}\n${REPORT_PLACEHOLDER}`);
 };
 
+let defaultReportHandler: ReportHandler = placeholderReportHandler;
 let reportHandler: ReportHandler = placeholderReportHandler;
 
-/** El bloque B3 reemplaza el intérprete; null vuelve al marcador. */
+/** Reemplaza el intérprete (tests); null vuelve al de por defecto (el de bot/report.ts, o el marcador si no se cargó). */
 export function setReportHandler(handler: ReportHandler | null): void {
-  reportHandler = handler ?? placeholderReportHandler;
+  reportHandler = handler ?? defaultReportHandler;
+}
+
+/** El intérprete de reportes de verdad (bot/report.ts) se registra como el de por defecto. */
+export function setDefaultReportHandler(handler: ReportHandler): void {
+  defaultReportHandler = handler;
+  reportHandler = handler;
 }
 
 /** Reporte de visita / llamada / nota (texto o voz) de un usuario del portal. */

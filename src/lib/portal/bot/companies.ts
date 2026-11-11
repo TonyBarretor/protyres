@@ -7,6 +7,7 @@ import { stageLabel } from "../stages";
 import { defaultSince, foldText } from "../store/shared";
 import type { Company, Confianza, FleetGroup, PortalStore } from "../store/types";
 import { groupByBrand } from "../ui/fleet";
+import { fold } from "../../tyre/brands";
 import { fmtInt, sectorLabel } from "../ui/labels";
 import { getCompanyAction, registerPendingHandler, type PortalContext } from "./registry";
 import { clearPending, setPending, type ChooseCompanyStep } from "./state";
@@ -68,6 +69,37 @@ export async function findCompanies(store: PortalStore, q: string, limit = MAX_O
   const exact = rows.filter((c) => companyKey(c.razonSocial).replace(/ /g, "") === key.replace(/ /g, ""));
   if (exact.length === 1) return { rows: exact, total: 1 };
   return { rows: rows.slice(0, limit), total };
+}
+
+const STOP = new Set(["para", "que", "con", "los", "las", "del", "una", "uno", "por", "como", "pero", "hoy", "ayer", "manana", "esta", "este", "todo", "bien", "hola", "gracias", "buenos", "dias", "tardes", "noches", "favor", "ellos", "ella", "quiere", "quieren", "dijo", "dice"]);
+
+/**
+ * Empresas del padrón que el texto nombra: n-gramas de 1 a 3 palabras iguales a una razón social sin S.A.C. (más largos
+ * primero, hasta `maxQueries` búsquedas). Sin repetidas.
+ */
+export async function mentionedCompanies(store: PortalStore, text: string, maxQueries = 12, stopAtFirst = false): Promise<Company[]> {
+  const words = fold(text).split(" ").filter(Boolean);
+  const grams: string[] = [];
+  for (let n = 3; n >= 1; n--) {
+    for (let i = 0; i + n <= words.length; i++) {
+      const g = words.slice(i, i + n);
+      if (STOP.has(g[0]) || STOP.has(g[g.length - 1])) continue;
+      if (n === 1 && (g[0].length < 4 || /^\d+$/.test(g[0]))) continue;
+      grams.push(g.join(" "));
+    }
+  }
+  const out: Company[] = [];
+  for (const g of [...new Set(grams)].slice(0, maxQueries)) {
+    const { rows } = await findCompanies(store, g, 5);
+    for (const c of rows) if (companyKey(c.razonSocial) === g && !out.some((o) => o.id === c.id)) out.push(c);
+    if (stopAtFirst && out.length) break;
+  }
+  return out;
+}
+
+/** El texto nombra una empresa del padrón (n-gramas de 1 a 3 palabras que coinciden con una razón social sin S.A.C.). */
+export async function mentionsKnownCompany(store: PortalStore, text: string, maxQueries = 12): Promise<boolean> {
+  return (await mentionedCompanies(store, text, maxQueries, true)).length > 0;
 }
 
 /**

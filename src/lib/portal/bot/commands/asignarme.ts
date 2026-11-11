@@ -31,7 +31,8 @@ export async function assignToMe(ctx: PortalContext, company: Company): Promise<
   if (!already) {
     const prev = company.ownerUserId ? await store.getUser(company.ownerUserId) : null;
     const texto = prev ? `${user.nombre} se asignó la empresa (antes: ${prev.nombre}).` : `${user.nombre} se asignó la empresa.`;
-    await store.addActivity({ companyId: company.id, opportunityId: opp.id, userId: user.id, tipo: "nota", texto, canal: "whatsapp", occurredAt: ctx.now });
+    // data.evento = "asignacion": hito de inicio para las métricas de tiempos (metrics/timeline.ts)
+    await store.addActivity({ companyId: company.id, opportunityId: opp.id, userId: user.id, tipo: "nota", texto, canal: "whatsapp", occurredAt: ctx.now, data: { evento: "asignacion", ownerUserId: user.id, previousOwnerUserId: company.ownerUserId } });
   }
   const ficha = await formatFicha(store, current, { full: true, env: ctx.env, now: ctx.now });
   await ctx.reply(`${already ? "✔ Ya era tuya." : "✔ Empresa asignada a ti."}\n\n${ficha}`);

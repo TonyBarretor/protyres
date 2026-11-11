@@ -234,8 +234,11 @@ const fold = (s: string) =>
 
 export function detectTipo(text: string): ReportTipo | null {
   const t = fold(text);
-  if (/\b(visite|visitamos|visita(?:mos)?\s+(?:a|hoy|ayer)|fui\s+a|fuimos\s+a|estuve\s+en|pase\s+por|me\s+reuni|nos\s+reunimos)\b/.test(t)) return "visita";
-  if (/\b(llame|llamamos|me\s+llamo|nos\s+llamo|hable\s+por\s+telefono|telefonee|por\s+telefono)\b/.test(t)) return "llamada";
+  // el primer verbo manda: "Llamé a X, dice que lo visite el lunes" es una llamada
+  const v = /\b(visite|visitamos|visita(?:mos)?\s+(?:a|hoy|ayer)|fui\s+a|fuimos\s+a|estuve\s+en|pase\s+por|me\s+reuni|nos\s+reunimos)\b/.exec(t);
+  const l = /\b(llame|llamamos|me\s+llamo|nos\s+llamo|hable\s+por\s+telefono|telefonee|por\s+telefono)\b/.exec(t);
+  if (v && (!l || v.index <= l.index)) return "visita";
+  if (l) return "llamada";
   if (/\bvisita\b/.test(t)) return "visita";
   if (/\bllamada\b/.test(t)) return "llamada";
   return null;
@@ -289,7 +292,9 @@ export function detectDates(text: string, now: Date): RuleDates {
   let proximaAccion: RuleDates["proximaAccion"] = null;
   if (/\bayer\b/.test(t)) ocurrioEn = limaIso(new Date(now.getTime() - 24 * 60 * 60 * 1000));
   else if (/\banteayer\b/.test(t)) ocurrioEn = limaIso(new Date(now.getTime() - 48 * 60 * 60 * 1000));
-  const m = parseSpanishDateTime(text, now);
+  const parsed = parseSpanishDateTime(text, now);
+  // día sin hora ("el lunes"): 9:00 de Lima en vez de medianoche
+  const m = parsed?.allDay ? { ...parsed, date: new Date(parsed.date.getTime() + 9 * 60 * 60 * 1000) } : parsed;
   if (m) {
     if (m.date.getTime() > now.getTime() || FUTURE_HINT.test(t)) proximaAccion = { texto: nextActionText(t), fecha: limaIso(m.date) };
     else if (!ocurrioEn) ocurrioEn = limaIso(m.date);

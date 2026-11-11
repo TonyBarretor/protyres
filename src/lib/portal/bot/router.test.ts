@@ -116,6 +116,11 @@ describe("classifyIntent", () => {
     expect(classifyIntent(user("Visité Transportes ABC, necesitan 295/80R22.5 x4"))).toBe("ambiguous");
     expect(classifyIntent(user("hablé con compras, cotízame 11R22.5 x10 para ZBUSS"))).toBe("ambiguous");
     expect(classifyIntent(user("295/80R22.5 x4 para ABC, el gerente dice que urge"))).toBe("quote"); // reporte débil no basta
+    // la palabra "cotización" sola, con un verbo de reporte, es un reporte; con medida, cantidad o correo sigue ambiguo
+    expect(classifyIntent(user("Visité ZBUSS, quedamos en mandarle la cotización el jueves"))).toBe("report");
+    expect(classifyIntent(user("Llamé a ZBUSS, mándales cotización a compras@zbuss.pe"))).toBe("ambiguous");
+    expect(classifyIntent(user("cotización para ZBUSS"))).toBe("quote");
+    expect(classifyIntent(stranger("Visité ZBUSS, quedamos en mandarle la cotización el jueves"))).toBe("quote");
     expect(classifyIntent(user("ZBUSS"))).toBe("passthrough");
     expect(classifyIntent(user("ZBUSS", { mentionsKnownCompany: true }))).toBe("report");
     expect(classifyIntent(user("ZBUSS quiere Fenixway", { mentionsKnownCompany: true }))).toBe("ambiguous");

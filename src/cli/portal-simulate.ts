@@ -9,7 +9,7 @@
  *   npm run portal:simulate -- --as 51955344340 --audio nota.ogg
  *
  * Guion: una línea por mensaje; se ignoran líneas vacías y las que empiezan con #.
- *   @audio <archivo>             nota de voz (se salta, con aviso, si no hay DEEPGRAM_API_KEY)
+ *   @audio <archivo>             nota de voz: con DEEPGRAM_API_KEY se transcribe de verdad (Deepgram); sin ella se salta, con aviso
  *   @doc <archivo> [leyenda]     documento o imagen (por extensión) con leyenda opcional
  *   @fwd <texto>                 mensaje reenviado
  * En modo interactivo valen las mismas formas y /quit.
@@ -182,6 +182,9 @@ async function main() {
   const me = await resolvePhone(args.as, () => portal.listUsers());
   currentPhone = me.phone;
   const client = new ConsoleWhatsAppClient();
+  // sin Graph API: las notas de voz (@audio / --audio) se "descargan" del archivo local que el guion cargó en el cliente
+  const { configureReportBot } = await import("../lib/portal/bot");
+  configureReportBot({ downloadMedia: (id) => client.downloadMedia(id) });
   let emailSeq = 0;
   const bot = new BotHandler({
     client,

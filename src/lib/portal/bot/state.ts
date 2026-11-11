@@ -5,6 +5,7 @@
  * Tipos de paso de B1: choose_company (elegir de una lista numerada), intent_choice (¿cotización o reporte?),
  * report_draft (texto del reporte guardado para el intérprete, bloque B3). Los bloques siguientes añaden los suyos.
  */
+import type { DraftField, ReportDraft } from "../report/draft";
 import type { PortalStore } from "../store/types";
 
 /** Un paso pendiente vence a las 2 horas: después, el mensaje se clasifica como si no hubiera paso. */
@@ -43,12 +44,17 @@ export interface IntentChoiceStep extends PendingStep {
   occurredAt: string;
 }
 
-/** Reporte recibido, pendiente del intérprete (bloque B3). */
+/**
+ * Reporte en borrador esperando respuesta: `field` = la pregunta hecha (una cosa a la vez) o null si se mostró el resumen
+ * y se espera *sí* o una corrección. Sin `draft` (paso del marcador anterior): se interpreta `text` de nuevo.
+ */
 export interface ReportDraftStep extends PendingStep {
   kind: "report_draft";
   text: string;
   occurredAt: string;
   audio?: { id: string; mimeType: string } | null;
+  draft?: ReportDraft;
+  field?: DraftField | null;
 }
 
 export function isExpired(step: PendingStep, now: Date): boolean {

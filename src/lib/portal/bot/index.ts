@@ -9,11 +9,13 @@
  *
  * `cancelar` llega aquí primero: borra el paso pendiente del portal y devuelve false (el cotizador cancela lo suyo).
  */
+import type { MessageLogEntry } from "../../store/types";
 import type { InboundMessage } from "../../whatsapp/webhook";
 import { getPortalStore } from "../store";
 import { digits } from "../store/shared";
 import type { PortalStore, PortalUser } from "../store/types";
-import { companyKey, findCompanies } from "./companies";
+import { mentionsKnownCompany } from "./companies";
+import "./report";
 import { comingSoon } from "./commands";
 import { getPendingHandler, getPortalCommand, handleReport, registerPendingHandler, type PortalContext } from "./registry";
 import { classifyIntent, isCancel, isQuoterCommand, parsePortalCommand, textSignals, type Intent } from "./router";
@@ -21,6 +23,8 @@ import { clearPending, getPending, setPending, type IntentChoiceStep, type Pendi
 import { fold } from "../../tyre/brands";
 
 export { classifyIntent, parsePortalCommand } from "./router";
+export { mentionedCompanies, mentionsKnownCompany } from "./companies";
+export { configureReportBot } from "./report";
 export { handleReport, registerCompanyAction, registerPendingHandler, registerPortalCommand, setReportHandler, type PortalContext } from "./registry";
 export { noConfigReply } from "./commands/portal";
 
@@ -43,6 +47,10 @@ export interface PortalRouteInput {
   env?: Record<string, string | undefined>;
   now?: Date;
   log?: (msg: string) => void;
+  /** Descarga de medios (notas de voz). Opcional: sin él, Graph API perezosa desde el entorno (ver bot/report.ts). */
+  downloadMedia?: (mediaId: string) => Promise<{ data: Buffer; mimeType: string; fileName?: string }>;
+  /** Registro en `messages` (transcripciones). Opcional: sin él, getStore().logMessage. */
+  logMessage?: (entry: MessageLogEntry) => Promise<void>;
 }
 
 /** Compatibilidad con la fase A. */
@@ -63,27 +71,6 @@ function occurredAt(msg: InboundMessage, now: Date): Date {
   // timestamp del webhook en segundos; se descarta si es absurdo (tests usan "1") o futuro
   if (Number.isFinite(ts) && ts > 1_500_000_000 && ts * 1000 <= now.getTime() + 60_000) return new Date(ts * 1000);
   return now;
-}
-
-const STOP = new Set(["para", "que", "con", "los", "las", "del", "una", "uno", "por", "como", "pero", "hoy", "ayer", "manana", "esta", "este", "todo", "bien", "hola", "gracias", "buenos", "dias", "tardes", "noches", "favor", "ellos", "ella", "quiere", "quieren", "dijo", "dice"]);
-
-/** El texto nombra una empresa del padrón (n-gramas de 1 a 3 palabras que coinciden con una razón social sin S.A.C.). */
-export async function mentionsKnownCompany(store: PortalStore, text: string, maxQueries = 12): Promise<boolean> {
-  const words = fold(text).split(" ").filter(Boolean);
-  const grams: string[] = [];
-  for (let n = 3; n >= 1; n--) {
-    for (let i = 0; i + n <= words.length; i++) {
-      const g = words.slice(i, i + n);
-      if (STOP.has(g[0]) || STOP.has(g[g.length - 1])) continue;
-      if (n === 1 && (g[0].length < 4 || /^\d+$/.test(g[0]))) continue;
-      grams.push(g.join(" "));
-    }
-  }
-  for (const g of [...new Set(grams)].slice(0, maxQueries)) {
-    const { rows } = await findCompanies(store, g, 5);
-    if (rows.some((c) => companyKey(c.razonSocial) === g)) return true;
-  }
-  return false;
 }
 
 /** Respuesta a "¿cotización o reporte?". */
@@ -184,6 +171,8 @@ export async function routePortal(input: PortalRouteInput): Promise<boolean> {
     env: input.env ?? process.env,
     now,
     log,
+    downloadMedia: input.downloadMedia,
+    logMessage: input.logMessage,
   };
   const base = { text, hasMedia, mediaType: msg.type, state: quoteStep, isPortalUser: true, forwarded: msg.forwarded, mentionsKnownCompany: mentions };
   let intent: Intent = classifyIntent({ ...base, pendingPortalStep: live });

@@ -254,17 +254,18 @@ describe("comandos del portal por WhatsApp", () => {
 });
 
 describe("reportes, ambigüedad y pasos pendientes", () => {
-  it("texto de reporte -> marcador del intérprete y paso pendiente con el texto", async () => {
+  it("texto de reporte -> borrador con resumen y paso pendiente (empresa del padrón aunque no sea del vendedor)", async () => {
     await bot.handle(text(FRANK, "Visité Expreso Norteño, me atendió el jefe de flota"));
-    expect(last()).toContain(REPORT_PLACEHOLDER);
-    expect(last()).toContain("«Visité Expreso Norteño, me atendió el jefe de flota»");
+    expect(last()).toContain("*Reporte de visita* — EXPRESO NORTEÑO");
+    expect(last()).toContain("¿Está bien? Responde *sí* o corrige");
     const p = await getPending(portal, FRANK, new Date());
-    expect(p).toMatchObject({ kind: "report_draft", text: "Visité Expreso Norteño, me atendió el jefe de flota" });
+    expect(p).toMatchObject({ kind: "report_draft", text: "Visité Expreso Norteño, me atendió el jefe de flota", field: null });
   });
 
-  it("nombrar una empresa conocida cuenta como reporte", async () => {
+  it("nombrar una empresa conocida cuenta como reporte (sin tipo claro: pregunta una cosa)", async () => {
     await bot.handle(text(FRANK, "expreso norteño revisa el lunes"));
-    expect(last()).toContain(REPORT_PLACEHOLDER);
+    expect(last()).toBe("¿Fue una *visita*, una *llamada* o solo una *nota*?");
+    expect((await getPending(portal, FRANK, new Date()))?.kind).toBe("report_draft");
   });
 
   it("nota de voz de un usuario del portal -> reporte (no 'no leo audios')", async () => {

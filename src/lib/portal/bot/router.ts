@@ -14,7 +14,8 @@
  *  6. Audio de un usuario del portal -> report (el bloque de voz lo transcribe); de otro número -> passthrough.
  *     Otros adjuntos -> passthrough (salvo comando con adjunto, p. ej. `oc` con la orden de compra).
  *  7. idle, usuario del portal: señales fuertes de cotización (medida, "x4", correo, dscto, margen, "cotizar"...) sin
- *     verbos de reporte -> quote; con verbos de reporte ("visité", "llamé", "me reuní"...) -> ambiguous. Sin señales
+ *     verbos de reporte -> quote; con verbos de reporte ("visité", "llamé", "me reuní"...) -> ambiguous, salvo que la única
+ *     señal sea la palabra "cotización" ("quedamos en mandarle la cotización") -> report. Sin señales
  *     fuertes de cotización: verbos de reporte -> report; palabras de reporte débiles (gerente, interesados, empresa
  *     conocida...) -> report, o ambiguous si además hay señales débiles de pedido (para, cliente, necesito, una marca).
  *     Cualquier otro caso -> passthrough.
@@ -159,6 +160,17 @@ export function textSignals(text: string, mentionsKnownCompany = false): Signals
   return { strongQuote, weakQuote, strongReport, weakReport };
 }
 
+const QUOTE_WORD_RE = /\b(?:cotiza|cotizar|cotizame|cotízame|cotización|cotizacion|me cotizas)\b/gi;
+
+/** La única señal fuerte de pedido es la palabra "cotización"/"cotizar". */
+export function quoteWordOnly(text: string): boolean {
+  const t = text ?? "";
+  if (!QUOTE_WORD_RE.test(t)) return false;
+  QUOTE_WORD_RE.lastIndex = 0;
+  const rest = t.replace(QUOTE_WORD_RE, " ");
+  return findTyreSizes(t).length === 0 && !STRONG_QUOTE_RE.test(rest) && !looksLikePriceMessage(t);
+}
+
 /** Forma clara de cotización (para decidir si un mensaje deja un paso pendiente del portal). */
 export function looksLikeQuote(text: string): boolean {
   return textSignals(text).strongQuote;
@@ -201,6 +213,9 @@ export function classifyIntent(input: ClassifyInput): Intent {
   if (!input.isPortalUser) return sig.strongQuote ? "quote" : "passthrough";
   if (isQuoterCommand(text)) return "passthrough";
 
+  // "visité X, quedamos en mandarle la cotización": la palabra sola (sin medida, cantidad, correo ni precio) con un verbo
+  // de reporte es un reporte, no un pedido
+  if (sig.strongQuote && sig.strongReport && quoteWordOnly(text)) return "report";
   if (sig.strongQuote) return sig.strongReport ? "ambiguous" : "quote";
   if (sig.strongReport) return "report";
   if (sig.weakReport) return sig.weakQuote ? "ambiguous" : "report";
