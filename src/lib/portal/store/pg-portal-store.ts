@@ -500,6 +500,11 @@ export class PgPortalStore implements PortalStore {
     return r.count;
   }
 
+  async countSales(): Promise<{ total: number; demo: number }> {
+    const [r] = await this.sql`select count(*)::int as total, count(*) filter (where is_demo)::int as demo from sales`;
+    return { total: Number(r?.total ?? 0), demo: Number(r?.demo ?? 0) };
+  }
+
   async salesByRuc(ruc: string, since?: Date | IsoDate): Promise<Sale[]> {
     const rows = since === undefined
       ? await this.sql`select *, fecha::text as fecha from sales where ruc = ${digits(ruc)} order by fecha desc, id desc`

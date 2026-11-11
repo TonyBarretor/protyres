@@ -219,6 +219,8 @@ export interface Participation {
 export interface SalesRepo {
   insertSales(rows: SaleInput[]): Promise<number>;
   deleteDemoSales(): Promise<number>;
+  /** Ventas guardadas: total y cuántas son demo (pantalla "Subir ventas"). */
+  countSales(): Promise<{ total: number; demo: number }>;
   /** Ventas del RUC desde `since` (inclusive), la más reciente primero. */
   salesByRuc(ruc: string, since?: Date | IsoDate): Promise<Sale[]>;
   /** RUC -> neumáticos vendidos desde `since`; solo trae los RUC con ventas. */

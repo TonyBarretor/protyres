@@ -151,7 +151,10 @@ describe("JsonPortalStore — ventas y participación", () => {
     ]);
 
     expect((await store.salesByRuc("20100000002", "2026-01-01")).map((s) => s.fecha)).toEqual(["2026-10-01", "2026-01-15"]);
+    const before = await store.countSales();
+    expect(before.demo).toBe(1);
     expect(await store.deleteDemoSales()).toBe(1);
+    expect(await store.countSales()).toEqual({ total: before.total - 1, demo: 0 });
     expect(await store.participation(["20100000003"], "2025-11-11")).toEqual({ "20100000003": { cantidad: 4, demo: false } });
   });
 });

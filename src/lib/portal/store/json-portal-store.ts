@@ -477,6 +477,12 @@ export class JsonPortalStore implements PortalStore {
     return removed;
   }
 
+  async countSales(): Promise<{ total: number; demo: number }> {
+    let demo = 0;
+    for (const s of this.sales) if (s.isDemo) demo++;
+    return { total: this.sales.length, demo };
+  }
+
   async salesByRuc(ruc: string, since?: Date | IsoDate): Promise<Sale[]> {
     const from = since === undefined ? "" : toIsoDate(since);
     return (this.salesByRucIdx.get(digits(ruc)) ?? [])
