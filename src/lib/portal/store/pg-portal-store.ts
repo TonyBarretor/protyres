@@ -37,6 +37,7 @@ import type {
   OpportunityInput,
   OpportunityPatch,
   Participation,
+  PortalConversation,
   PortalSession,
   PortalStore,
   PortalUser,
@@ -774,5 +775,28 @@ export class PgPortalStore implements PortalStore {
     if (filter.to) conds.push(sql`starts_at < ${filter.to}`);
     const rows = await sql`select * from appointments where ${where(sql, conds)} order by starts_at asc, id asc`;
     return rows.map(toAppointment);
+  }
+
+  // ── conversación del bot ──
+
+  async getPortalConversation(phone: string): Promise<PortalConversation | null> {
+    const key = digits(phone);
+    if (!key) return null;
+    const [r] = await this.sql`select * from portal_conversations where phone = ${key}`;
+    if (!r) return null;
+    const state = typeof r.state === "string" ? (JSON.parse(r.state) as Record<string, unknown>) : ((r.state as Record<string, unknown> | null) ?? {});
+    return { phone: String(r.phone), state, updatedAt: date(r.updated_at)! };
+  }
+
+  async setPortalConversation(phone: string, state: Record<string, unknown> | null): Promise<void> {
+    const key = digits(phone);
+    if (!key) return;
+    if (!state || Object.keys(state).length === 0) {
+      await this.sql`delete from portal_conversations where phone = ${key}`;
+      return;
+    }
+    await this.sql`
+      insert into portal_conversations (phone, state, updated_at) values (${key}, ${this.sql.json(state as postgres.JSONValue)}::jsonb, now())
+      on conflict (phone) do update set state = excluded.state, updated_at = now()`;
   }
 }

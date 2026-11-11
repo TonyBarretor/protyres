@@ -17,6 +17,12 @@ export function portalStorePath(): string {
  */
 export async function getPortalStore(): Promise<PortalStore> {
   if (shared) return shared;
+  // En vitest nunca se lee data/ ni la base: sin store inyectado ni PORTAL_STORE_PATH explícito, uno vacío en memoria
+  // (los tests del cotizador usan el número real de Frank y no deben depender de los datos locales).
+  if (process.env.VITEST && !process.env.PORTAL_STORE_PATH) {
+    shared = JsonPortalStore.memory();
+    return shared;
+  }
   if (process.env.DATABASE_URL && process.env.PORTAL_STORE !== "json") {
     const { PgPortalStore } = await import("./pg-portal-store");
     shared = PgPortalStore.connect(process.env.DATABASE_URL);

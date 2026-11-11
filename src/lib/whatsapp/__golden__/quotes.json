@@ -1,0 +1,370 @@
+{
+  "script": {
+    "quotes": [
+      "Michelin 11R22.5 XZE2+ x4 para Transportes ABC, juan@abc.com",
+      "ok",
+      "precio 480",
+      "sí",
+      "295/80R22.5 x2 para Transportes ABC, juan@abc.com",
+      "1b",
+      "cancelar",
+      "Michelin 11R22.5 XZE2+ x2, juan@abc.com",
+      "ok",
+      "enviar",
+      "295/80R22.5 x2 cliente Pedro",
+      "2",
+      "pedro@mail.com",
+      "cancelar"
+    ],
+    "freeText": [
+      "Visité Transportes ABC, necesitan 295/80R22.5 x4",
+      "cancelar",
+      "llamé a Juan de Transportes ABC, dice que mañana confirma",
+      "hola"
+    ]
+  },
+  "noUser": [
+    [
+      {
+        "kind": "text",
+        "body": "🆕 Cotización nueva · Transportes ABC\nEntendí:\nMichelin 11R22.5 XZE2+ x4 · Transportes ABC · juan@abc.com\n\n*1.* Michelin 11R22.5 XZE2+ x4 → elegido *a*\n  *a)* 🚚 Llantas del Sur · sin stock · Michelin XZE2+ 11R22.5\n      *US$ 457.70* (costo US$ 398.00 Llantas del Sur, 01/10)\n      ⚠️ precio de hace 40 días\n\nTransportes ABC · juan@abc.com\n\nResponde *ok* para cotizar con las opciones *a*, o elige: *1b* (ítem 1, opción b), *b x4* (opción b, 4 unidades), *a x2, b x8* (dos opciones del mismo ítem). También: *quitar 2*, *precio 3 4.50*, *aplicación 2 MIXT DEL*, *agregar 11R22.5 x2*, *dscto 15*, *margen 10*, *con igv*, *cancelar*."
+      }
+    ],
+    [
+      {
+        "kind": "text",
+        "body": "Estimados señores Transportes ABC\nAdjunto la cotización COT-0001:\n• 4 × Michelin XZE2+ 11R22.5 – US$ 457.70 c/u\nTotal: US$ 1,830.80 + IGV\nValidez: 7 días\nQuedo atento a cualquier consulta.\nFrank Melek Rodríguez Mirano · 360 by Professional Tyres · 955 344 340"
+      },
+      {
+        "kind": "document",
+        "fileName": "Cotizacion 26 - 0001.pdf",
+        "caption": "",
+        "mimeType": "application/pdf",
+        "sha256": "f9b07709c3316367ccfbd31af48ec6203bfbff296e28c31444848d1254697c76"
+      },
+      {
+        "kind": "text",
+        "body": "*COT-0001* · Transportes ABC\n4 × XZE2+ @ US$ 457.70\nTotal US$ 1,830.80 (sin IGV) · Fotos 0/1\nsin foto: Michelin XZE2+ → mándame la imagen con el texto *foto Michelin XZE2+*\n\nReenvía al cliente el texto y el PDF. O responde *enviar* (correo), *agregar …*, *precio 2 250*, *cancelar*.\n\n📧 *Para:* juan@abc.com\n*Asunto:* Cotización COT-0001 – Michelin 11R22.5\n\nEstimados señores de Transportes ABC,\n\nGracias por su consulta. Adjunto la cotización COT-0001 (precios no incluyen IGV 18%):\n\n• Michelin XZE2+ 11R22.5 — 4 x US$ 457.70 = US$ 1,830.80\n\nTotal: US$ 1,830.80 (precios no incluyen IGV 18%)\n\nValidez de la oferta: 7 días (hasta el 17/11/2026).\nProducto a pedido: entrega sujeta a disponibilidad del proveedor.\n\nQuedo atento a cualquier consulta.\n\nSaludos cordiales,\nFrank Melek Rodríguez Mirano\nKey Account Manager\n360 by Professional Tyres\nCel. 955 344 340 · frank.rodriguez@360tyres.pe\n\n⚠️ Falta en el PDF: *atención: Sr. Pérez*, *dirección: Av. … , Lima*\n📋 Pago: — · Plazo: — · Entrega: — · Validez: 7 días _(cambia con *pago: letras*, *plazo: 45 días*, *entrega: inmediata*)_"
+      }
+    ],
+    [
+      {
+        "kind": "text",
+        "body": "Estimados señores Transportes ABC\nAdjunto la cotización COT-0001:\n• 4 × Michelin XZE2+ 11R22.5 – US$ 480.00 c/u\nTotal: US$ 1,920.00 + IGV\nValidez: 7 días\nQuedo atento a cualquier consulta.\nFrank Melek Rodríguez Mirano · 360 by Professional Tyres · 955 344 340"
+      },
+      {
+        "kind": "document",
+        "fileName": "Cotizacion 26 - 0001.pdf",
+        "caption": "",
+        "mimeType": "application/pdf",
+        "sha256": "1b7844fc224a865b406c32511d75c194fc7f90c0689cc055a044b376aa8d3d6c"
+      },
+      {
+        "kind": "text",
+        "body": "*COT-0001* · Transportes ABC\n4 × XZE2+ @ US$ 480.00 (precio manual)\nTotal US$ 1,920.00 (sin IGV) · Fotos 0/1\nsin foto: Michelin XZE2+ → mándame la imagen con el texto *foto Michelin XZE2+*\n\nReenvía al cliente el texto y el PDF. O responde *enviar* (correo), *agregar …*, *precio 2 250*, *cancelar*.\n\nTransportes ABC\n1. Michelin XZE2+ 11R22.5 x4 @ US$ 480.00 (precio manual)\nPago: — · Plazo: — · Entrega: —\nTotal US$ 1,920.00 sin IGV\n\n📧 *Para:* juan@abc.com\n*Asunto:* Cotización COT-0001 – Michelin 11R22.5\n\nEstimados señores de Transportes ABC,\n\nGracias por su consulta. Adjunto la cotización COT-0001 (precios no incluyen IGV 18%):\n\n• Michelin XZE2+ 11R22.5 — 4 x US$ 480.00 = US$ 1,920.00\n\nTotal: US$ 1,920.00 (precios no incluyen IGV 18%)\n\nValidez de la oferta: 7 días (hasta el 17/11/2026).\n\nQuedo atento a cualquier consulta.\n\nSaludos cordiales,\nFrank Melek Rodríguez Mirano\nKey Account Manager\n360 by Professional Tyres\nCel. 955 344 340 · frank.rodriguez@360tyres.pe\n\n⚠️ Falta en el PDF: *atención: Sr. Pérez*, *dirección: Av. … , Lima*\n📋 Pago: — · Plazo: — · Entrega: — · Validez: 7 días _(cambia con *pago: letras*, *plazo: 45 días*, *entrega: inmediata*)_"
+      }
+    ],
+    [
+      {
+        "kind": "text",
+        "body": "Enviado ✔ Cotización COT-0001 a juan@abc.com."
+      },
+      {
+        "kind": "email",
+        "body": "COT-0001 -> juan@abc.com [Cotizacion 26 - 0001.pdf] Cotización COT-0001 – Michelin 11R22.5"
+      }
+    ],
+    [
+      {
+        "kind": "text",
+        "body": "🆕 Cotización nueva · Transportes ABC\nEntendí:\n295/80R22.5 x2 · Transportes ABC · juan@abc.com\n\n*1.* 295/80R22.5 x2 → elegido *a*\n  *a)* 🚚 Llantas del Sur · stock 6 · Bridgestone M840 295/80R22.5\n      *US$ 462.30* (costo US$ 402.00 Llantas del Sur, 01/10)\n      ⚠️ precio de hace 40 días\n  *b)* 🚚 Llantas del Sur · stock 20 · Michelin X MULTI Z 295/80R22.5\n      *US$ 471.50* (costo US$ 410.00 Llantas del Sur, 01/10)\n      ⚠️ precio de hace 40 días\n  *c)* 🚚 Llantas del Sur · stock 8 · Michelin X MULTI D 295/80R22.5\n      *US$ 489.33* (costo US$ 425.50 Llantas del Sur, 01/10)\n      ⚠️ precio de hace 40 días\n\nTransportes ABC · juan@abc.com\n\nResponde *ok* para cotizar con las opciones *a*, o elige: *1b* (ítem 1, opción b), *b x4* (opción b, 4 unidades), *a x2, b x8* (dos opciones del mismo ítem). También: *quitar 2*, *precio 3 4.50*, *aplicación 2 MIXT DEL*, *agregar 11R22.5 x2*, *dscto 15*, *margen 10*, *con igv*, *cancelar*."
+      }
+    ],
+    [
+      {
+        "kind": "text",
+        "body": "Estimados señores Transportes ABC\nAdjunto la cotización COT-0002:\n• 2 × Michelin X MULTI Z 295/80R22.5 – US$ 471.50 c/u\nTotal: US$ 943.00 + IGV\nValidez: 7 días\nQuedo atento a cualquier consulta.\nFrank Melek Rodríguez Mirano · 360 by Professional Tyres · 955 344 340"
+      },
+      {
+        "kind": "document",
+        "fileName": "Cotizacion 26 - 0002.pdf",
+        "caption": "",
+        "mimeType": "application/pdf",
+        "sha256": "25e314f8dc821d79150a27eb463498540fb516c3983df4725422cb084b1eaec9"
+      },
+      {
+        "kind": "text",
+        "body": "*COT-0002* · Transportes ABC\n2 × X MULTI Z @ US$ 471.50\nTotal US$ 943.00 (sin IGV) · Fotos 0/1\nsin foto: Michelin X MULTI Z → mándame la imagen con el texto *foto Michelin X MULTI Z*\n\nReenvía al cliente el texto y el PDF. O responde *enviar* (correo), *agregar …*, *precio 2 250*, *cancelar*.\n\n📧 *Para:* juan@abc.com\n*Asunto:* Cotización COT-0002 – Michelin 295/80R22.5\n\nEstimados señores de Transportes ABC,\n\nGracias por su consulta. Adjunto la cotización COT-0002 (precios no incluyen IGV 18%):\n\n• Michelin X MULTI Z 295/80R22.5 — 2 x US$ 471.50 = US$ 943.00\n\nTotal: US$ 943.00 (precios no incluyen IGV 18%)\n\nValidez de la oferta: 7 días (hasta el 17/11/2026).\nProducto a pedido: entrega sujeta a disponibilidad del proveedor.\n\nQuedo atento a cualquier consulta.\n\nSaludos cordiales,\nFrank Melek Rodríguez Mirano\nKey Account Manager\n360 by Professional Tyres\nCel. 955 344 340 · frank.rodriguez@360tyres.pe\n\n⚠️ Falta en el PDF: *atención: Sr. Pérez*, *dirección: Av. … , Lima*\n📋 Pago: — · Plazo: — · Entrega: — · Validez: 7 días _(cambia con *pago: letras*, *plazo: 45 días*, *entrega: inmediata*)_"
+      }
+    ],
+    [
+      {
+        "kind": "text",
+        "body": "Listo, cancelado. ¿Qué cotizamos?"
+      }
+    ],
+    [
+      {
+        "kind": "text",
+        "body": "🆕 Cotización nueva\n💲 precio 480 como en la 001 a este cliente (escribe *precio 1 457.70* para volver a lista)\nEntendí:\nMichelin 11R22.5 XZE2+ x2 · juan@abc.com\n\n*1.* Michelin 11R22.5 XZE2+ x2 → elegido *a* · precio manual US$ 480.00\n  *a)* 🚚 Llantas del Sur · sin stock · Michelin XZE2+ 11R22.5\n      *US$ 457.70* (costo US$ 398.00 Llantas del Sur, 01/10)\n      ⚠️ precio de hace 40 días\n\njuan@abc.com\n\nResponde *ok* para cotizar con las opciones *a*, o elige: *1b* (ítem 1, opción b), *b x4* (opción b, 4 unidades), *a x2, b x8* (dos opciones del mismo ítem). También: *quitar 2*, *precio 3 4.50*, *aplicación 2 MIXT DEL*, *agregar 11R22.5 x2*, *dscto 15*, *margen 10*, *con igv*, *cancelar*."
+      }
+    ],
+    [
+      {
+        "kind": "text",
+        "body": "Estimados señores\nAdjunto la cotización COT-0003:\n• 2 × Michelin XZE2+ 11R22.5 – US$ 480.00 c/u\nTotal: US$ 960.00 + IGV\nValidez: 7 días\nQuedo atento a cualquier consulta.\nFrank Melek Rodríguez Mirano · 360 by Professional Tyres · 955 344 340"
+      },
+      {
+        "kind": "document",
+        "fileName": "Cotizacion 26 - 0003.pdf",
+        "caption": "",
+        "mimeType": "application/pdf",
+        "sha256": "54a6dabaf6b5a8e8d43a245c8dbdd9e09cf939a5b95c27867bd20469559270b5"
+      },
+      {
+        "kind": "text",
+        "body": "*COT-0003*\n2 × XZE2+ @ US$ 480.00 (precio manual)\nTotal US$ 960.00 (sin IGV) · Fotos 0/1\nsin foto: Michelin XZE2+ → mándame la imagen con el texto *foto Michelin XZE2+*\n\nReenvía al cliente el texto y el PDF. O responde *enviar* (correo), *agregar …*, *precio 2 250*, *cancelar*.\n\n📧 *Para:* juan@abc.com\n*Asunto:* Cotización COT-0003 – Michelin 11R22.5\n\nEstimado cliente,\n\nGracias por su consulta. Adjunto la cotización COT-0003 (precios no incluyen IGV 18%):\n\n• Michelin XZE2+ 11R22.5 — 2 x US$ 480.00 = US$ 960.00\n\nTotal: US$ 960.00 (precios no incluyen IGV 18%)\n\nValidez de la oferta: 7 días (hasta el 17/11/2026).\n\nQuedo atento a cualquier consulta.\n\nSaludos cordiales,\nFrank Melek Rodríguez Mirano\nKey Account Manager\n360 by Professional Tyres\nCel. 955 344 340 · frank.rodriguez@360tyres.pe\n\n⚠️ Falta en el PDF: *atención: Sr. Pérez*, *dirección: Av. … , Lima*\n📋 Pago: — · Plazo: — · Entrega: — · Validez: 7 días _(cambia con *pago: letras*, *plazo: 45 días*, *entrega: inmediata*)_"
+      }
+    ],
+    [
+      {
+        "kind": "text",
+        "body": "Enviado ✔ Cotización COT-0003 a juan@abc.com."
+      },
+      {
+        "kind": "email",
+        "body": "COT-0003 -> juan@abc.com [Cotizacion 26 - 0003.pdf] Cotización COT-0003 – Michelin 11R22.5"
+      }
+    ],
+    [
+      {
+        "kind": "text",
+        "body": "🆕 Cotización nueva · Pedro\nEntendí:\n295/80R22.5 x2 · Pedro\n\n*1.* 295/80R22.5 x2 → elegido *a*\n  *a)* 🚚 Llantas del Sur · stock 6 · Bridgestone M840 295/80R22.5\n      *US$ 462.30* (costo US$ 402.00 Llantas del Sur, 01/10)\n      ⚠️ precio de hace 40 días\n  *b)* 🚚 Llantas del Sur · stock 20 · Michelin X MULTI Z 295/80R22.5\n      *US$ 471.50* (costo US$ 410.00 Llantas del Sur, 01/10)\n      ⚠️ precio de hace 40 días\n  *c)* 🚚 Llantas del Sur · stock 8 · Michelin X MULTI D 295/80R22.5\n      *US$ 489.33* (costo US$ 425.50 Llantas del Sur, 01/10)\n      ⚠️ precio de hace 40 días\n\nPedro\n\nResponde *ok* para cotizar con las opciones *a*, o elige: *1b* (ítem 1, opción b), *b x4* (opción b, 4 unidades), *a x2, b x8* (dos opciones del mismo ítem). También: *quitar 2*, *precio 3 4.50*, *aplicación 2 MIXT DEL*, *agregar 11R22.5 x2*, *dscto 15*, *margen 10*, *con igv*, *cancelar*."
+      }
+    ],
+    [
+      {
+        "kind": "text",
+        "body": "Estimado/a Pedro\nAdjunto la cotización COT-0004:\n• 2 × Michelin X MULTI Z 295/80R22.5 – US$ 471.50 c/u\nTotal: US$ 943.00 + IGV\nValidez: 7 días\nQuedo atento a cualquier consulta.\nFrank Melek Rodríguez Mirano · 360 by Professional Tyres · 955 344 340"
+      },
+      {
+        "kind": "document",
+        "fileName": "Cotizacion 26 - 0004.pdf",
+        "caption": "",
+        "mimeType": "application/pdf",
+        "sha256": "e0e126717a77a089a5bf38edf5acc8f2a2243a5a5f519e0ab6fbe3c08b08c505"
+      },
+      {
+        "kind": "text",
+        "body": "*COT-0004* · Pedro\n2 × X MULTI Z @ US$ 471.50\nTotal US$ 943.00 (sin IGV) · Fotos 0/1\nsin foto: Michelin X MULTI Z → mándame la imagen con el texto *foto Michelin X MULTI Z*\n\nEl pedido no tiene correo del cliente. *¿A qué correo lo envío?* (o *cancelar*)"
+      }
+    ],
+    [
+      {
+        "kind": "text",
+        "body": "Estimado/a Pedro\nAdjunto la cotización COT-0004:\n• 2 × Michelin X MULTI Z 295/80R22.5 – US$ 471.50 c/u\nTotal: US$ 943.00 + IGV\nValidez: 7 días\nQuedo atento a cualquier consulta.\nFrank Melek Rodríguez Mirano · 360 by Professional Tyres · 955 344 340"
+      },
+      {
+        "kind": "document",
+        "fileName": "Cotizacion 26 - 0004.pdf",
+        "caption": "",
+        "mimeType": "application/pdf",
+        "sha256": "e0e126717a77a089a5bf38edf5acc8f2a2243a5a5f519e0ab6fbe3c08b08c505"
+      },
+      {
+        "kind": "text",
+        "body": "*COT-0004* · Pedro\n2 × X MULTI Z @ US$ 471.50\nTotal US$ 943.00 (sin IGV) · Fotos 0/1\nsin foto: Michelin X MULTI Z → mándame la imagen con el texto *foto Michelin X MULTI Z*\n\nReenvía al cliente el texto y el PDF. O responde *enviar* (correo), *agregar …*, *precio 2 250*, *cancelar*.\n\nPedro\n1. Michelin X MULTI Z 295/80R22.5 x2 @ US$ 471.50\nPago: — · Plazo: — · Entrega: —\nTotal US$ 943.00 sin IGV\n\n📧 *Para:* pedro@mail.com\n*Asunto:* Cotización COT-0004 – Michelin 295/80R22.5\n\nEstimado/a Pedro,\n\nGracias por su consulta. Adjunto la cotización COT-0004 (precios no incluyen IGV 18%):\n\n• Michelin X MULTI Z 295/80R22.5 — 2 x US$ 471.50 = US$ 943.00\n\nTotal: US$ 943.00 (precios no incluyen IGV 18%)\n\nValidez de la oferta: 7 días (hasta el 17/11/2026).\nProducto a pedido: entrega sujeta a disponibilidad del proveedor.\n\nQuedo atento a cualquier consulta.\n\nSaludos cordiales,\nFrank Melek Rodríguez Mirano\nKey Account Manager\n360 by Professional Tyres\nCel. 955 344 340 · frank.rodriguez@360tyres.pe\n\n⚠️ Falta en el PDF: *dirección: Av. … , Lima*\n📋 Pago: — · Plazo: — · Entrega: — · Validez: 7 días _(cambia con *pago: letras*, *plazo: 45 días*, *entrega: inmediata*)_"
+      }
+    ],
+    [
+      {
+        "kind": "text",
+        "body": "Listo, cancelado. ¿Qué cotizamos?"
+      }
+    ],
+    [
+      {
+        "kind": "text",
+        "body": "🆕 Cotización nueva\nEntendí:\n295/80R22.5 VISITE TRANSPORTES ABC NECESITAN x4\n\n*1.* 295/80R22.5 VISITE TRANSPORTES ABC NECESITAN x4 → elegido *a*\n  *a)* 🚚 Llantas del Sur · stock 6 · Bridgestone M840 295/80R22.5\n      *US$ 462.30* (costo US$ 402.00 Llantas del Sur, 01/10)\n      ⚠️ modelo M840, precio de hace 40 días\n  *b)* 🚚 Llantas del Sur · stock 20 · Michelin X MULTI Z 295/80R22.5\n      *US$ 471.50* (costo US$ 410.00 Llantas del Sur, 01/10)\n      ⚠️ modelo X MULTI Z, precio de hace 40 días\n  *c)* 🚚 Llantas del Sur · stock 8 · Michelin X MULTI D 295/80R22.5\n      *US$ 489.33* (costo US$ 425.50 Llantas del Sur, 01/10)\n      ⚠️ modelo X MULTI D, precio de hace 40 días\n\nResponde *ok* para cotizar con las opciones *a*, o elige: *1b* (ítem 1, opción b), *b x4* (opción b, 4 unidades), *a x2, b x8* (dos opciones del mismo ítem). También: *quitar 2*, *precio 3 4.50*, *aplicación 2 MIXT DEL*, *agregar 11R22.5 x2*, *dscto 15*, *margen 10*, *con igv*, *cancelar*."
+      }
+    ],
+    [
+      {
+        "kind": "text",
+        "body": "Listo, cancelado. ¿Qué cotizamos?"
+      }
+    ],
+    [
+      {
+        "kind": "text",
+        "body": "No encontré ninguna medida ni producto en el pedido. Escríbela como *11R22.5*, *295/80R22.5* o *1000R20*.\nEjemplo: _Fenixway 295/80R22.5 Valor 87 x4 para Transportes ABC, juan@abc.com_"
+      }
+    ],
+    [
+      {
+        "kind": "text",
+        "body": "*Cotizador Protyres* 🛞\n\nEscríbeme lo que pide el cliente, o reenvíame su mensaje / correo:\n_Fenixway 295/80R22.5 Valor 87 x4 para Transportes ABC, juan@abc.com, dscto 10%_\n\nTe muestro por cada ítem las opciones: stock propio (precio de lista menos descuento) y proveedores (Steel, JCH…).\nRespondes *ok* para aceptar las primeras opciones, o eliges: *1b 2a*, *quitar 3*, *precio 3 4.50*, *dscto 15*, *margen 10*, *con igv*, *agregar 11R22.5 x2* (otra llanta).\nCon un solo ítem no hace falta su número: *cantidad 8* (o *x8*), *precio 254* (o *a 254*), *quitar*, *aplicación MIXT*, *foto*.\nDespués de cada cambio te muestro cómo queda (cliente, ítems con precio, condiciones, total); *opciones* vuelve a mostrar las opciones.\nLuego revisas el PDF y escribes *enviar*.\nOtro pedido con una cotización abierta: te pregunto si es un *cambio*, una llanta para *agregar* o una *nueva* (otro cliente: empiezo una nueva).\n\nProsegur: *prosegur ayacucho 1830* y debajo una línea por llanta (*2 v99*); *contrato prosegur* muestra sus precios. Va también su Excel «Formato Proveedores».\nNúmero y archivos: *número 451*, *nombre: …*, *archivo: Nombre*, *archivo excel: Nombre*.\nHistorial: *cotizaciones*, *cotizaciones Prosegur*, *reenviar 451*.\n\nPara cargar precios: reenvíame la lista del proveedor (mensaje, PDF, Excel o foto) y te preguntaré de quién es (un proveedor nuevo lo registra el administrador con *proveedor nuevo: Nombre*). Las cotizaciones no se cargan como listas.\n\nFotos: *foto 1b* te manda la foto de una opción; para guardar una foto nueva envíame la imagen con el texto *foto Fenixway Valor 87*.\n\nComandos: *ayuda*, *cancelar*, *proveedores*, *precios 11R22.5*, *stock 295/80R22.5*"
+      }
+    ]
+  ],
+  "portalUser": [
+    [
+      {
+        "kind": "text",
+        "body": "🆕 Cotización nueva · Transportes ABC\nEntendí:\nMichelin 11R22.5 XZE2+ x4 · Transportes ABC · juan@abc.com\n\n*1.* Michelin 11R22.5 XZE2+ x4 → elegido *a*\n  *a)* 🚚 Llantas del Sur · sin stock · Michelin XZE2+ 11R22.5\n      *US$ 457.70* (costo US$ 398.00 Llantas del Sur, 01/10)\n      ⚠️ precio de hace 40 días\n\nTransportes ABC · juan@abc.com\n\nResponde *ok* para cotizar con las opciones *a*, o elige: *1b* (ítem 1, opción b), *b x4* (opción b, 4 unidades), *a x2, b x8* (dos opciones del mismo ítem). También: *quitar 2*, *precio 3 4.50*, *aplicación 2 MIXT DEL*, *agregar 11R22.5 x2*, *dscto 15*, *margen 10*, *con igv*, *cancelar*."
+      }
+    ],
+    [
+      {
+        "kind": "text",
+        "body": "Estimados señores Transportes ABC\nAdjunto la cotización COT-0001:\n• 4 × Michelin XZE2+ 11R22.5 – US$ 457.70 c/u\nTotal: US$ 1,830.80 + IGV\nValidez: 7 días\nQuedo atento a cualquier consulta.\nFrank Melek Rodríguez Mirano · 360 by Professional Tyres · 955 344 340"
+      },
+      {
+        "kind": "document",
+        "fileName": "Cotizacion 26 - 0001.pdf",
+        "caption": "",
+        "mimeType": "application/pdf",
+        "sha256": "f9b07709c3316367ccfbd31af48ec6203bfbff296e28c31444848d1254697c76"
+      },
+      {
+        "kind": "text",
+        "body": "*COT-0001* · Transportes ABC\n4 × XZE2+ @ US$ 457.70\nTotal US$ 1,830.80 (sin IGV) · Fotos 0/1\nsin foto: Michelin XZE2+ → mándame la imagen con el texto *foto Michelin XZE2+*\n\nReenvía al cliente el texto y el PDF. O responde *enviar* (correo), *agregar …*, *precio 2 250*, *cancelar*.\n\n📧 *Para:* juan@abc.com\n*Asunto:* Cotización COT-0001 – Michelin 11R22.5\n\nEstimados señores de Transportes ABC,\n\nGracias por su consulta. Adjunto la cotización COT-0001 (precios no incluyen IGV 18%):\n\n• Michelin XZE2+ 11R22.5 — 4 x US$ 457.70 = US$ 1,830.80\n\nTotal: US$ 1,830.80 (precios no incluyen IGV 18%)\n\nValidez de la oferta: 7 días (hasta el 17/11/2026).\nProducto a pedido: entrega sujeta a disponibilidad del proveedor.\n\nQuedo atento a cualquier consulta.\n\nSaludos cordiales,\nFrank Melek Rodríguez Mirano\nKey Account Manager\n360 by Professional Tyres\nCel. 955 344 340 · frank.rodriguez@360tyres.pe\n\n⚠️ Falta en el PDF: *atención: Sr. Pérez*, *dirección: Av. … , Lima*\n📋 Pago: — · Plazo: — · Entrega: — · Validez: 7 días _(cambia con *pago: letras*, *plazo: 45 días*, *entrega: inmediata*)_"
+      }
+    ],
+    [
+      {
+        "kind": "text",
+        "body": "Estimados señores Transportes ABC\nAdjunto la cotización COT-0001:\n• 4 × Michelin XZE2+ 11R22.5 – US$ 480.00 c/u\nTotal: US$ 1,920.00 + IGV\nValidez: 7 días\nQuedo atento a cualquier consulta.\nFrank Melek Rodríguez Mirano · 360 by Professional Tyres · 955 344 340"
+      },
+      {
+        "kind": "document",
+        "fileName": "Cotizacion 26 - 0001.pdf",
+        "caption": "",
+        "mimeType": "application/pdf",
+        "sha256": "1b7844fc224a865b406c32511d75c194fc7f90c0689cc055a044b376aa8d3d6c"
+      },
+      {
+        "kind": "text",
+        "body": "*COT-0001* · Transportes ABC\n4 × XZE2+ @ US$ 480.00 (precio manual)\nTotal US$ 1,920.00 (sin IGV) · Fotos 0/1\nsin foto: Michelin XZE2+ → mándame la imagen con el texto *foto Michelin XZE2+*\n\nReenvía al cliente el texto y el PDF. O responde *enviar* (correo), *agregar …*, *precio 2 250*, *cancelar*.\n\nTransportes ABC\n1. Michelin XZE2+ 11R22.5 x4 @ US$ 480.00 (precio manual)\nPago: — · Plazo: — · Entrega: —\nTotal US$ 1,920.00 sin IGV\n\n📧 *Para:* juan@abc.com\n*Asunto:* Cotización COT-0001 – Michelin 11R22.5\n\nEstimados señores de Transportes ABC,\n\nGracias por su consulta. Adjunto la cotización COT-0001 (precios no incluyen IGV 18%):\n\n• Michelin XZE2+ 11R22.5 — 4 x US$ 480.00 = US$ 1,920.00\n\nTotal: US$ 1,920.00 (precios no incluyen IGV 18%)\n\nValidez de la oferta: 7 días (hasta el 17/11/2026).\n\nQuedo atento a cualquier consulta.\n\nSaludos cordiales,\nFrank Melek Rodríguez Mirano\nKey Account Manager\n360 by Professional Tyres\nCel. 955 344 340 · frank.rodriguez@360tyres.pe\n\n⚠️ Falta en el PDF: *atención: Sr. Pérez*, *dirección: Av. … , Lima*\n📋 Pago: — · Plazo: — · Entrega: — · Validez: 7 días _(cambia con *pago: letras*, *plazo: 45 días*, *entrega: inmediata*)_"
+      }
+    ],
+    [
+      {
+        "kind": "text",
+        "body": "Enviado ✔ Cotización COT-0001 a juan@abc.com."
+      },
+      {
+        "kind": "email",
+        "body": "COT-0001 -> juan@abc.com [Cotizacion 26 - 0001.pdf] Cotización COT-0001 – Michelin 11R22.5"
+      }
+    ],
+    [
+      {
+        "kind": "text",
+        "body": "🆕 Cotización nueva · Transportes ABC\nEntendí:\n295/80R22.5 x2 · Transportes ABC · juan@abc.com\n\n*1.* 295/80R22.5 x2 → elegido *a*\n  *a)* 🚚 Llantas del Sur · stock 6 · Bridgestone M840 295/80R22.5\n      *US$ 462.30* (costo US$ 402.00 Llantas del Sur, 01/10)\n      ⚠️ precio de hace 40 días\n  *b)* 🚚 Llantas del Sur · stock 20 · Michelin X MULTI Z 295/80R22.5\n      *US$ 471.50* (costo US$ 410.00 Llantas del Sur, 01/10)\n      ⚠️ precio de hace 40 días\n  *c)* 🚚 Llantas del Sur · stock 8 · Michelin X MULTI D 295/80R22.5\n      *US$ 489.33* (costo US$ 425.50 Llantas del Sur, 01/10)\n      ⚠️ precio de hace 40 días\n\nTransportes ABC · juan@abc.com\n\nResponde *ok* para cotizar con las opciones *a*, o elige: *1b* (ítem 1, opción b), *b x4* (opción b, 4 unidades), *a x2, b x8* (dos opciones del mismo ítem). También: *quitar 2*, *precio 3 4.50*, *aplicación 2 MIXT DEL*, *agregar 11R22.5 x2*, *dscto 15*, *margen 10*, *con igv*, *cancelar*."
+      }
+    ],
+    [
+      {
+        "kind": "text",
+        "body": "Estimados señores Transportes ABC\nAdjunto la cotización COT-0002:\n• 2 × Michelin X MULTI Z 295/80R22.5 – US$ 471.50 c/u\nTotal: US$ 943.00 + IGV\nValidez: 7 días\nQuedo atento a cualquier consulta.\nFrank Melek Rodríguez Mirano · 360 by Professional Tyres · 955 344 340"
+      },
+      {
+        "kind": "document",
+        "fileName": "Cotizacion 26 - 0002.pdf",
+        "caption": "",
+        "mimeType": "application/pdf",
+        "sha256": "25e314f8dc821d79150a27eb463498540fb516c3983df4725422cb084b1eaec9"
+      },
+      {
+        "kind": "text",
+        "body": "*COT-0002* · Transportes ABC\n2 × X MULTI Z @ US$ 471.50\nTotal US$ 943.00 (sin IGV) · Fotos 0/1\nsin foto: Michelin X MULTI Z → mándame la imagen con el texto *foto Michelin X MULTI Z*\n\nReenvía al cliente el texto y el PDF. O responde *enviar* (correo), *agregar …*, *precio 2 250*, *cancelar*.\n\n📧 *Para:* juan@abc.com\n*Asunto:* Cotización COT-0002 – Michelin 295/80R22.5\n\nEstimados señores de Transportes ABC,\n\nGracias por su consulta. Adjunto la cotización COT-0002 (precios no incluyen IGV 18%):\n\n• Michelin X MULTI Z 295/80R22.5 — 2 x US$ 471.50 = US$ 943.00\n\nTotal: US$ 943.00 (precios no incluyen IGV 18%)\n\nValidez de la oferta: 7 días (hasta el 17/11/2026).\nProducto a pedido: entrega sujeta a disponibilidad del proveedor.\n\nQuedo atento a cualquier consulta.\n\nSaludos cordiales,\nFrank Melek Rodríguez Mirano\nKey Account Manager\n360 by Professional Tyres\nCel. 955 344 340 · frank.rodriguez@360tyres.pe\n\n⚠️ Falta en el PDF: *atención: Sr. Pérez*, *dirección: Av. … , Lima*\n📋 Pago: — · Plazo: — · Entrega: — · Validez: 7 días _(cambia con *pago: letras*, *plazo: 45 días*, *entrega: inmediata*)_"
+      }
+    ],
+    [
+      {
+        "kind": "text",
+        "body": "Listo, cancelado. ¿Qué cotizamos?"
+      }
+    ],
+    [
+      {
+        "kind": "text",
+        "body": "🆕 Cotización nueva\n💲 precio 480 como en la 001 a este cliente (escribe *precio 1 457.70* para volver a lista)\nEntendí:\nMichelin 11R22.5 XZE2+ x2 · juan@abc.com\n\n*1.* Michelin 11R22.5 XZE2+ x2 → elegido *a* · precio manual US$ 480.00\n  *a)* 🚚 Llantas del Sur · sin stock · Michelin XZE2+ 11R22.5\n      *US$ 457.70* (costo US$ 398.00 Llantas del Sur, 01/10)\n      ⚠️ precio de hace 40 días\n\njuan@abc.com\n\nResponde *ok* para cotizar con las opciones *a*, o elige: *1b* (ítem 1, opción b), *b x4* (opción b, 4 unidades), *a x2, b x8* (dos opciones del mismo ítem). También: *quitar 2*, *precio 3 4.50*, *aplicación 2 MIXT DEL*, *agregar 11R22.5 x2*, *dscto 15*, *margen 10*, *con igv*, *cancelar*."
+      }
+    ],
+    [
+      {
+        "kind": "text",
+        "body": "Estimados señores\nAdjunto la cotización COT-0003:\n• 2 × Michelin XZE2+ 11R22.5 – US$ 480.00 c/u\nTotal: US$ 960.00 + IGV\nValidez: 7 días\nQuedo atento a cualquier consulta.\nFrank Melek Rodríguez Mirano · 360 by Professional Tyres · 955 344 340"
+      },
+      {
+        "kind": "document",
+        "fileName": "Cotizacion 26 - 0003.pdf",
+        "caption": "",
+        "mimeType": "application/pdf",
+        "sha256": "54a6dabaf6b5a8e8d43a245c8dbdd9e09cf939a5b95c27867bd20469559270b5"
+      },
+      {
+        "kind": "text",
+        "body": "*COT-0003*\n2 × XZE2+ @ US$ 480.00 (precio manual)\nTotal US$ 960.00 (sin IGV) · Fotos 0/1\nsin foto: Michelin XZE2+ → mándame la imagen con el texto *foto Michelin XZE2+*\n\nReenvía al cliente el texto y el PDF. O responde *enviar* (correo), *agregar …*, *precio 2 250*, *cancelar*.\n\n📧 *Para:* juan@abc.com\n*Asunto:* Cotización COT-0003 – Michelin 11R22.5\n\nEstimado cliente,\n\nGracias por su consulta. Adjunto la cotización COT-0003 (precios no incluyen IGV 18%):\n\n• Michelin XZE2+ 11R22.5 — 2 x US$ 480.00 = US$ 960.00\n\nTotal: US$ 960.00 (precios no incluyen IGV 18%)\n\nValidez de la oferta: 7 días (hasta el 17/11/2026).\n\nQuedo atento a cualquier consulta.\n\nSaludos cordiales,\nFrank Melek Rodríguez Mirano\nKey Account Manager\n360 by Professional Tyres\nCel. 955 344 340 · frank.rodriguez@360tyres.pe\n\n⚠️ Falta en el PDF: *atención: Sr. Pérez*, *dirección: Av. … , Lima*\n📋 Pago: — · Plazo: — · Entrega: — · Validez: 7 días _(cambia con *pago: letras*, *plazo: 45 días*, *entrega: inmediata*)_"
+      }
+    ],
+    [
+      {
+        "kind": "text",
+        "body": "Enviado ✔ Cotización COT-0003 a juan@abc.com."
+      },
+      {
+        "kind": "email",
+        "body": "COT-0003 -> juan@abc.com [Cotizacion 26 - 0003.pdf] Cotización COT-0003 – Michelin 11R22.5"
+      }
+    ],
+    [
+      {
+        "kind": "text",
+        "body": "🆕 Cotización nueva · Pedro\nEntendí:\n295/80R22.5 x2 · Pedro\n\n*1.* 295/80R22.5 x2 → elegido *a*\n  *a)* 🚚 Llantas del Sur · stock 6 · Bridgestone M840 295/80R22.5\n      *US$ 462.30* (costo US$ 402.00 Llantas del Sur, 01/10)\n      ⚠️ precio de hace 40 días\n  *b)* 🚚 Llantas del Sur · stock 20 · Michelin X MULTI Z 295/80R22.5\n      *US$ 471.50* (costo US$ 410.00 Llantas del Sur, 01/10)\n      ⚠️ precio de hace 40 días\n  *c)* 🚚 Llantas del Sur · stock 8 · Michelin X MULTI D 295/80R22.5\n      *US$ 489.33* (costo US$ 425.50 Llantas del Sur, 01/10)\n      ⚠️ precio de hace 40 días\n\nPedro\n\nResponde *ok* para cotizar con las opciones *a*, o elige: *1b* (ítem 1, opción b), *b x4* (opción b, 4 unidades), *a x2, b x8* (dos opciones del mismo ítem). También: *quitar 2*, *precio 3 4.50*, *aplicación 2 MIXT DEL*, *agregar 11R22.5 x2*, *dscto 15*, *margen 10*, *con igv*, *cancelar*."
+      }
+    ],
+    [
+      {
+        "kind": "text",
+        "body": "Estimado/a Pedro\nAdjunto la cotización COT-0004:\n• 2 × Michelin X MULTI Z 295/80R22.5 – US$ 471.50 c/u\nTotal: US$ 943.00 + IGV\nValidez: 7 días\nQuedo atento a cualquier consulta.\nFrank Melek Rodríguez Mirano · 360 by Professional Tyres · 955 344 340"
+      },
+      {
+        "kind": "document",
+        "fileName": "Cotizacion 26 - 0004.pdf",
+        "caption": "",
+        "mimeType": "application/pdf",
+        "sha256": "e0e126717a77a089a5bf38edf5acc8f2a2243a5a5f519e0ab6fbe3c08b08c505"
+      },
+      {
+        "kind": "text",
+        "body": "*COT-0004* · Pedro\n2 × X MULTI Z @ US$ 471.50\nTotal US$ 943.00 (sin IGV) · Fotos 0/1\nsin foto: Michelin X MULTI Z → mándame la imagen con el texto *foto Michelin X MULTI Z*\n\nEl pedido no tiene correo del cliente. *¿A qué correo lo envío?* (o *cancelar*)"
+      }
+    ],
+    [
+      {
+        "kind": "text",
+        "body": "Estimado/a Pedro\nAdjunto la cotización COT-0004:\n• 2 × Michelin X MULTI Z 295/80R22.5 – US$ 471.50 c/u\nTotal: US$ 943.00 + IGV\nValidez: 7 días\nQuedo atento a cualquier consulta.\nFrank Melek Rodríguez Mirano · 360 by Professional Tyres · 955 344 340"
+      },
+      {
+        "kind": "document",
+        "fileName": "Cotizacion 26 - 0004.pdf",
+        "caption": "",
+        "mimeType": "application/pdf",
+        "sha256": "e0e126717a77a089a5bf38edf5acc8f2a2243a5a5f519e0ab6fbe3c08b08c505"
+      },
+      {
+        "kind": "text",
+        "body": "*COT-0004* · Pedro\n2 × X MULTI Z @ US$ 471.50\nTotal US$ 943.00 (sin IGV) · Fotos 0/1\nsin foto: Michelin X MULTI Z → mándame la imagen con el texto *foto Michelin X MULTI Z*\n\nReenvía al cliente el texto y el PDF. O responde *enviar* (correo), *agregar …*, *precio 2 250*, *cancelar*.\n\nPedro\n1. Michelin X MULTI Z 295/80R22.5 x2 @ US$ 471.50\nPago: — · Plazo: — · Entrega: —\nTotal US$ 943.00 sin IGV\n\n📧 *Para:* pedro@mail.com\n*Asunto:* Cotización COT-0004 – Michelin 295/80R22.5\n\nEstimado/a Pedro,\n\nGracias por su consulta. Adjunto la cotización COT-0004 (precios no incluyen IGV 18%):\n\n• Michelin X MULTI Z 295/80R22.5 — 2 x US$ 471.50 = US$ 943.00\n\nTotal: US$ 943.00 (precios no incluyen IGV 18%)\n\nValidez de la oferta: 7 días (hasta el 17/11/2026).\nProducto a pedido: entrega sujeta a disponibilidad del proveedor.\n\nQuedo atento a cualquier consulta.\n\nSaludos cordiales,\nFrank Melek Rodríguez Mirano\nKey Account Manager\n360 by Professional Tyres\nCel. 955 344 340 · frank.rodriguez@360tyres.pe\n\n⚠️ Falta en el PDF: *dirección: Av. … , Lima*\n📋 Pago: — · Plazo: — · Entrega: — · Validez: 7 días _(cambia con *pago: letras*, *plazo: 45 días*, *entrega: inmediata*)_"
+      }
+    ],
+    [
+      {
+        "kind": "text",
+        "body": "Listo, cancelado. ¿Qué cotizamos?"
+      }
+    ]
+  ]
+}

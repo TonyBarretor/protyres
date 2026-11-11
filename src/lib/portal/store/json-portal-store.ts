@@ -38,6 +38,7 @@ import type {
   OpportunityInput,
   OpportunityPatch,
   Participation,
+  PortalConversation,
   PortalSession,
   PortalStore,
   PortalUser,
@@ -70,6 +71,7 @@ interface FileData {
   stageHistory: StageHistoryEntry[];
   activities: Activity[];
   appointments: Appointment[];
+  portalConversations?: PortalConversation[];
 }
 
 /** Campos Date por colección (JSON los guarda como texto ISO). */
@@ -84,6 +86,7 @@ const DATE_FIELDS: Record<string, string[]> = {
   stageHistory: ["enteredAt", "leftAt"],
   activities: ["occurredAt", "createdAt"],
   appointments: ["startsAt", "createdAt"],
+  portalConversations: ["updatedAt"],
 };
 
 const DEBOUNCE_MS = 300;
@@ -110,6 +113,7 @@ export class JsonPortalStore implements PortalStore {
   private stageHistoryRows: StageHistoryEntry[] = [];
   private activities: Activity[] = [];
   private appointments = new Map<number, Appointment>();
+  private portalConversations = new Map<string, PortalConversation>();
   /** companyId -> marcas normalizadas (se invalida al cambiar la flota). */
   private marcasCache: Map<number, Set<string>> | null = null;
   private timer: NodeJS.Timeout | null = null;
@@ -153,6 +157,7 @@ export class JsonPortalStore implements PortalStore {
     this.stageHistoryRows = revive("stageHistory", raw.stageHistory);
     this.activities = revive("activities", raw.activities);
     for (const a of revive("appointments", raw.appointments)) this.appointments.set(a.id, a);
+    for (const c of revive("portalConversations", raw.portalConversations)) this.portalConversations.set(c.phone, c);
   }
 
   private snapshot(): FileData {
@@ -170,6 +175,7 @@ export class JsonPortalStore implements PortalStore {
       stageHistory: this.stageHistoryRows,
       activities: this.activities,
       appointments: [...this.appointments.values()],
+      portalConversations: [...this.portalConversations.values()],
     };
   }
 
@@ -825,5 +831,23 @@ export class JsonPortalStore implements PortalStore {
       )
       .map(copy)
       .sort((a, b) => time(a.startsAt) - time(b.startsAt) || a.id - b.id);
+  }
+
+  // ── conversación del bot ──
+
+  async getPortalConversation(phone: string): Promise<PortalConversation | null> {
+    const c = this.portalConversations.get(digits(phone));
+    return c ? { ...c, state: structuredClone(c.state) } : null;
+  }
+
+  async setPortalConversation(phone: string, state: Record<string, unknown> | null): Promise<void> {
+    const key = digits(phone);
+    if (!key) return;
+    if (!state || Object.keys(state).length === 0) {
+      if (this.portalConversations.delete(key)) this.changed();
+      return;
+    }
+    this.portalConversations.set(key, { phone: key, state: JSON.parse(JSON.stringify(state)) as Record<string, unknown>, updatedAt: new Date() });
+    this.changed();
   }
 }

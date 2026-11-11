@@ -273,6 +273,12 @@ const STATEMENTS = [
   `create index if not exists appointments_company_idx on appointments (company_id)`,
   `alter table sales add column if not exists source_ref text`,
   `create index if not exists sales_source_ref_idx on sales (source_ref)`,
+  // fase B: paso pendiente del portal en la conversación de WhatsApp (separado de `conversations` del cotizador)
+  `create table if not exists portal_conversations (
+    phone text primary key,
+    state jsonb not null default '{}'::jsonb,
+    updated_at timestamptz not null default now()
+  )`,
 ];
 
 /** Desde aquí empiezan las sentencias del portal: antes de ejecutarlas se pasa la guardia (migrate-guard.ts). */

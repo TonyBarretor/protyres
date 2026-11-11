@@ -19,7 +19,7 @@ import { ingestWhatsAppText, looksLikePriceMessage } from "../ingest/whatsapp-te
 import { loadProvidersConfig, resolveSourceOptions } from "../ingest/sources";
 import { extractPricesWithLLM, llmAvailable } from "../llm/extract-prices";
 import { parseRequestWithLLM } from "../llm/parse-request";
-import { handlePortalCommand } from "../portal/bot";
+import { routePortal } from "../portal/bot";
 import type { PortalStore } from "../portal/store/types";
 import type { IngestResult } from "../ingest/types";
 import { fold, findBrandInText } from "../tyre/brands";
@@ -386,14 +386,17 @@ export class BotHandler {
     await this.client.logInbound(msg, state.quoteNumber);
 
     try {
+      // portal comercial: único enganche (src/lib/portal/bot, router.ts decide); false = sigue el cotizador sin cambios.
+      // Va primero para que `cancelar` limpie también el paso del portal y una nota de voz de un usuario del portal no
+      // reciba "no leo audios"; con el cotizador a mitad de un flujo solo entran comandos explícitos del portal.
+      const quoteStep = pendingProfile(state) ? "profile" : state.step;
+      if (await routePortal({ from, text, msg, quoteStep, reply: (body) => this.reply(from, body), sendDocument: (file, name, caption, mime) => this.client.sendDocument(from, file, name, caption, mime), requote: (m) => this.handle(m), store: this.deps.portalStore, log: (m) => this.log(m) })) return;
       if (["ayuda", "help", "?", "hola", "menu", "inicio"].includes(cmd)) return this.reply(from, HELP);
       if (["cancelar", "cancel", "salir", "reset"].includes(cmd)) {
         await this.store.setConversation(from, null);
         if (state.step === "need_provider") return this.reply(from, "Cancelado. No guardé esa lista.");
         return this.reply(from, "Listo, cancelado. ¿Qué cotizamos?");
       }
-      // portal comercial: único enganche (src/lib/portal/bot); false = sigue el cotizador
-      if (!msg.media && (await handlePortalCommand({ from, text, reply: (body) => this.reply(from, body), store: this.deps.portalStore, log: (m) => this.log(m) }))) return;
       if (cmd === "proveedores" || cmd === "listas") return this.replyProviders(from);
       if (state.step !== "review_quote" && /^(precios?|stock)\s+/.test(cmd) && findTyreSizes(text).length > 0) return this.replyPrices(from, text.replace(/^(precios?|stock)\s+/i, ""));
       // history and contract commands work in any state and leave the conversation as it is

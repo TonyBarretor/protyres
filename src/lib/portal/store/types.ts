@@ -483,7 +483,27 @@ export interface AppointmentRepo {
   listAppointments(filter?: AppointmentFilter): Promise<Appointment[]>;
 }
 
-export interface PortalStore extends CompanyRepo, FleetRepo, SalesRepo, UserRepo, ContactRepo, OpportunityRepo, ActivityRepo, AppointmentRepo {
+// ── Conversación del bot (fase B) ──
+
+/**
+ * Estado del portal en la conversación de WhatsApp de un usuario (paso pendiente: elegir empresa de una lista, confirmar
+ * un reporte, preguntas del pedido...). Separado del estado del cotizador (`conversations`): el bot del portal lo
+ * interpreta (src/lib/portal/bot/state.ts); el store solo lo guarda como JSON.
+ */
+export interface PortalConversation {
+  /** Solo dígitos. */
+  phone: string;
+  state: Record<string, unknown>;
+  updatedAt: Date;
+}
+
+export interface PortalConversationRepo {
+  getPortalConversation(phone: string): Promise<PortalConversation | null>;
+  /** null (o {}) borra el estado. */
+  setPortalConversation(phone: string, state: Record<string, unknown> | null): Promise<void>;
+}
+
+export interface PortalStore extends CompanyRepo, FleetRepo, SalesRepo, UserRepo, ContactRepo, OpportunityRepo, ActivityRepo, AppointmentRepo, PortalConversationRepo {
   /** Escribe lo pendiente (JSON); no-op en Postgres. Los CLI la llaman antes de salir. */
   flush(): Promise<void>;
   close(): Promise<void>;
