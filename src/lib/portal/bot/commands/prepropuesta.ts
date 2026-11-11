@@ -2,8 +2,9 @@
  * `prepropuesta <empresa>` -> la pre-propuesta en PDF (4 páginas) como documento SIN leyenda, luego un mensaje aparte
  * ("📄 Pre-propuesta para *EMPRESA* lista: …") y la actividad `prepropuesta` en la empresa. Varias coincidencias ->
  * lista numerada y sigue al elegir. Si falta un dato obligatorio (p. ej. el vendedor no está en config/pilot.json), lo dice
- * y no manda nada.
+ * y no manda nada. Solo la genera el vendedor dueño (o cualquier vendedor si no tiene dueño), supervisor o admin.
  */
+import { canGeneratePrepropuesta } from "../../auth/permissions";
 import { generatePrepropuesta, logPrepropuesta, PrepropuestaError } from "../../prepropuesta";
 import type { Company } from "../../store/types";
 import { fmtInt } from "../../ui/labels";
@@ -13,6 +14,10 @@ import { registerCompanyAction, registerPortalCommand, type PortalContext } from
 export const PREPROPUESTA_USAGE = "Escríbelo así: *prepropuesta ZBUSS* (o con el RUC).";
 
 async function sendPrepropuesta(ctx: PortalContext, company: Company): Promise<void> {
+  if (!canGeneratePrepropuesta(ctx.user, company)) {
+    await ctx.reply(`⚠️ La pre-propuesta de *${company.razonSocial}* solo la genera su vendedor dueño, un supervisor o un admin.`);
+    return;
+  }
   let gen;
   try {
     gen = await generatePrepropuesta(ctx.store, company.id, ctx.user, ctx.now);

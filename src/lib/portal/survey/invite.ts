@@ -1,8 +1,8 @@
 /**
  * Invitación automática a la encuesta (trabajo "encuestas" del cron diario, bloque C3).
  *
- * Interruptor SURVEY_AUTO (apagado por defecto): si no es "1" o "true", o si la corrida es dryRun, no crea ni envía nada;
- * solo informa qué empresas se encuestarían. Encendido, por cada empresa elegida (select.ts):
+ * Interruptor SURVEY_AUTO (apagado por defecto): si no es "1" o "true", si la corrida es dryRun, o en modo prueba
+ * (EMAIL_REDIRECT_TO puesto), no crea ni envía nada; solo informa qué empresas se encuestarían. Encendido, por cada empresa elegida (select.ts):
  *   1. Vuelve a comprobar que su última venta sea real (no demo): con ventas demo no se escribe a nadie.
  *   2. Crea la encuesta solo si la empresa no tiene otra en los últimos meses (atómico en el store): correr el cron dos
  *      veces el mismo día no crea dos encuestas.
@@ -10,14 +10,16 @@
  *   4. Si no (o el correo falla): tarea para el vendedor dueño (actividad `tarea` y, si su oportunidad abierta no tiene
  *      próxima acción, esa tarea como próxima acción) y el enlace por WhatsApp para que lo reenvíe él. Fuera de la ventana
  *      de 24 h queda como aviso pendiente (lo ve al escribir al bot). Solo a usuarios internos (el dueño en el portal).
- *   Si no se pudo entregar por ningún lado, la encuesta queda vencida sin enviar y no cuenta: se reintenta otro día.
+ *   Si no se pudo entregar por ningún lado (o la entrega lanzó), la encuesta queda vencida sin enviar y no cuenta: se
+ *   reintenta otro día. Si el proceso se corta entre crearla y entregarla, queda pendiente sin enviar: pasado 1 día
+ *   tampoco cuenta (surveyCounts).
  */
 import { isWindowError } from "../bot/commands/cita";
 import { addNotice } from "../bot/state";
 import { loadPortalConfig, type PortalSurveysConfig } from "../config";
 import type { Company, Contact, PortalStore, PortalUser } from "../store/types";
 import type { WhatsAppClient } from "../../whatsapp/client";
-import { isEmail, sendSurveyEmail, surveyEmailReady, type SurveyEmailSender } from "./email";
+import { isEmail, sendSurveyEmail, surveyEmailReady, surveyRedirectTo, type SurveyEmailSender } from "./email";
 import { forwardText, invitationEmail, sellerNotice, sellerTaskText, type InvitationInput } from "./messages";
 import { isRealSale, lastRealSale, selectSurveyCandidates } from "./select";
 import { createSurveyLink, type CreatedSurvey } from "./service";
@@ -108,6 +110,16 @@ export async function deliverByEmail(
   return { sent: true, to: res.to };
 }
 
+/** La entrega lanzó: si la encuesta nunca salió, queda vencida (no cuenta); si ya salió, se deja (el enlace sigue válido). */
+export async function expireIfUndelivered(store: PortalStore, id: number): Promise<void> {
+  try {
+    const cur = await store.getSurvey(id);
+    if (!cur || cur.enviadaAt === null) await store.expireSurvey(id);
+  } catch {
+    // la base falló otra vez: queda pendiente sin enviar y pasado 1 día no cuenta (surveyCounts)
+  }
+}
+
 export type InviteStatus = "correo" | "whatsapp_vendedor" | "aviso_pendiente" | "ya_encuestada" | "sin_canal" | "demo" | "error" | "simulado";
 
 export interface InviteResult {
@@ -122,6 +134,10 @@ export interface SurveyInvitesReport {
   /** SURVEY_AUTO encendido. */
   auto: boolean;
   dryRun: boolean;
+  /** EMAIL_REDIRECT_TO puesto: solo informa, como dryRun. */
+  modoPrueba: boolean;
+  /** Por qué no se creó ni envió nada (apagado, dryRun o modo prueba); ausente si corrió de verdad. */
+  nota?: string;
   candidatas: number;
   correos: number;
   whatsappVendedor: number;
@@ -155,11 +171,21 @@ export async function runSurveyInvites(input: RunSurveyInvitesInput): Promise<Su
   const auto = surveyAutoEnabled(env);
   const dryRun = input.dryRun ?? false;
   const sel = await selectSurveyCandidates(store, now, cfg);
-  const report: SurveyInvitesReport = { auto, dryRun, candidatas: sel.candidates.length, correos: 0, whatsappVendedor: 0, avisosPendientes: 0, yaEncuestadas: 0, sinCanal: 0, errores: 0, resultados: [] };
+  const redirect = surveyRedirectTo(env);
+  const modoPrueba = redirect !== null;
+  const report: SurveyInvitesReport = { auto, dryRun, modoPrueba, candidatas: sel.candidates.length, correos: 0, whatsappVendedor: 0, avisosPendientes: 0, yaEncuestadas: 0, sinCanal: 0, errores: 0, resultados: [] };
 
-  if (!auto || dryRun) {
-    // solo informa: no crea encuestas ni escribe a nadie
-    for (const c of sel.candidates) report.resultados.push({ companyId: c.company.id, razonSocial: c.company.razonSocial, ultimaVenta: c.lastSale.fecha, status: "simulado" });
+  if (!auto || dryRun || modoPrueba) {
+    // solo informa: no crea encuestas ni escribe a nadie (en modo prueba tampoco: no se marca a nadie como encuestado)
+    report.nota = !auto
+      ? "SURVEY_AUTO apagado: solo informa."
+      : dryRun
+        ? "dryRun: solo informa."
+        : `Modo prueba (EMAIL_REDIRECT_TO=${redirect}): solo informa; no se crean encuestas ni se envía nada.`;
+    if (auto && !dryRun) log(`encuestas: ${report.nota}`);
+    const detalle = modoPrueba && auto && !dryRun ? "modo prueba" : undefined;
+    for (const c of sel.candidates)
+      report.resultados.push({ companyId: c.company.id, razonSocial: c.company.razonSocial, ultimaVenta: c.lastSale.fecha, status: "simulado", ...(detalle ? { detalle } : {}) });
     return report;
   }
 
@@ -198,31 +224,32 @@ export async function runSurveyInvites(input: RunSurveyInvitesInput): Promise<Su
         continue;
       }
       const inv: InvitationInput = { razonSocial: company.razonSocial, url: created.url, expiresAt: created.survey.expiresAt, contactName: contact?.nombre ?? null, sellerName: owner?.nombre ?? null };
-      let emailError: string | undefined;
-      if (byEmail) {
-        const r = await deliverByEmail(store, company, contact!, created, inv, env, now, { sendEmail: input.sendEmail });
-        if (r.sent) {
-          report.correos++;
-          push("correo", r.to);
+      // entre crear y entregar: si algo lanza, la encuesta queda vencida sin enviar (no cuenta) y no bloquea 6 meses
+      try {
+        let emailError: string | undefined;
+        if (byEmail) {
+          const r = await deliverByEmail(store, company, contact!, created, inv, env, now, { sendEmail: input.sendEmail });
+          if (r.sent) {
+            report.correos++;
+            push("correo", r.to);
+            continue;
+          }
+          emailError = r.error;
+          log(`encuestas: no pude enviar el correo a ${company.razonSocial}: ${r.error}`);
+        }
+        if (!seller || !input.client) {
+          await store.expireSurvey(created.survey.id); // nunca se entregó: no cuenta, se reintenta otro día
+          report.errores++;
+          push("error", `correo: ${emailError ?? "no enviado"}`);
           continue;
         }
-        emailError = r.error;
-        log(`encuestas: no pude enviar el correo a ${company.razonSocial}: ${r.error}`);
-      }
-      if (!seller || !input.client) {
-        await store.expireSurvey(created.survey.id); // nunca se entregó: no cuenta, se reintenta otro día
-        report.errores++;
-        push("error", `correo: ${emailError ?? "no enviado"}`);
-        continue;
-      }
-      const motivo = emailError ? `No pude enviar el correo (${emailError}).` : contact && withEmail ? "El envío de correos aún no está configurado." : "No tenemos el correo del cliente.";
-      try {
+        const motivo = emailError ? `No pude enviar el correo (${emailError}).` : contact && withEmail ? "El envío de correos aún no está configurado." : "No tenemos el correo del cliente.";
         const st = await deliverToSeller(store, input.client, seller, company, created, inv, motivo, now, log);
         if (st === "whatsapp") report.whatsappVendedor++;
         else report.avisosPendientes++;
         push(st === "whatsapp" ? "whatsapp_vendedor" : "aviso_pendiente", seller.nombre);
       } catch (err) {
-        await store.expireSurvey(created.survey.id);
+        await expireIfUndelivered(store, created.survey.id);
         throw err;
       }
     } catch (err) {

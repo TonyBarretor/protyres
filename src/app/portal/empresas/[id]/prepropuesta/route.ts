@@ -1,10 +1,11 @@
 /**
  * GET /portal/empresas/:id/prepropuesta -> descarga la pre-propuesta en PDF ("Pre-propuesta - EMPRESA - dd-mm-aaaa.pdf")
  * firmada por el usuario de la sesión, y registra la actividad `prepropuesta` (canal portal). Botón "Generar
- * pre-propuesta" de la ficha. Sin sesión -> /portal/login. Si falta un dato obligatorio vuelve a la ficha con el aviso.
+ * pre-propuesta" de la ficha. Sin sesión -> /portal/login. Sin permiso (canGeneratePrepropuesta) vuelve a la ficha con el aviso. Si falta un dato obligatorio vuelve a la ficha con el aviso.
  */
 import { NextResponse } from "next/server";
 import { LOGIN_PATH } from "@/lib/portal/auth/constants";
+import { canGeneratePrepropuesta } from "@/lib/portal/auth/permissions";
 import { getCurrentUser } from "@/lib/portal/auth/session";
 import { generatePrepropuesta, logPrepropuesta, PrepropuestaError } from "@/lib/portal/prepropuesta";
 import { getPortalStore } from "@/lib/portal/store";
@@ -30,6 +31,11 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
   const store = await getPortalStore();
   const company = await store.getCompany(id);
   if (!company) return new Response("Empresa no encontrada.", { status: 404 });
+  if (!canGeneratePrepropuesta(user, company)) {
+    const back = new URL(`/portal/empresas/${company.id}`, req.url);
+    back.searchParams.set("error", "Solo el vendedor dueño de la empresa, un supervisor o un admin pueden generar la pre-propuesta.");
+    return NextResponse.redirect(back, 303);
+  }
   const now = new Date();
   try {
     const gen = await generatePrepropuesta(store, company.id, user, now);

@@ -923,7 +923,8 @@ export class JsonPortalStore implements PortalStore {
   async createSurvey(input: SurveyInput, opts: { onlyIfNoneSince?: Date } = {}): Promise<Survey | null> {
     // sin await entre la comprobación y la inserción: atómico en el event loop
     const since = opts.onlyIfNoneSince;
-    if (since && [...this.surveys.values()].some((s) => s.companyId === input.companyId && s.createdAt.getTime() >= since.getTime() && surveyCounts(s))) return null;
+    const now = input.createdAt ?? new Date();
+    if (since && [...this.surveys.values()].some((s) => s.companyId === input.companyId && s.createdAt.getTime() >= since.getTime() && surveyCounts(s, now))) return null;
     if ([...this.surveys.values()].some((s) => s.tokenHash === input.tokenHash)) throw new Error("createSurvey: token repetido");
     const s: Survey = {
       id: ++this.surveySeq.surveys,
@@ -936,7 +937,7 @@ export class JsonPortalStore implements PortalStore {
       enviadaAt: null,
       respondidaAt: null,
       expiresAt: input.expiresAt,
-      createdAt: input.createdAt ?? new Date(),
+      createdAt: now,
     };
     this.surveys.set(s.id, s);
     this.changed();

@@ -1,6 +1,6 @@
 /**
  * Datos variables de la pre-propuesta: la empresa (padrón MTC del store del portal), su flota por marca, las medidas
- * probables (inferidas), la participación si hay ventas (marcada DEMO si alguna es demo) y el vendedor que la genera
+ * probables (inferidas), la participación si hay ventas reales (si alguna venta es demo se omite: el PDF va al cliente) y el vendedor que la genera
  * (config/pilot.json `salespeople`, cruzado por el número de WhatsApp del usuario del portal).
  *
  * Nada se inventa: un dato opcional que falta se deja en null y su bloque o fila no se dibuja; si falta uno obligatorio
@@ -57,7 +57,8 @@ export interface PrepropuestaData {
     otras: { grupos: number; unidades: number; llantas: number | null } | null;
     medidas: SizeRow[];
   };
-  participacion: { cantidad: number; demo: boolean } | null;
+  /** null si no hay ventas o si alguna es demo (el PDF va al cliente: no se muestran cifras de prueba). */
+  participacion: { cantidad: number } | null;
   vendedor: {
     nombre: string;
     cargo: string | null;
@@ -145,7 +146,7 @@ export async function buildPrepropuestaData(store: PortalStore, companyId: numbe
       atencion: c ? `${c.nombre}${c.cargo ? `, ${c.cargo}` : ""}` : null,
     },
     flota: { filas, otras, medidas: probableSizes(groups, TOP_SIZES) },
-    participacion: p && p.cantidad > 0 ? { cantidad: p.cantidad, demo: p.demo } : null,
+    participacion: p && p.cantidad > 0 && !p.demo ? { cantidad: p.cantidad } : null,
     vendedor: salespersonForUser(salespeople, user),
   };
 }

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { PortalUser, UserRole } from "../store/types";
-import { canEditCompany, canSeeAll } from "./permissions";
+import { canEditCompany, canGeneratePrepropuesta, canSeeAll } from "./permissions";
 
 const user = (id: number, rol: UserRole, activo = true): PortalUser => ({ id, nombre: `u${id}`, whatsapp: null, rol, activo, createdAt: new Date() });
 const mine = { ownerUserId: 1 };
@@ -32,5 +32,16 @@ describe("permissions", () => {
     expect(canSeeAll(user(1, "tecnico"))).toBe(false);
     expect(canSeeAll(user(1, "admin", false))).toBe(false);
     expect(canSeeAll(null)).toBe(false);
+  });
+
+  it("canGeneratePrepropuesta: dueño, o cualquier vendedor si no tiene dueño; supervisor/admin siempre; técnico nunca", () => {
+    expect(canGeneratePrepropuesta(user(1, "vendedor"), mine)).toBe(true);
+    expect(canGeneratePrepropuesta(user(1, "vendedor"), free)).toBe(true);
+    expect(canGeneratePrepropuesta(user(1, "vendedor"), other)).toBe(false);
+    for (const rol of ["supervisor", "admin"] as const) for (const c of [mine, other, free]) expect(canGeneratePrepropuesta(user(9, rol), c)).toBe(true);
+    for (const c of [mine, other, free]) expect(canGeneratePrepropuesta(user(1, "tecnico"), c)).toBe(false);
+    expect(canGeneratePrepropuesta(user(1, "vendedor", false), mine)).toBe(false);
+    expect(canGeneratePrepropuesta(null, mine)).toBe(false);
+    expect(canGeneratePrepropuesta(user(1, "admin"), null)).toBe(false);
   });
 });

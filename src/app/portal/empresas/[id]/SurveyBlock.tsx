@@ -9,7 +9,7 @@ import { canEditCompany } from "@/lib/portal/auth/permissions";
 import { loadPortalConfig } from "@/lib/portal/config";
 import { surveyCounts } from "@/lib/portal/store/survey-shared";
 import type { Company, PortalUser, SurveyCanal, SurveyEstado } from "@/lib/portal/store/types";
-import { chooseContact, previewManualSurvey } from "@/lib/portal/survey/manual";
+import { chooseContact, manualSurveyWarnings, previewManualSurvey } from "@/lib/portal/survey/manual";
 import { forwardText } from "@/lib/portal/survey/messages";
 import { SATISFACCION_LABELS, valoraLabel } from "@/lib/portal/survey/questions";
 import { monthsBefore } from "@/lib/portal/survey/select";
@@ -73,11 +73,20 @@ export async function SurveyBlock({ company, user, searchParams }: { company: Co
   } else if (canEdit && step === "vista") {
     const wanted = Number(str(searchParams.contacto));
     const contact = chooseContact(contacts, Number.isSafeInteger(wanted) && wanted > 0 ? wanted : null);
-    const preview = previewManualSurvey(company, contact, user, cfg.expiresDays, process.env);
-    const recent = (await store.listSurveys({ companyId: company.id, since: monthsBefore(new Date(), cfg.cooldownMonths) })).find(surveyCounts);
+    const now = new Date();
+    const preview = previewManualSurvey(company, contact, user, cfg.expiresDays, process.env, now);
+    const [recent, avisos] = await Promise.all([
+      store.listSurveys({ companyId: company.id, since: monthsBefore(now, cfg.cooldownMonths) }).then((l) => l.find((x) => surveyCounts(x, now))),
+      manualSurveyWarnings(store, company, now),
+    ]);
     manual = (
       <div className="pt-stack" style={{ gap: "0.5rem", marginTop: "0.8rem" }}>
         <strong>Vista previa</strong>
+        {avisos.map((a) => (
+          <p key={a} className="pt-notice pt-small">
+            {a} Puedes enviarla igual.
+          </p>
+        ))}
         {recent && (
           <p className="pt-notice pt-small">
             Ya hay una encuesta del {formatLimaShort(recent.createdAt)} ({ESTADO[recent.estado]}). La invitación automática no repite antes de {cfg.cooldownMonths} meses.
@@ -88,6 +97,7 @@ export async function SurveyBlock({ company, user, searchParams }: { company: Co
             <p className="pt-small">
               Se enviará por <strong>correo</strong> a {preview.contact.nombre} ({preview.to}).
             </p>
+            {preview.modoPrueba && <p className="pt-notice pt-small">{preview.modoPrueba}</p>}
             <div className="pt-small pt-muted">Asunto: {preview.email.subject}</div>
             <pre className="pt-small" style={{ whiteSpace: "pre-wrap", background: "var(--bg)", padding: "0.6rem", borderRadius: 8, margin: 0, fontFamily: "inherit" }}>
               {preview.email.text}

@@ -20,3 +20,14 @@ export function canEditCompany(user: UserLike | null | undefined, company: Pick<
   if (user.rol === "vendedor") return company.ownerUserId === user.id;
   return false;
 }
+
+/**
+ * Pre-propuesta (va al cliente con la firma de quien la genera): supervisor y admin siempre; vendedor si es el dueño de la
+ * empresa o si la empresa no tiene dueño; técnico nunca.
+ */
+export function canGeneratePrepropuesta(user: UserLike | null | undefined, company: Pick<Company, "ownerUserId"> | null | undefined): boolean {
+  if (!user || !user.activo || !company) return false;
+  if (user.rol === "supervisor" || user.rol === "admin") return true;
+  if (user.rol === "vendedor") return company.ownerUserId === null || company.ownerUserId === user.id;
+  return false;
+}

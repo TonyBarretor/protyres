@@ -69,7 +69,7 @@ export async function selectSurveyCandidates(store: PortalStore, now: Date, cfg:
     const last = lastRealSale(await store.salesByRuc(company.ruc, from), today);
     if (!last || last.fecha > until || last.fecha < from) continue;
     const previous = await store.listSurveys({ companyId: company.id, since: cooldownSince });
-    if (previous.some(surveyCounts)) continue;
+    if (previous.some((s) => surveyCounts(s, now))) continue;
     out.candidates.push({ company, lastSale: last });
   }
   out.candidates.sort((a, b) => a.company.razonSocial.localeCompare(b.company.razonSocial, "es") || a.company.id - b.company.id);

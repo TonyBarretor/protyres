@@ -110,7 +110,7 @@ describe("config/prepropuesta.json", () => {
 });
 
 describe("datos y validación", () => {
-  it("arma empresa, flota top 6 + otras, medidas, participación DEMO y vendedor", async () => {
+  it("arma empresa, flota top 6 + otras, medidas, vendedor; con alguna venta demo no hay participación", async () => {
     const d = await buildPrepropuestaData(store, ids[RUC_ANDES], frank, NOW);
     expect(d.fecha).toBe("2026-11-11");
     expect(d.empresa).toMatchObject({ razonSocial: "TRANSPORTES ANDES DEL PERU S.A.C.", ruc: RUC_ANDES, unidades: 40, llantasPiso: 250, antiguedadMedia: 10, atencion: "Carlos Quispe, jefe de flota" });
@@ -118,9 +118,16 @@ describe("datos y validación", () => {
     expect(d.flota.filas[0]).toMatchObject({ marca: "VOLVO", clase: "OMNIBUS", unidades: 8, llantas: 48, anios: "2010–2017" });
     expect(d.flota.otras).toEqual({ grupos: 2, unidades: 3, llantas: 12 });
     expect(d.flota.medidas[0]).toMatchObject({ medida: "295/80R22.5", unidades: 30 });
-    expect(d.participacion).toEqual({ cantidad: 24, demo: true });
+    expect(d.participacion).toBeNull();
     expect(d.vendedor).toMatchObject({ nombre: "Vendedor de Prueba", telefono: "900 000 001", email: "vendedor.prueba@example.pe" });
     expect(validatePrepropuesta(d)).toEqual([]);
+  });
+
+  it("participación solo con ventas reales; una sola venta demo la omite entera", async () => {
+    await store.insertSales([{ fecha: "2026-10-01", ruc: RUC_ANDES_SUR, cantidad: 10, origen: "csv", isDemo: false }]);
+    expect((await buildPrepropuestaData(store, ids[RUC_ANDES_SUR], frank, NOW)).participacion).toEqual({ cantidad: 10 });
+    await store.insertSales([{ fecha: "2026-10-02", ruc: RUC_ANDES_SUR, cantidad: 2, origen: "demo", isDemo: true }]);
+    expect((await buildPrepropuestaData(store, ids[RUC_ANDES_SUR], frank, NOW)).participacion).toBeNull();
   });
 
   it("detecta campos vacíos visibles y obligatorios", async () => {
@@ -173,7 +180,61 @@ describe("PDF", () => {
     expect(text).toContain("Innova Ambiental S.A.");
     expect(text).toContain(squash(cfg.flota.nota));
     // datos de la empresa y del vendedor
-    for (const s of ["TRANSPORTES ANDES DEL PERU S.A.C.", RUC_ANDES, "Carlos Quispe", "295/80R22.5", "DEMO", "Vendedor de Prueba", "900 000 001", "vendedor.prueba@example.pe", "Página 4 de 4"]) expect(text).toContain(s);
+    for (const s of ["TRANSPORTES ANDES DEL PERU S.A.C.", RUC_ANDES, "Carlos Quispe", "295/80R22.5", "Vendedor de Prueba", "900 000 001", "vendedor.prueba@example.pe", "Página 1 de 4", "Página 4 de 4"]) expect(text).toContain(s);
+    // hay una venta demo: el bloque de participación no aparece (el PDF va al cliente)
+    expect(text).not.toContain("DEMO");
+    expect(text).not.toContain("Participación");
+  }, 30_000);
+
+  it("peor caso (6 filas + Otras, 3 medidas, participación real, textos largos): ≤ 4 páginas", async () => {
+    const largo = (s: string, n: number) => `${s} ${"X".repeat(n)}`;
+    const data: PrepropuestaData = {
+      fecha: "2026-11-11",
+      fechaTexto: "11 de noviembre de 2026",
+      empresa: {
+        id: 1,
+        razonSocial: largo("EMPRESA DE TRANSPORTES INTERPROVINCIALES Y SERVICIOS LOGISTICOS MULTIPLES DEL SUR ANDINO", 30) + " S.A.C.",
+        ruc: "20999000099",
+        sector: "Pasajeros y carga",
+        departamento: "MADRE DE DIOS",
+        unidades: 1234,
+        llantasPiso: 9876,
+        antiguedadMedia: 14,
+        atencion: "Maria Fernanda de los Angeles Huamani Quispe, jefa de mantenimiento de flota y neumaticos",
+      },
+      flota: {
+        filas: Array.from({ length: 6 }, (_, i) => ({
+          marca: largo(`MERCEDES BENZ ${i}`, 12),
+          clase: "SEMIRREMOLQUE CAMION",
+          anios: "1998–2026",
+          unidades: 200 - i,
+          llantas: 2400 - i,
+        })),
+        otras: { grupos: 37, unidades: 500, llantas: 4000 },
+        medidas: [
+          { medida: "295/80R22.5", unidades: 600, confianza: "alta" },
+          { medida: "11R22.5", unidades: 300, confianza: "media" },
+          { medida: "215/75R17.5", unidades: 100, confianza: null },
+        ],
+      },
+      participacion: { cantidad: 12345 },
+      vendedor: {
+        nombre: "Vendedor de Prueba Con Nombre Muy Largo Apellido Compuesto",
+        cargo: "Asesor Comercial Senior de Flotas Corporativas",
+        telefono: "900 000 001",
+        email: "vendedor.de.prueba.con.correo.largo@example.pe",
+        direccion: "Av. Inventada 1234, Urb. Los Jardines del Pacifico, Santiago de Surco - Lima",
+      },
+    };
+    expect(validatePrepropuesta(data)).toEqual([]);
+    const pdf = await renderPrepropuestaPdf(data);
+    const { text, pages } = await pdfPlainText(pdf);
+    expect(pages).toBeLessThanOrEqual(MAX_PAGES);
+    expect(countPdfPages(pdf)).toBe(pages);
+    expect(text).toContain(`Página ${pages} de ${pages}`);
+    expect(text).toContain("Participación");
+    expect(text).toContain("Otras (37 marca/clase)");
+    expect(text).toContain("215/75R17.5");
   }, 30_000);
 
   it("empresa sin flota ni ventas: igual ≤ 4 páginas y sin bloques vacíos", async () => {
@@ -238,6 +299,15 @@ describe("comando prepropuesta", () => {
     await send("prepropuesta 20999000011", SIN_FIRMA);
     expect(out.map((m) => m.kind)).toEqual(["text"]);
     expect(out[0].body).toMatch(/No pude generar la pre-propuesta.*teléfono del vendedor/);
+    expect((await store.listActivities({ companyId: ids[RUC_ANDES] })).some((a) => a.tipo === "prepropuesta")).toBe(false);
+  });
+
+  it("vendedor que no es dueño: no genera; sin dueño sí", async () => {
+    const otro = await store.upsertUser({ nombre: "Otro Vendedor", whatsapp: "51900000009", rol: "vendedor" });
+    await store.updateCompany(ids[RUC_ANDES], { ownerUserId: otro.id });
+    await send("prepropuesta 20999000011");
+    expect(out.map((m) => m.kind)).toEqual(["text"]);
+    expect(out[0].body).toMatch(/solo la genera su vendedor dueño/);
     expect((await store.listActivities({ companyId: ids[RUC_ANDES] })).some((a) => a.tipo === "prepropuesta")).toBe(false);
   });
 

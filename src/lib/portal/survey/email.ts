@@ -1,6 +1,8 @@
 /**
  * Envío del correo de invitación con Resend (como el cotizador, src/lib/quote/email.ts): RESEND_API_KEY, EMAIL_FROM y
- * EMAIL_REDIRECT_TO (si está, todo correo va a esa dirección: pruebas).
+ * EMAIL_REDIRECT_TO (si está, todo correo va a esa dirección: modo prueba). En modo prueba la invitación automática no
+ * crea ni envía nada (solo informa, como dryRun: no se marca a nadie como encuestado ni se gasta la ventana de 6 meses);
+ * el envío manual sí sale, redirigido, y la vista previa lo avisa.
  *
  * A diferencia del cotizador, aquí no hay modo borrador: si el remitente no está verificado no se envía y quien llama
  * cae al plan B (el vendedor reenvía el enlace por WhatsApp).
@@ -18,6 +20,16 @@ export function surveyEmailReady(env: Env = process.env): boolean {
   const from = (env.EMAIL_FROM ?? "").trim();
   if (!key || !from) return false;
   return !/@example\.(com|org|net)\b/i.test(from) && !/@resend\.dev\b/i.test(from);
+}
+
+/** Destino de EMAIL_REDIRECT_TO (modo prueba) o null. */
+export function surveyRedirectTo(env: Env = process.env): string | null {
+  return (env.EMAIL_REDIRECT_TO ?? "").trim() || null;
+}
+
+/** Modo prueba: EMAIL_REDIRECT_TO puesto. */
+export function surveyTestMode(env: Env = process.env): boolean {
+  return surveyRedirectTo(env) !== null;
 }
 
 /** Forma básica de correo (la del formulario de contactos). */
@@ -41,7 +53,7 @@ export interface SurveyEmailResult {
 export type SurveyEmailSender = (msg: SurveyEmailInput, env: Env) => Promise<SurveyEmailResult>;
 
 export const sendSurveyEmail: SurveyEmailSender = async (msg, env) => {
-  const to = (env.EMAIL_REDIRECT_TO ?? "").trim() || msg.to.trim();
+  const to = surveyRedirectTo(env) ?? msg.to.trim();
   if (!surveyEmailReady(env)) return { sent: false, to, error: "Resend no está configurado con un remitente verificado" };
   if (!isEmail(to)) return { sent: false, to, error: "correo no válido" };
   const { Resend } = await import("resend");

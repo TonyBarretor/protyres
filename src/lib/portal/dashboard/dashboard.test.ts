@@ -8,7 +8,7 @@ import type { Opportunity, PortalStore, PortalUser, SalesAggRow } from "../store
 import { assignmentToFirstCall, stageAverages, weeklyActivity } from "./activity";
 import { computeCompliance } from "./compliance";
 import { avanceLines, formatMoney } from "./format";
-import { goalForUser, loadDashboard } from "./load";
+import { ambiguousGoalKeys, goalForUser, loadDashboard } from "./load";
 import { countBusinessDays, expectedProgress, lastWeeks, limaToday, monthOf, yearOf } from "./period";
 import { computeProjection } from "./projection";
 import { topByTyres, withFleet } from "./participation";
@@ -102,9 +102,24 @@ describe("cruce del vendedor de las ventas", () => {
 
   it("meta del usuario por nombre o WhatsApp", () => {
     const goals = PortalConfigSchema.parse({ goals: { users: { frank: { monthly: 10 }, "51900000003": { monthly: 30 } } } }).goals;
-    expect(goalForUser(goals, FRANK)).toEqual({ monthly: 10, yearly: null });
-    expect(goalForUser(goals, OTRO)?.monthly).toBe(30);
-    expect(goalForUser(goals, JUAN)).toBeNull();
+    const users = [FRANK, JUAN, OTRO];
+    expect(goalForUser(goals, FRANK, users)).toEqual({ monthly: 10, yearly: null });
+    expect(goalForUser(goals, OTRO, users)?.monthly).toBe(30);
+    expect(goalForUser(goals, JUAN, users)).toBeNull();
+    expect(ambiguousGoalKeys(goals, users)).toEqual([]);
+  });
+
+  it("una clave de meta que coincide con varios usuarios no se asigna a ninguno y se reporta", () => {
+    const goals = PortalConfigSchema.parse({ goals: { users: { "rodríguez": { monthly: 99 }, "51900000003": { monthly: 30 } } } }).goals;
+    const users = [FRANK, JUAN, OTRO];
+    // "Rodríguez" coincide con dos usuarios
+    for (const u of users) expect(goalForUser(goals, u, users)?.monthly ?? null).toBe(u.id === OTRO.id ? 30 : null);
+    expect(ambiguousGoalKeys(goals, users)).toEqual([{ clave: "rodríguez", usuarios: users.filter((u) => /Rodr/.test(u.nombre)).map((u) => u.nombre) }]);
+    // aunque uno sea exacto, si coincide con varios no se asigna
+    const g2 = PortalConfigSchema.parse({ goals: { users: { "Frank Rodríguez": { monthly: 5 } } } }).goals;
+    const mirano = user(9, "Frank Rodríguez Mirano", "519");
+    expect(goalForUser(g2, FRANK, [FRANK, mirano])).toBeNull();
+    expect(goalForUser(g2, FRANK, [FRANK])?.monthly).toBe(5);
   });
 });
 
@@ -266,6 +281,18 @@ describe("loadDashboard y avance", () => {
     expect(lines).toHaveLength(3);
     expect(lines[0]).toContain("del equipo");
     expect(lines[1]).toBe("🎯 *Meta del equipo (noviembre):* US$ 10,000 (meta de ejemplo)");
+  });
+
+  it("equipo: una meta con clave ambigua no se asigna y se reporta", async () => {
+    const { store, frank } = await seeded();
+    await store.upsertUser({ nombre: "Frank Torres", whatsapp: "51900000077", rol: "vendedor" });
+    const amb = PortalConfigSchema.parse({ goals: { company: { monthly: 500 }, users: { frank: { monthly: 4000 } } } });
+    const d = await loadDashboard(store, { scope: { kind: "equipo" }, now: NOW, config: amb, details: false });
+    expect(d.metasAmbiguas).toEqual([{ clave: "frank", usuarios: expect.arrayContaining(["Frank Rodríguez", "Frank Torres"]) }]);
+    expect(d.vendedores.every((v) => v.figures.goal === null)).toBe(true);
+    const mine = await loadDashboard(store, { scope: { kind: "usuario", userId: frank.id }, now: NOW, config: amb, details: false });
+    expect(mine.figures.goal).toBeNull();
+    expect(mine.metasAmbiguas).toEqual([]);
   });
 
   it("sin ventas demo no hay DEMO; sin meta lo dice; sin _ejemplo no hay '(meta de ejemplo)'", async () => {

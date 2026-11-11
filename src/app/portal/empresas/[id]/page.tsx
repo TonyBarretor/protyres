@@ -4,7 +4,7 @@
  */
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { canEditCompany } from "@/lib/portal/auth/permissions";
+import { canEditCompany, canGeneratePrepropuesta } from "@/lib/portal/auth/permissions";
 import { requireUser } from "@/lib/portal/auth/session";
 import { STAGES, stageLabel } from "@/lib/portal/stages";
 import { getPortalStore } from "@/lib/portal/store";
@@ -100,9 +100,11 @@ export default async function EmpresaPage({ params, searchParams }: Props) {
           <div className="pt-row">
             <TempChip t={company.temperatura} />
             {/* route handler: descarga el PDF (Content-Disposition attachment) o vuelve aquí con ?error= si falta un dato */}
-            <a className="pt-btn pt-btn-primary" href={`/portal/empresas/${company.id}/prepropuesta`}>
-              Generar pre-propuesta
-            </a>
+            {canGeneratePrepropuesta(user, company) && (
+              <a className="pt-btn pt-btn-primary" href={`/portal/empresas/${company.id}/prepropuesta`}>
+                Generar pre-propuesta
+              </a>
+            )}
           </div>
         </div>
       </div>

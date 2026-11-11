@@ -46,6 +46,8 @@ export interface Dashboard {
   sinVendedor: Amount | null;
   /** Equipo: una fila por vendedor. */
   vendedores: VendorSummary[];
+  /** Equipo: claves de meta (`goals.users`) que coinciden con varios usuarios y no se asignaron a ninguno. */
+  metasAmbiguas: AmbiguousGoalKey[];
   weeks: WeekActivity[];
   stageAvg: StageAverage[];
   asignacionLlamada: AverageDays;
@@ -54,12 +56,39 @@ export interface Dashboard {
   participacionVentana: Period;
 }
 
-/** Meta del usuario en `goals.users` (clave = WhatsApp o nombre, cruce tolerante de vendors.ts); null si no tiene. */
-export function goalForUser(goals: PortalGoalsConfig, user: Pick<PortalUser, "id" | "nombre" | "whatsapp">): Goal | null {
+type GoalUser = Pick<PortalUser, "id" | "nombre" | "whatsapp">;
+
+/** Usuarios con los que coincide una clave de `goals.users` (WhatsApp o nombre, cruce tolerante de vendors.ts). */
+function goalKeyMatches<U extends GoalUser>(key: string, users: readonly U[]): U[] {
+  return users.filter((u) => matchUser(key, [u]) !== null);
+}
+
+/**
+ * Meta del usuario en `goals.users`: la clave tiene que coincidir con exactamente un usuario de `users` (y ser este). Una
+ * clave que coincide con varios no se asigna a ninguno (ver ambiguousGoalKeys). null si no tiene.
+ */
+export function goalForUser(goals: PortalGoalsConfig, user: GoalUser, users: readonly GoalUser[]): Goal | null {
+  const all = users.some((u) => u.id === user.id) ? users : [...users, user];
   for (const [key, goal] of Object.entries(goals.users)) {
-    if (matchUser(key, [user])) return goal;
+    const m = goalKeyMatches(key, all);
+    if (m.length === 1 && m[0].id === user.id) return goal;
   }
   return null;
+}
+
+export interface AmbiguousGoalKey {
+  clave: string;
+  usuarios: string[];
+}
+
+/** Claves de `goals.users` que coinciden con más de un usuario: no se asignan (se avisa en el tablero del equipo). */
+export function ambiguousGoalKeys(goals: PortalGoalsConfig, users: readonly GoalUser[]): AmbiguousGoalKey[] {
+  const out: AmbiguousGoalKey[] = [];
+  for (const key of Object.keys(goals.users)) {
+    const m = goalKeyMatches(key, users);
+    if (m.length > 1) out.push({ clave: key, usuarios: m.map((u) => u.nombre) });
+  }
+  return out;
 }
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -95,7 +124,7 @@ export async function loadDashboard(store: PortalStore, opts: LoadDashboardOptio
 
   const allOpps = await store.listOpportunities(team ? {} : { ownerId: userId! });
   const scopeRows = team ? rows : rows.filter((r) => vendorOf(r.vendedor) === userId);
-  const goal = team ? cfg.goals.company : goalForUser(cfg.goals, user!);
+  const goal = team ? cfg.goals.company : goalForUser(cfg.goals, user!, users);
   const figures = figuresFor(scopeRows, allOpps, today, goal, cfg.holidays);
 
   let sinVendedor: Amount | null = null;
@@ -110,7 +139,7 @@ export async function loadDashboard(store: PortalStore, opts: LoadDashboardOptio
       if (!u.activo || !(u.rol === "vendedor" || withSales.has(u.id))) continue;
       const uRows = rows.filter((r) => vendorOf(r.vendedor) === u.id);
       const uOpps = allOpps.filter((o) => o.ownerUserId === u.id);
-      vendedores.push({ user: u, figures: figuresFor(uRows, uOpps, today, goalForUser(cfg.goals, u), cfg.holidays) });
+      vendedores.push({ user: u, figures: figuresFor(uRows, uOpps, today, goalForUser(cfg.goals, u, users), cfg.holidays) });
     }
   }
 
@@ -125,6 +154,7 @@ export async function loadDashboard(store: PortalStore, opts: LoadDashboardOptio
     figures,
     sinVendedor,
     vendedores,
+    metasAmbiguas: team ? ambiguousGoalKeys(cfg.goals, users) : [],
     weeks: weeks.map((w) => ({ start: w.start, end: w.end, visitas: 0, llamadas: 0, cotizaciones: 0 })),
     stageAvg: stageAverages([]),
     asignacionLlamada: { dias: null, n: 0 },

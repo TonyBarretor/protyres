@@ -63,7 +63,7 @@ import type {
 import { resolveCreditSave } from "../credit/changes";
 import type { CompanyCredit, CreditChanges, CreditEstado, CreditHistoryEntry, CreditPdf, CreditSaveInput } from "./types";
 
-import { valoraList } from "./survey-shared";
+import { ORPHAN_PENDING_MS, valoraList } from "./survey-shared";
 import type { Survey, SurveyAnswer, SurveyAnswerInput, SurveyAnswerResult, SurveyCanal, SurveyEstado, SurveyFilter, SurveyInput, SurveyResponse } from "./types";
 
 type Sql = ReturnType<typeof postgres>;
@@ -853,9 +853,12 @@ export class PgPortalStore implements PortalStore {
       if (since) {
         // dos crons a la vez no crean dos encuestas para la misma empresa: bloqueo por empresa hasta el commit
         await tx`select pg_advisory_xact_lock(hashtext(${`surveys:${input.companyId}`}))`;
+        // misma regla que surveyCounts (survey-shared.ts): no cuentan las nunca entregadas (vencidas o pendientes huérfanas)
+        const orphanBefore = new Date((input.createdAt ?? new Date()).getTime() - ORPHAN_PENDING_MS);
         const [dup] = await tx`
           select id from surveys where company_id = ${input.companyId} and created_at >= ${since}
-            and (estado <> 'vencida' or enviada_at is not null) limit 1`;
+            and (enviada_at is not null or estado = 'respondida'
+              or (estado <> 'vencida' and not (estado = 'pendiente' and created_at < ${orphanBefore}))) limit 1`;
         if (dup) return null;
       }
       const [r] = await tx`

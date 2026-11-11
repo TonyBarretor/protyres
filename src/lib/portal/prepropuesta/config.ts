@@ -76,12 +76,12 @@ export const PrepropuestaConfigSchema = z.looseObject({
     flotaTitulo: text,
     medidasTitulo: text,
     participacionTexto: text,
-    demoEtiqueta: text,
   }),
   propuesta: z.object({
     titulo: text,
     intro: text,
-    pasos: z.array(z.object({ titulo: text, texto: text })).min(1).max(4),
+    // `_validar`: nota interna (no se dibuja) para textos que no salen de un documento y hay que confirmar con 360 Tyres
+    pasos: z.array(z.object({ titulo: text, texto: text, _validar: z.string().optional() })).min(1).max(4),
     cierre: text,
     contactoTitulo: text,
     firma: text,

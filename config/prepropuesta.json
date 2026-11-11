@@ -125,8 +125,7 @@
     "nota": "Unidades, ejes y llantas: datos públicos del MTC; la medida es una estimación a confirmar en la inspección.",
     "flotaTitulo": "Flota por marca",
     "medidasTitulo": "Medidas probables",
-    "participacionTexto": "neumáticos comprados a 360° Tyres en los últimos 12 meses",
-    "demoEtiqueta": "DEMO"
+    "participacionTexto": "neumáticos comprados a 360° Tyres en los últimos 12 meses"
   },
   "propuesta": {
     "titulo": "Qué proponemos",
@@ -142,7 +141,8 @@
       },
       {
         "titulo": "Propuesta por medida con esquema 70/20/10",
-        "texto": "Para cada medida, la mayor parte en la opción de menor costo por kilómetro, una parte en una alternativa y una parte pequeña a prueba, para comparar en su operación."
+        "texto": "Para cada medida, la mayor parte en la opción de menor costo por kilómetro, una parte en una alternativa y una parte pequeña a prueba, para comparar en su operación.",
+        "_validar": "Texto redactado por nosotros: el 70/20/10 no aparece en los documentos de referencia. Confirmar con 360 Tyres antes de usarlo con clientes."
       }
     ],
     "cierre": "Agradecemos su gentil atención. Quedamos atentos a sus gratas órdenes para coordinar la fecha de la inspección.",

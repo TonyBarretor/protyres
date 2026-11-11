@@ -3,10 +3,11 @@ import { FakeWhatsAppClient } from "../../whatsapp/client";
 import { noticesOf } from "../bot/state";
 import { runDailyJobs, DAILY_JOBS } from "../notify/jobs";
 import { JsonPortalStore } from "../store";
+import { surveyCounts } from "../store/survey-shared";
 import type { PortalUser, SurveyResponse } from "../store/types";
 import { surveyEmailReady, type SurveyEmailInput, type SurveyEmailSender } from "./email";
 import { runSurveyInvites, surveyAutoEnabled } from "./invite";
-import { previewManualSurvey, sendManualSurvey, PREVIEW_URL } from "./manual";
+import { manualSurveyWarnings, previewManualSurvey, sendManualSurvey, PREVIEW_URL } from "./manual";
 import { invitationEmail } from "./messages";
 import { MAX_VALORA, parseSurveyForm, type SurveyFormLike } from "./questions";
 import { selectSurveyCandidates } from "./select";
@@ -65,7 +66,9 @@ async function seed(): Promise<void> {
     { fecha: "2026-11-01", ruc: "20999999906", cantidad: 8, total: 2000 },
   ]);
   const old = newSurveyToken();
-  await store.createSurvey({ companyId: ids.E, tokenHash: old.tokenHash, canal: "email", expiresAt: new Date("2026-10-11T00:00:00Z"), createdAt: new Date("2026-09-11T13:00:00Z") });
+  const prev = (await store.createSurvey({ companyId: ids.E, tokenHash: old.tokenHash, canal: "email", expiresAt: new Date("2026-10-11T00:00:00Z"), createdAt: new Date("2026-09-11T13:00:00Z") }))!;
+  // entregada (una pendiente sin enviar de hace más de 1 día sería huérfana y no contaría)
+  await store.markSurveySent(prev.id, new Date("2026-09-11T13:05:00Z"), "email");
 }
 
 const names = (cands: { company: { razonSocial: string } }[]) => cands.map((c) => c.company.razonSocial);
@@ -179,7 +182,7 @@ describe("selección de empresas a encuestar", () => {
 
   it("una encuesta de hace más de 6 meses no excluye; una vencida sin entregar tampoco", async () => {
     const t = newSurveyToken();
-    const s = (await store.createSurvey({ companyId: ids.A, tokenHash: t.tokenHash, canal: "email", expiresAt: NOW, createdAt: new Date("2026-11-01T00:00:00Z") }))!;
+    const s = (await store.createSurvey({ companyId: ids.A, tokenHash: t.tokenHash, canal: "email", expiresAt: NOW, createdAt: new Date(NOW.getTime() - 3600_000) }))!; // pendiente reciente: cuenta
     expect(names((await selectSurveyCandidates(store, NOW, CFG)).candidates)).not.toContain("ALFA TRANSPORTES PRUEBA S.A.C.");
     await store.expireSurvey(s.id); // nunca se entregó
     expect(names((await selectSurveyCandidates(store, NOW, CFG)).candidates)).toContain("ALFA TRANSPORTES PRUEBA S.A.C.");
@@ -300,6 +303,63 @@ describe("invitación automática (cron)", () => {
     expect(again.whatsappVendedor).toBe(1);
   });
 
+  it("la entrega lanza (correo): la encuesta queda vencida sin enviar y no bloquea", async () => {
+    await store.addContact({ companyId: ids.A, nombre: "Rosa Pérez", email: "rosa@alfa.example.pe" });
+    await store.updateCompany(ids.F, { ownerUserId: null });
+    const boom: SurveyEmailSender = async () => {
+      throw new Error("Resend caído");
+    };
+    const r = await runSurveyInvites({ store, client: null, now: NOW, env: ENV_MAIL, config: CFG, sendEmail: boom });
+    expect(r.resultados.find((x) => x.companyId === ids.A)).toMatchObject({ status: "error", detalle: "Resend caído" });
+    const [sa] = await store.listSurveys({ companyId: ids.A });
+    expect(sa).toMatchObject({ estado: "vencida", enviadaAt: null });
+    expect(surveyCounts(sa, NOW)).toBe(false);
+    // al día siguiente se reintenta
+    const mails: SurveyEmailInput[] = [];
+    const again = await runSurveyInvites({ store, client: null, now: new Date(NOW.getTime() + 86_400_000), env: ENV_MAIL, config: CFG, sendEmail: async (m) => (mails.push(m), { sent: true, to: m.to }) });
+    expect(again.correos).toBe(1);
+    expect(mails).toHaveLength(1);
+  });
+
+  it("pendiente huérfana (proceso cortado) de hace 2 días no bloquea; de hace unas horas sí", async () => {
+    const orphanAt = new Date(NOW.getTime() - 2 * 86_400_000);
+    const t = newSurveyToken();
+    const orphan = (await store.createSurvey({ companyId: ids.A, tokenHash: t.tokenHash, canal: "email", expiresAt: new Date(NOW.getTime() + 20 * 86_400_000), createdAt: orphanAt }))!;
+    expect(orphan.estado).toBe("pendiente");
+    expect(surveyCounts(orphan, NOW)).toBe(false);
+    expect(surveyCounts(orphan, new Date(orphanAt.getTime() + 3600_000))).toBe(true);
+    expect(surveyCounts({ ...orphan, estado: "vencida" }, NOW)).toBe(false);
+    expect(surveyCounts({ ...orphan, estado: "enviada", enviadaAt: orphanAt }, NOW)).toBe(true);
+    expect(names((await selectSurveyCandidates(store, NOW, CFG)).candidates)).toContain("ALFA TRANSPORTES PRUEBA S.A.C.");
+    const r = await runSurveyInvites({ store, client: new FakeWhatsAppClient(), now: NOW, env: ENV_ON, config: CFG });
+    expect(r.resultados.find((x) => x.companyId === ids.A)!.status).toBe("whatsapp_vendedor");
+    // reciente (unas horas): sí bloquea
+    const t2 = newSurveyToken();
+    await store.createSurvey({ companyId: ids.F, tokenHash: t2.tokenHash, canal: "email", expiresAt: new Date(NOW.getTime() + 20 * 86_400_000), createdAt: new Date(NOW.getTime() - 3600_000) });
+    const s2 = await store.listSurveys({ companyId: ids.F });
+    expect(s2.some((x) => surveyCounts(x, NOW))).toBe(true);
+  });
+
+  it("modo prueba (EMAIL_REDIRECT_TO): el automático solo informa, no crea ni envía ni quema la ventana", async () => {
+    await store.addContact({ companyId: ids.A, nombre: "Rosa Pérez", email: "rosa@alfa.example.pe" });
+    const client = new FakeWhatsAppClient();
+    const mails: SurveyEmailInput[] = [];
+    const logs: string[] = [];
+    const before = (await store.listSurveys()).length;
+    const r = await runSurveyInvites({ store, client, now: NOW, env: { ...ENV_MAIL, EMAIL_REDIRECT_TO: "pruebas@360tyres.pe" }, config: CFG, log: (m) => logs.push(m), sendEmail: async (m) => (mails.push(m), { sent: true, to: m.to }) });
+    expect(r).toMatchObject({ auto: true, dryRun: false, modoPrueba: true, candidatas: 2, correos: 0, whatsappVendedor: 0 });
+    expect(r.nota).toMatch(/Modo prueba \(EMAIL_REDIRECT_TO=pruebas@360tyres\.pe\)/);
+    expect(r.resultados.every((x) => x.status === "simulado" && x.detalle === "modo prueba")).toBe(true);
+    expect(logs.some((l) => l.includes("Modo prueba"))).toBe(true);
+    expect((await store.listSurveys()).length).toBe(before);
+    expect(mails).toHaveLength(0);
+    expect(client.sent).toHaveLength(0);
+    // sin redirect, sale de verdad
+    const real = await runSurveyInvites({ store, client, now: NOW, env: ENV_MAIL, config: CFG, sendEmail: async (m) => (mails.push(m), { sent: true, to: m.to }) });
+    expect(real).toMatchObject({ modoPrueba: false, correos: 1 });
+    expect(real.nota).toBeUndefined();
+  });
+
   it("solo ventas demo: no se escribe a nadie", async () => {
     const demoOnly = JsonPortalStore.memory();
     const u = await demoOnly.upsertUser({ nombre: "Frank", whatsapp: FRANK, rol: "vendedor" });
@@ -355,6 +415,44 @@ describe("envío manual desde la ficha", () => {
     // correo que falla -> enlace para copiar con el error
     const r3 = await sendManualSurvey(store, { company, contact: rosa, user: frank, expiresDays: 30, env: ENV_MAIL, now: NOW, sendEmail: async (m) => ({ sent: false, to: m.to, error: "dominio no verificado" }) });
     expect(r3).toMatchObject({ mode: "link", error: "dominio no verificado" });
+  });
+
+  it("vista previa en modo prueba: avisa a dónde irá el correo", async () => {
+    const company = (await store.getCompany(ids.A))!;
+    const rosa = await store.addContact({ companyId: ids.A, nombre: "Rosa", email: "rosa@alfa.example.pe" });
+    const p = previewManualSurvey(company, rosa, frank, 30, { ...ENV_MAIL, EMAIL_REDIRECT_TO: "pruebas@360tyres.pe" }, NOW);
+    expect(p).toMatchObject({ mode: "email", to: "pruebas@360tyres.pe", modoPrueba: "Modo prueba: el correo irá a pruebas@360tyres.pe" });
+    expect(previewManualSurvey(company, rosa, frank, 30, ENV_MAIL, NOW)).toMatchObject({ mode: "email", to: "rosa@alfa.example.pe", modoPrueba: null });
+  });
+
+  it("avisos (no bloquean): solo demo, no cliente, encuesta abierta", async () => {
+    const get = async (k: string) => (await store.getCompany(ids[k]))!;
+    expect(await manualSurveyWarnings(store, await get("A"), NOW)).toEqual([]);
+    expect(await manualSurveyWarnings(store, await get("B"), NOW)).toEqual(["La empresa solo tiene ventas demo (de prueba)."]);
+    expect(await manualSurveyWarnings(store, await get("C"), NOW)).toEqual(["La empresa no está marcada como cliente."]);
+    // E: la del seed ya venció (expira 11/10) -> no está abierta
+    expect(await manualSurveyWarnings(store, await get("E"), NOW)).toEqual([]);
+    const sent = await sendManualSurvey(store, { company: await get("A"), contact: null, user: frank, expiresDays: 30, env: ENV_BASE, now: NOW });
+    const w = await manualSurveyWarnings(store, await get("A"), NOW);
+    expect(w).toHaveLength(1);
+    expect(w[0]).toMatch(/^Ya tiene una encuesta abierta \(enviada, vence el \d{2}\/\d{2}\/\d{4}\) sin responder\.$/);
+    // respondida: ya no está abierta
+    expect(sent.mode).toBe("link");
+    expect((await submitSurvey(store, sent.mode === "link" ? sent.token : "", form(GOOD), NOW)).ok).toBe(true);
+    expect(await manualSurveyWarnings(store, await get("A"), NOW)).toEqual([]);
+    // y no bloquea: se puede enviar otra
+    const again = await sendManualSurvey(store, { company: await get("B"), contact: null, user: frank, expiresDays: 30, env: ENV_BASE, now: NOW });
+    expect(again.survey.estado).toBe("enviada");
+  });
+
+  it("manual: si el correo lanza, la encuesta queda vencida sin enviar", async () => {
+    const company = (await store.getCompany(ids.A))!;
+    const rosa = await store.addContact({ companyId: ids.A, nombre: "Rosa", email: "rosa@alfa.example.pe" });
+    await expect(
+      sendManualSurvey(store, { company, contact: rosa, user: frank, expiresDays: 30, env: ENV_MAIL, now: NOW, sendEmail: async () => Promise.reject(new Error("caído")) }),
+    ).rejects.toThrow("caído");
+    const [s] = await store.listSurveys({ companyId: ids.A });
+    expect(s).toMatchObject({ estado: "vencida", enviadaAt: null });
   });
 
   it("el correo lleva la razón social, el enlace y la fecha de vencimiento", () => {

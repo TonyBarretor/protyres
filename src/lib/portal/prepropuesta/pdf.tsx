@@ -54,7 +54,9 @@ const st = StyleSheet.create({
   pageTitle: { fontSize: 20, fontFamily: "Helvetica-Bold", color: dark, textAlign: "right", marginTop: 2, lineHeight: 1.15 },
   headRule: { position: "absolute", top: 88, left: MARGIN, right: MARGIN, height: 2, backgroundColor: yellow },
   footerImg: { position: "absolute", bottom: 0, left: 0, width: PAGE_W, height: FOOTER_H },
-  footerText: { position: "absolute", bottom: FOOTER_H * 0.3, right: MARGIN, width: 320, fontSize: 6.8, color: grey, textAlign: "right", lineHeight: 1.45 },
+  footerText: { position: "absolute", bottom: FOOTER_H * 0.3 + 10, right: MARGIN, width: 320, fontSize: 6.8, color: grey, textAlign: "right", lineHeight: 1.45 },
+  // sin lineHeight: en react-pdf 4.9 un Text con `render` y lineHeight no se dibuja
+  footerPage: { position: "absolute", bottom: FOOTER_H * 0.3, right: MARGIN, width: 320, fontSize: 6.8, color: grey, textAlign: "right" },
   h2: { fontSize: 12.5, fontFamily: "Helvetica-Bold", color: dark, marginBottom: 6 },
   h2Wrap: { flexDirection: "row", alignItems: "center", marginTop: 12, marginBottom: 6 },
   h2Bar: { width: 4, height: 14, backgroundColor: yellow, marginRight: 6 },
@@ -92,7 +94,6 @@ const st = StyleSheet.create({
   td: { fontSize: 8.3, paddingVertical: 3.5, paddingHorizontal: 5 },
   num: { textAlign: "right" },
   noteBox: { flexDirection: "row", backgroundColor: "#fff6d6", borderLeftWidth: 3, borderLeftColor: yellow, paddingVertical: 5, paddingHorizontal: 7, marginTop: 10 },
-  demo: { fontSize: 7, fontFamily: "Helvetica-Bold", color: "#ffffff", backgroundColor: "#c00000", paddingHorizontal: 3, paddingVertical: 1, marginLeft: 4 },
   step: { flexDirection: "row", borderWidth: 1, borderColor: line, padding: 9, marginBottom: 8 },
   stepNum: { width: 26, height: 26, borderRadius: 13, backgroundColor: yellow, alignItems: "center", justifyContent: "center", marginRight: 10 },
   stepNumText: { fontSize: 13, fontFamily: "Helvetica-Bold", color: black },
@@ -155,7 +156,7 @@ interface Chrome {
   pie: string;
 }
 
-function PageFrame({ chrome, title, n, children }: { chrome: Chrome; title: string; n: number; children: React.ReactNode }) {
+function PageFrame({ chrome, title, children }: { chrome: Chrome; title: string; children: React.ReactNode }) {
   return (
     <Page size="A4" style={st.page}>
       <View style={st.bandBlack} fixed />
@@ -175,8 +176,9 @@ function PageFrame({ chrome, title, n, children }: { chrome: Chrome; title: stri
       {chrome.footer ? <Image src={chrome.footer} style={st.footerImg} fixed /> : null}
       <View style={st.footerText} fixed>
         <T>{chrome.pie}</T>
-        <T>{`Página ${n} de ${MAX_PAGES}`}</T>
       </View>
+      {/* total real de páginas (render prop de react-pdf); va como Text fijo directo en la página para que se dibuje */}
+      <Text style={st.footerPage} fixed render={({ pageNumber, totalPages }) => `Página ${pageNumber} de ${totalPages}`} />
     </Page>
   );
 }
@@ -273,10 +275,10 @@ export function PrepropuestaDocument({ data, cfg, settings }: { data: Prepropues
   const COLS = { marca: 0.27, clase: 0.18, anios: 0.15, unidades: 0.11, llantas: 0.11, bar: 0.18 };
   const w = (f: number) => ({ width: `${f * 100}%` });
 
-  const kpis: { label: string; value: string; demo?: boolean; sub?: string }[] = [{ label: "Unidades", value: fmtInt(e.unidades), sub: "padrón MTC" }];
+  const kpis: { label: string; value: string; sub?: string }[] = [{ label: "Unidades", value: fmtInt(e.unidades), sub: "padrón MTC" }];
   if (e.llantasPiso !== null) kpis.push({ label: "Llantas en piso", value: fmtInt(e.llantasPiso), sub: "padrón MTC" });
   if (e.antiguedadMedia !== null) kpis.push({ label: "Antigüedad media", value: `${fmtInt(e.antiguedadMedia)} años`, sub: "padrón MTC" });
-  if (data.participacion) kpis.push({ label: "Participación", value: fmtInt(data.participacion.cantidad), demo: data.participacion.demo, sub: fl.participacionTexto });
+  if (data.participacion) kpis.push({ label: "Participación", value: fmtInt(data.participacion.cantidad), sub: fl.participacionTexto });
   const kpiW = (CONTENT_W + 6) / kpis.length - 6;
   const meta = [e.sector ? `Sector ${e.sector.toLowerCase()}` : null, e.departamento ? `Base principal: ${e.departamento}` : null].filter(Boolean).join(" · ");
   const resumen = [
@@ -290,7 +292,7 @@ export function PrepropuestaDocument({ data, cfg, settings }: { data: Prepropues
   return (
     <Document title={`${cfg.documento.titulo} - ${e.razonSocial}`} author={c.tradeName || c.name} subject={cfg.documento.subtitulo}>
       {/* 1. Quiénes somos */}
-      <PageFrame chrome={chrome} title={qs.titulo} n={1}>
+      <PageFrame chrome={chrome} title={qs.titulo}>
         <T style={st.coverFor}>{`${cfg.documento.titulo.toUpperCase()} PARA`}</T>
         <T style={st.coverName}>{e.razonSocial}</T>
         <T style={st.coverMeta}>{`RUC ${e.ruc} · Lima, ${data.fechaTexto}`}</T>
@@ -331,22 +333,19 @@ export function PrepropuestaDocument({ data, cfg, settings }: { data: Prepropues
       </PageFrame>
 
       {/* 2. Casos */}
-      <PageFrame chrome={chrome} title={cfg.casos.titulo} n={2}>
+      <PageFrame chrome={chrome} title={cfg.casos.titulo}>
         <CaseCard n={1} caso={cfg.casos.principal} />
         <CaseCard n={2} caso={cfg.casos.secundario} compact />
       </PageFrame>
 
       {/* 3. Su flota hoy */}
-      <PageFrame chrome={chrome} title={fl.titulo} n={3}>
+      <PageFrame chrome={chrome} title={fl.titulo}>
         <T style={st.para}>{fill(fl.intro)}</T>
         {meta ? <T style={[st.coverMeta, { marginTop: 2 }]}>{meta}</T> : null}
         <View style={[st.tileGrid, { marginTop: 8 }]}>
           {kpis.map((k, i) => (
             <View key={i} style={[st.tile, { width: kpiW }]} wrap={false}>
-              <View style={{ flexDirection: "row", alignItems: "center" }}>
-                <T style={st.tileText}>{k.label}</T>
-                {k.demo ? <T style={st.demo}>{fl.demoEtiqueta}</T> : null}
-              </View>
+              <T style={st.tileText}>{k.label}</T>
               <T style={st.tileValue}>{k.value}</T>
               {k.sub ? <T style={st.tileText}>{k.sub}</T> : null}
             </View>
@@ -417,7 +416,7 @@ export function PrepropuestaDocument({ data, cfg, settings }: { data: Prepropues
       </PageFrame>
 
       {/* 4. Qué proponemos */}
-      <PageFrame chrome={chrome} title={pr.titulo} n={4}>
+      <PageFrame chrome={chrome} title={pr.titulo}>
         <T style={[st.para, { marginBottom: 10 }]}>{fill(pr.intro)}</T>
         {pr.pasos.map((p, i) => (
           <View key={i} style={st.step} wrap={false}>

@@ -149,6 +149,12 @@ export default async function TableroPage({ searchParams }: { searchParams: Prom
         )}
       </section>
 
+      {d.metasAmbiguas.length > 0 && (
+        <p className="pt-notice pt-small">
+          Metas sin asignar en config/portal.json (goals.users): {d.metasAmbiguas.map((m) => `«${m.clave}» coincide con ${m.usuarios.join(", ")}`).join("; ")}. Usa el WhatsApp o el nombre completo.
+        </p>
+      )}
+
       {/* ── Equipo: una fila por vendedor ── */}
       {d.scope.kind === "equipo" && d.vendedores.length > 0 && (
         <section className="pt-card" aria-labelledby="vendedores-title">
