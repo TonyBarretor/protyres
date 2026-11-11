@@ -29,16 +29,26 @@ const TechLeadSchema = z.object({
   whatsappEnv: z.string().default("PORTAL_TECH_LEAD_NUMBER"),
 });
 
+/** Cotización enlazada (bloque B4): recordatorio de cotización sin respuesta. */
+const QuotesSchema = z.object({
+  /** Días hábiles (lun–vie en Lima, sin feriados) sin respuesta registrada tras los que se avisa al vendedor. */
+  followUpBusinessDays: z.number().int().min(1).max(30).default(3),
+});
+
 export const PortalConfigSchema = z.looseObject({
   import: ImportSchema.prefault({}),
   appointments: AppointmentsSchema.prefault({}),
   techLead: TechLeadSchema.prefault({}),
+  quotes: QuotesSchema.prefault({}),
+  /** Feriados ("AAAA-MM-DD") que no cuentan como días hábiles. */
+  holidays: z.array(z.string().regex(/^\d{4}-\d{2}-\d{2}$/)).default([]),
 });
 
 export type PortalConfig = z.infer<typeof PortalConfigSchema>;
 export type PortalImportConfig = PortalConfig["import"];
 export type PortalAppointmentsConfig = PortalConfig["appointments"];
 export type PortalTechLeadConfig = PortalConfig["techLead"];
+export type PortalQuotesConfig = PortalConfig["quotes"];
 
 export function portalConfigPath(): string {
   return process.env.PORTAL_CONFIG || path.join(process.cwd(), "config", "portal.json");

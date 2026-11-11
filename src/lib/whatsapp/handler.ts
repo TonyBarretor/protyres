@@ -20,6 +20,7 @@ import { loadProvidersConfig, resolveSourceOptions } from "../ingest/sources";
 import { extractPricesWithLLM, llmAvailable } from "../llm/extract-prices";
 import { parseRequestWithLLM } from "../llm/parse-request";
 import { routePortal } from "../portal/bot";
+import { linkQuoteToPortal, onQuoteSentToPortal, portalCreditTerm } from "../portal/quotes/link";
 import type { PortalStore } from "../portal/store/types";
 import type { IngestResult } from "../ingest/types";
 import { fold, findBrandInText } from "../tyre/brands";
@@ -750,6 +751,13 @@ export class BotHandler {
       const what = remembered.summary.some((x) => x.includes(",")) ? remembered.summary.join(" · ") : joinY(remembered.summary);
       note = `${note ? note + "\n" : ""}📒 ${what}, ${where} _(se cambian con ${remembered.keys.slice(0, 3).map((k) => `*${k}: …*`).join(", ")})_`;
     }
+    // portal: plazo de crédito de la empresa cuando ni el pedido ni la memoria lo dan (null fuera del portal: sin cambios)
+    const credit = await portalCreditTerm({ from, text, req, store: this.deps.portalStore, log: (m) => this.log(m) });
+    if (credit) {
+      text = `${text}\n${credit.line}`;
+      req = await this.parseFor(text, contract);
+      note = `${note ? note + "\n" : ""}${credit.note}`;
+    }
     return this.showOptions(from, text, req, profile, { note, newQuote: true, lead: opts.lead });
   }
 
@@ -1262,6 +1270,12 @@ export class BotHandler {
   }
 
   private async presentQuote(from: string, quote: Quote, opts: { lead?: string; summary?: boolean } = {}): Promise<void> {
+    await this.presentQuoteMessages(from, quote, opts);
+    // portal: enlace a la oportunidad, después de todos los mensajes del cotizador; nunca lanza (fuera del portal no hace nada)
+    await linkQuoteToPortal({ from, quote, reply: (body) => this.reply(from, body), store: this.deps.portalStore, log: (m) => this.log(m) });
+  }
+
+  private async presentQuoteMessages(from: string, quote: Quote, opts: { lead?: string; summary?: boolean } = {}): Promise<void> {
     this.client.setQuote(from, quote.number);
     const profile = findProfile(this.settings, quote.customerProfile);
     quote.emailDraft = buildEmailDraft(quote, this.settings);
@@ -1915,6 +1929,7 @@ export class BotHandler {
       await this.store.saveQuote(quote);
       await this.storeSentFiles(quote, files);
       await this.store.setConversation(from, null);
+      await onQuoteSentToPortal({ from, quoteNumber: quote.number, store: this.deps.portalStore, log: (m) => this.log(m) }); // portal: Cotización enviada; nunca lanza
       const what = files.length > 1 ? ` (${files.map((f) => (f.contentType === XLSX_MIME ? "Excel" : "PDF")).join(" + ")})` : "";
       if (res.sent) return this.reply(from, `Enviado ✔ Cotización ${quote.number} a ${quote.emailDraft.to}${what}.`);
       return this.reply(from, `(Modo prueba, sin RESEND_API_KEY) El correo se guardó en ${res.dryRunPath} en vez de enviarse. Cotización ${quote.number} marcada como enviada${what}.`);

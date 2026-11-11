@@ -21,6 +21,11 @@
     "nombre": "Danyer Saavedra",
     "whatsappEnv": "PORTAL_TECH_LEAD_NUMBER"
   },
+  "quotes": {
+    "_comment": "Cotización enlazada: aviso al vendedor cuando una cotización enlazada lleva estos días hábiles (lun–vie, Lima) sin respuesta registrada ni cambio de etapa.",
+    "followUpBusinessDays": 3
+  },
+  "holidays": [],
   "sales": {
     "_comment": "Subir ventas (.xlsx): para cada campo, encabezados posibles del Excel (sin importar mayúsculas, tildes ni espacios). Obligatorios: fecha, ruc, cantidad. Primer encabezado que coincide gana.",
     "columnMap": {
