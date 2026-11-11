@@ -129,6 +129,21 @@ async function deliverNoticesOnly(input: PortalRouteInput): Promise<void> {
   }
 }
 
+/** ¿Hay un paso pendiente del portal que espera este adjunto (p.ej. la OC tras `oc …`)? Solo con el cotizador en idle. */
+async function mediaForPendingStep(input: PortalRouteInput, m: { forwarded: boolean; hasMedia: boolean; quoteStep: string }): Promise<boolean> {
+  if (m.forwarded || !m.hasMedia || m.quoteStep !== "idle") return false;
+  try {
+    const store = input.store ?? (await getPortalStore());
+    const user = await store.getUserByWhatsapp(input.from);
+    if (!user || !user.activo) return false;
+    const pending = pendingOf(await store.getPortalConversation(input.from), input.now ?? new Date());
+    return !!pending && (pending as { acceptsMedia?: unknown }).acceptsMedia === true;
+  } catch (err) {
+    (input.log ?? (() => undefined))(`portal: no pude revisar el paso pendiente: ${(err as Error).message}`);
+    return false;
+  }
+}
+
 export async function routePortal(input: PortalRouteInput): Promise<boolean> {
   const msg: InboundMessage = input.msg ?? { id: "", from: input.from, timestamp: "", type: "text", text: input.text, forwarded: false };
   if (PASS.has(msg)) return false;
@@ -142,8 +157,11 @@ export async function routePortal(input: PortalRouteInput): Promise<boolean> {
 
   // nada de esto puede ser del portal: va al cotizador (antes, los avisos pendientes si los hay)
   if (msg.forwarded || (!cmd && !cancel && !isAudio && (hasMedia || quoteStep !== "idle" || !text))) {
-    await deliverNoticesOnly(input);
-    return false;
+    // excepción: un adjunto sin leyenda justo después de `oc` (paso pendiente con acceptsMedia) es del portal
+    if (!(await mediaForPendingStep(input, { forwarded: !!msg.forwarded, hasMedia, quoteStep }))) {
+      await deliverNoticesOnly(input);
+      return false;
+    }
   }
 
   const log = input.log ?? (() => undefined);

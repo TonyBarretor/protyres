@@ -1,6 +1,6 @@
 /**
  * Comandos del portal en el bot. Importar este módulo registra los manejadores de B1; los comandos reconocidos por el
- * router sin manejador todavía (oc, avance, prepropuesta, aprende) responden "pronto" hasta que su bloque los
+ * router sin manejador todavía (avance, prepropuesta) responden "pronto" hasta que su bloque los
  * registre con registerPortalCommand.
  */
 import "./portal";
@@ -11,6 +11,7 @@ import "./asignarme";
 import "./contacto";
 import "./cita";
 import "./cotizacion";
+import "./oc";
 
 export const COMMAND_LABEL: Record<string, string> = {
   cita: "cita",

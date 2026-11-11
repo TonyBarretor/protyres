@@ -288,6 +288,27 @@ const STATEMENTS = [
     created_at timestamptz not null default now()
   )`,
   `create unique index if not exists vocabulary_term_lower_idx on vocabulary (lower(term))`,
+  // Órdenes de compra recibidas por el bot (`oc`): el PDF/imagen en base64 como quote_files; status recibida -> pedido_generado.
+  `create table if not exists purchase_orders (
+    id serial primary key,
+    company_id integer not null,
+    opportunity_id integer,
+    user_id integer,
+    numero text,
+    quote_number text,
+    file_name text,
+    mime_type text,
+    data text,
+    status text not null default 'recibida',
+    created_at timestamptz not null default now()
+  )`,
+  `create index if not exists purchase_orders_company_idx on purchase_orders (company_id, created_at)`,
+  // Memoria del pedido por cliente: direcciones, contacto, agencia y últimas respuestas a las preguntas del pedido.
+  `create table if not exists company_order_profile (
+    company_id integer primary key,
+    data jsonb not null default '{}'::jsonb,
+    updated_at timestamptz not null default now()
+  )`,
 ];
 
 /** Desde aquí empiezan las sentencias del portal: antes de ejecutarlas se pasa la guardia (migrate-guard.ts). */

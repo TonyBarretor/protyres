@@ -18,6 +18,7 @@ import type {
   AppointmentPatch,
   Company,
   CompanyInput,
+  CompanyOrderProfile,
   CompanyPatch,
   CompanyRow,
   CompanySearch,
@@ -42,6 +43,10 @@ import type {
   PortalSession,
   PortalStore,
   PortalUser,
+  PurchaseOrder,
+  PurchaseOrderFilter,
+  PurchaseOrderInput,
+  PurchaseOrderPatch,
   Sale,
   SaleInput,
   StageHistoryEntry,
@@ -57,7 +62,7 @@ interface StoredLoginToken extends LoginToken {
   createdAt: Date;
 }
 
-type Table = "companies" | "fleet" | "sales" | "users" | "contacts" | "opportunities" | "stageHistory" | "activities" | "appointments" | "vocabulary";
+type Table = "companies" | "fleet" | "sales" | "users" | "contacts" | "opportunities" | "stageHistory" | "activities" | "appointments" | "vocabulary" | "purchaseOrders";
 
 interface FileData {
   version: 1;
@@ -75,6 +80,8 @@ interface FileData {
   appointments: Appointment[];
   portalConversations?: PortalConversation[];
   vocabulary?: VocabularyEntry[];
+  purchaseOrders?: PurchaseOrder[];
+  orderProfiles?: CompanyOrderProfile[];
 }
 
 /** Campos Date por colección (JSON los guarda como texto ISO). */
@@ -91,6 +98,8 @@ const DATE_FIELDS: Record<string, string[]> = {
   appointments: ["startsAt", "createdAt"],
   portalConversations: ["updatedAt"],
   vocabulary: ["createdAt"],
+  purchaseOrders: ["createdAt"],
+  orderProfiles: ["updatedAt"],
 };
 
 const DEBOUNCE_MS = 300;
@@ -101,7 +110,7 @@ const copy = <T extends object>(o: T): T => ({ ...o });
 const time = (d: Date | null | undefined) => (d ? d.getTime() : 0);
 
 export class JsonPortalStore implements PortalStore {
-  private seq: Record<Table, number> = { companies: 0, fleet: 0, sales: 0, users: 0, contacts: 0, opportunities: 0, stageHistory: 0, activities: 0, appointments: 0, vocabulary: 0 };
+  private seq: Record<Table, number> = { companies: 0, fleet: 0, sales: 0, users: 0, contacts: 0, opportunities: 0, stageHistory: 0, activities: 0, appointments: 0, vocabulary: 0, purchaseOrders: 0 };
   private companies = new Map<number, Company>();
   private companyByRuc = new Map<string, number>();
   private fleet = new Map<string, FleetVehicle>();
@@ -119,6 +128,8 @@ export class JsonPortalStore implements PortalStore {
   private appointments = new Map<number, Appointment>();
   private portalConversations = new Map<string, PortalConversation>();
   private vocabulary: VocabularyEntry[] = [];
+  private purchaseOrders = new Map<number, PurchaseOrder>();
+  private orderProfiles = new Map<number, CompanyOrderProfile>();
   /** companyId -> marcas normalizadas (se invalida al cambiar la flota). */
   private marcasCache: Map<number, Set<string>> | null = null;
   private timer: NodeJS.Timeout | null = null;
@@ -164,6 +175,8 @@ export class JsonPortalStore implements PortalStore {
     for (const a of revive("appointments", raw.appointments)) this.appointments.set(a.id, a);
     for (const c of revive("portalConversations", raw.portalConversations)) this.portalConversations.set(c.phone, c);
     this.vocabulary = revive("vocabulary", raw.vocabulary);
+    for (const o of revive("purchaseOrders", raw.purchaseOrders)) this.purchaseOrders.set(o.id, o);
+    for (const p of revive("orderProfiles", raw.orderProfiles)) this.orderProfiles.set(p.companyId, p);
   }
 
   private snapshot(): FileData {
@@ -183,6 +196,8 @@ export class JsonPortalStore implements PortalStore {
       appointments: [...this.appointments.values()],
       portalConversations: [...this.portalConversations.values()],
       vocabulary: this.vocabulary,
+      purchaseOrders: [...this.purchaseOrders.values()],
+      orderProfiles: [...this.orderProfiles.values()],
     };
   }
 
@@ -879,5 +894,63 @@ export class JsonPortalStore implements PortalStore {
     this.vocabulary.push(row);
     this.changed();
     return copy(row);
+  }
+
+  // ── órdenes de compra y memoria del pedido ──
+
+  async addPurchaseOrder(input: PurchaseOrderInput): Promise<PurchaseOrder> {
+    const row: PurchaseOrder = {
+      id: this.nextId("purchaseOrders"),
+      companyId: input.companyId,
+      opportunityId: input.opportunityId ?? null,
+      userId: input.userId ?? null,
+      numero: input.numero?.trim() || null,
+      quoteNumber: input.quoteNumber ?? null,
+      fileName: input.fileName ?? null,
+      mimeType: input.mimeType ?? null,
+      data: input.data ?? null,
+      status: input.status ?? "recibida",
+      createdAt: input.createdAt ?? new Date(),
+    };
+    this.purchaseOrders.set(row.id, row);
+    this.changed();
+    return copy(row);
+  }
+
+  async getPurchaseOrder(id: number): Promise<PurchaseOrder | null> {
+    const o = this.purchaseOrders.get(id);
+    return o ? copy(o) : null;
+  }
+
+  async updatePurchaseOrder(id: number, patch: PurchaseOrderPatch): Promise<PurchaseOrder | null> {
+    const o = this.purchaseOrders.get(id);
+    if (!o) return null;
+    for (const [k, v] of Object.entries(patch)) if (v !== undefined) (o as unknown as Record<string, unknown>)[k] = v;
+    this.changed();
+    return copy(o);
+  }
+
+  async listPurchaseOrders(filter: PurchaseOrderFilter = {}): Promise<PurchaseOrder[]> {
+    return [...this.purchaseOrders.values()]
+      .filter(
+        (o) =>
+          (filter.companyId === undefined || o.companyId === filter.companyId) &&
+          (filter.userId === undefined || o.userId === filter.userId) &&
+          (filter.status === undefined || o.status === filter.status),
+      )
+      .map(copy)
+      .sort((a, b) => time(b.createdAt) - time(a.createdAt) || b.id - a.id);
+  }
+
+  async getOrderProfile(companyId: number): Promise<CompanyOrderProfile | null> {
+    const p = this.orderProfiles.get(companyId);
+    return p ? { ...p, data: structuredClone(p.data) } : null;
+  }
+
+  async setOrderProfile(companyId: number, data: Record<string, unknown>): Promise<CompanyOrderProfile> {
+    const row: CompanyOrderProfile = { companyId, data: JSON.parse(JSON.stringify(data)) as Record<string, unknown>, updatedAt: new Date() };
+    this.orderProfiles.set(companyId, row);
+    this.changed();
+    return { ...row, data: structuredClone(row.data) };
   }
 }

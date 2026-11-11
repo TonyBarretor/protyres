@@ -56,7 +56,8 @@ export function configureReportBot(d: ReportBotDeps | null): void {
 
 let graph: GraphWhatsAppClient | null = null;
 
-function downloader(ctx: PortalContext): Download {
+/** Descarga de medios del bot: la inyectada (simulador, tests), la del handler o la Graph API. También la usa `oc`. */
+export function downloader(ctx: PortalContext): Download {
   if (deps.downloadMedia) return deps.downloadMedia; // inyectado (simulador, tests) manda sobre el cliente del handler
   if (ctx.downloadMedia) return (id) => ctx.downloadMedia!(id);
   return async (id) => {
@@ -126,8 +127,8 @@ async function resolveFromPadron(store: PortalStore, d: ReportDraft, text: strin
 
 // ── voz ──
 
-/** Transcribe la nota de voz del mensaje; null = ya se respondió el error (pedir texto). */
-async function transcribeVoice(ctx: PortalContext, audio: { id: string; mimeType: string }): Promise<string | null> {
+/** Transcribe la nota de voz del mensaje; null = ya se respondió el error (pedir texto). También la usan las preguntas de `oc`. */
+export async function transcribeVoice(ctx: PortalContext, audio: { id: string; mimeType: string }): Promise<string | null> {
   const apiKey = deepgramKeyFromEnv(ctx.env);
   if (!apiKey) {
     await ctx.reply(VOICE_OFF);

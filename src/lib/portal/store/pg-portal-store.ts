@@ -15,6 +15,7 @@ import type {
   AppointmentPatch,
   Company,
   CompanyInput,
+  CompanyOrderProfile,
   CompanyPatch,
   CompanyRow,
   CompanySearch,
@@ -41,6 +42,10 @@ import type {
   PortalSession,
   PortalStore,
   PortalUser,
+  PurchaseOrder,
+  PurchaseOrderFilter,
+  PurchaseOrderInput,
+  PurchaseOrderPatch,
   Sale,
   SaleInput,
   Sector,
@@ -223,6 +228,7 @@ const OPPORTUNITY_COLS: Record<string, string> = {
   quoteNumber: "quote_number",
   probabilidad: "probabilidad",
 };
+const PURCHASE_ORDER_COLS: Record<string, string> = { opportunityId: "opportunity_id", numero: "numero", quoteNumber: "quote_number", fileName: "file_name", mimeType: "mime_type", data: "data", status: "status" };
 const APPOINTMENT_COLS: Record<string, string> = { startsAt: "starts_at", lugar: "lugar", conTecnico: "con_tecnico", notas: "notas", estado: "estado", opportunityId: "opportunity_id" };
 
 /** Patch camelCase -> objeto por columna (ignora undefined; null sí se escribe). */
@@ -819,6 +825,73 @@ export class PgPortalStore implements PortalStore {
       returning *`;
     return toVocabulary(r);
   }
+
+  // ── órdenes de compra y memoria del pedido ──
+
+  async addPurchaseOrder(input: PurchaseOrderInput): Promise<PurchaseOrder> {
+    const [r] = await this.sql`
+      insert into purchase_orders (company_id, opportunity_id, user_id, numero, quote_number, file_name, mime_type, data, status, created_at)
+      values (${input.companyId}, ${input.opportunityId ?? null}, ${input.userId ?? null}, ${input.numero?.trim() || null}, ${input.quoteNumber ?? null},
+        ${input.fileName ?? null}, ${input.mimeType ?? null}, ${input.data ?? null}, ${input.status ?? "recibida"}, ${input.createdAt ?? new Date()})
+      returning *`;
+    return toPurchaseOrder(r);
+  }
+
+  async getPurchaseOrder(id: number): Promise<PurchaseOrder | null> {
+    const [r] = await this.sql`select * from purchase_orders where id = ${id}`;
+    return r ? toPurchaseOrder(r) : null;
+  }
+
+  async updatePurchaseOrder(id: number, patch: PurchaseOrderPatch): Promise<PurchaseOrder | null> {
+    const cols = patchColumns(patch, PURCHASE_ORDER_COLS);
+    if (!Object.keys(cols).length) return this.getPurchaseOrder(id);
+    const [r] = await this.sql`update purchase_orders set ${this.sql(cols)} where id = ${id} returning *`;
+    return r ? toPurchaseOrder(r) : null;
+  }
+
+  async listPurchaseOrders(filter: PurchaseOrderFilter = {}): Promise<PurchaseOrder[]> {
+    const sql = this.sql;
+    const conds: Fragment[] = [];
+    if (filter.companyId !== undefined) conds.push(sql`company_id = ${filter.companyId}`);
+    if (filter.userId !== undefined) conds.push(sql`user_id = ${filter.userId}`);
+    if (filter.status !== undefined) conds.push(sql`status = ${filter.status}`);
+    const rows = await sql`select * from purchase_orders where ${where(sql, conds)} order by created_at desc, id desc`;
+    return rows.map(toPurchaseOrder);
+  }
+
+  async getOrderProfile(companyId: number): Promise<CompanyOrderProfile | null> {
+    const [r] = await this.sql`select * from company_order_profile where company_id = ${companyId}`;
+    return r ? toOrderProfile(r) : null;
+  }
+
+  async setOrderProfile(companyId: number, data: Record<string, unknown>): Promise<CompanyOrderProfile> {
+    const [r] = await this.sql`
+      insert into company_order_profile (company_id, data, updated_at) values (${companyId}, ${this.sql.json(data as postgres.JSONValue)}::jsonb, now())
+      on conflict (company_id) do update set data = excluded.data, updated_at = now()
+      returning *`;
+    return toOrderProfile(r);
+  }
+}
+
+function toPurchaseOrder(r: Row): PurchaseOrder {
+  return {
+    id: Number(r.id),
+    companyId: Number(r.company_id),
+    opportunityId: num(r.opportunity_id),
+    userId: num(r.user_id),
+    numero: str(r.numero),
+    quoteNumber: str(r.quote_number),
+    fileName: str(r.file_name),
+    mimeType: str(r.mime_type),
+    data: str(r.data),
+    status: String(r.status ?? "recibida"),
+    createdAt: date(r.created_at)!,
+  };
+}
+
+function toOrderProfile(r: Row): CompanyOrderProfile {
+  const data = typeof r.data === "string" ? (JSON.parse(r.data) as Record<string, unknown>) : ((r.data as Record<string, unknown> | null) ?? {});
+  return { companyId: Number(r.company_id), data, updatedAt: date(r.updated_at)! };
 }
 
 function toVocabulary(r: Row): VocabularyEntry {

@@ -344,8 +344,8 @@ export function plazoDiasFromTerm(term: string | undefined): number | undefined 
 }
 
 /**
- * Quote → order. Prices: the quote's net unit price plus its IGV. Provider items ("bought to order") go to the
- * third-party block with the provider and the purchase price with IGV (the item's cost, when the quote kept it).
+ * Quote → order. Prices: the quote's net unit price plus its IGV. Provider items ("bought to order", also a provider's
+ * row quoted at a price the salesman typed) go to the third-party block with the provider and the purchase price with IGV (the item's cost, when the quote kept it).
  */
 export function pedidoFromQuote(quote: Quote, extra: PedidoExtra = {}): PedidoData {
   const taxPct = quote.taxPct ?? 18;
@@ -360,7 +360,8 @@ export function pedidoFromQuote(quote: Quote, extra: PedidoExtra = {}): PedidoDa
       precioUnitarioSinIgv: it.unitPrice,
       igvPct: taxPct,
     };
-    if (it.origin === "provider") {
+    // de un proveedor: "provider", o un ítem de su lista con precio escrito ("manual" con el costo del proveedor)
+    if (it.origin === "provider" || (it.origin === "manual" && it.unitCost != null && !!it.provider && it.provider !== "manual")) {
       const name = it.provider.trim().toUpperCase();
       const contact = Object.entries(extra.proveedores ?? {}).find(([k]) => k.trim().toUpperCase() === name)?.[1];
       item.terceros = { proveedor: name, precioCompraConIgv: it.unitCost != null ? r2(it.unitCost * (1 + taxPct / 100)) : undefined, ...contact };

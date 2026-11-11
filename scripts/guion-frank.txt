@@ -18,18 +18,26 @@ cita zbuss martes 10am en su base de Ate con danyer
 #    (sin ANTHROPIC_API_KEY lo interpreta por reglas; con la clave, el modelo. Una nota de voz: @audio <archivo.ogg>)
 Visité ZBUSS, hablé con Carlos Quispe, jefe de flota. Tienen 82 ómnibus y quieren probar Fenixway en direccional. Quedamos en mandarle la cotización el jueves.
 sí
-# 7. Cotización con el formato actual, enlazada a la oportunidad (B4)
-#TODO B4: Fenixway 295/80R22.5 Valor 87 x8 para ZBUSS S.A.C., compras@zbuss.pe
-#TODO B4: ok
-#TODO B4: enviar
-# 8. Orden de compra y preguntas del pedido para Patricia (B5)
-#TODO B5: oc zbuss 4500123
-#TODO B5: 20/11
-#TODO B5: sí
-#TODO B5: no
-#TODO B5: cliente
-#TODO B5: contado, recoge en Lurín
-#TODO B5: ninguna
+# 7. Cotización con el formato actual para ZBUSS, enlazada a la oportunidad (B4): el cotizador pregunta si es para la
+#    empresa del portal y *enlazar* la une (si ya la enlazó por RUC, *enlazar* solo dice que no hay nada pendiente)
+Fenixway Flama 77 295/80R22.5 x8 precio 254 para ZBUSS S.A.C.
+ok
+enlazar
+# 8. Orden de compra y pedido para Patricia (B5): usa la cotización enlazada y pregunta una cosa a la vez
+#    (con un PDF: @doc ruta/oc.pdf oc zbuss 4500123). Respuestas: cotización, dirección fiscal, entrega, contacto,
+#    agencia, fecha, enllante, marcado, flete, plazo, observaciones. Excel sin leyenda en out/simulacion/ + resumen.
+oc zbuss 4500123
+sí
+Av. Nicolás Ayllón 2480, Ate, Lima
+la misma
+igual
+ninguna
+20/11
+sí
+no
+cliente
+igual
+ninguna
 # 9. Avance del mes (C2) y pre-propuesta (C1)
 #TODO C2: avance
 #TODO C1: prepropuesta zbuss

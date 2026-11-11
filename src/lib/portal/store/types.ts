@@ -530,7 +530,74 @@ export interface VocabularyRepo {
   addVocabulary(input: VocabularyInput): Promise<VocabularyEntry>;
 }
 
-export interface PortalStore extends CompanyRepo, FleetRepo, SalesRepo, UserRepo, ContactRepo, OpportunityRepo, ActivityRepo, AppointmentRepo, PortalConversationRepo, VocabularyRepo {
+// ── Órdenes de compra y memoria del pedido por cliente (fase B, `oc`) ──
+
+/**
+ * Orden de compra que el vendedor recibió del cliente (`oc <empresa> [n°]`, con el PDF o la imagen adjunta o sin ella).
+ * `data` = bytes en base64 (como quote_files). `status`: "recibida" al llegar; "pedido_generado" cuando el bot ya armó el
+ * Excel para Patricia.
+ */
+export interface PurchaseOrder {
+  id: number;
+  companyId: number;
+  opportunityId: number | null;
+  userId: number | null;
+  /** N° de OC del cliente ("4500123"). */
+  numero: string | null;
+  /** Cotización en la que se basa (número completo del cotizador). */
+  quoteNumber: string | null;
+  fileName: string | null;
+  mimeType: string | null;
+  data: string | null;
+  status: string;
+  createdAt: Date;
+}
+
+export interface PurchaseOrderInput {
+  companyId: number;
+  opportunityId?: number | null;
+  userId?: number | null;
+  numero?: string | null;
+  quoteNumber?: string | null;
+  fileName?: string | null;
+  mimeType?: string | null;
+  data?: string | null;
+  /** Por defecto "recibida". */
+  status?: string;
+  /** Por defecto ahora. */
+  createdAt?: Date;
+}
+
+export type PurchaseOrderPatch = Partial<Pick<PurchaseOrder, "opportunityId" | "numero" | "quoteNumber" | "fileName" | "mimeType" | "data" | "status">>;
+
+export interface PurchaseOrderFilter {
+  companyId?: number;
+  userId?: number;
+  status?: string;
+}
+
+/**
+ * Lo que el bot recuerda de un cliente para el pedido (direcciones, contacto, agencia y las últimas respuestas a las
+ * preguntas). El store lo guarda como JSON; el bot lo interpreta (src/lib/portal/order/profile.ts).
+ */
+export interface CompanyOrderProfile {
+  companyId: number;
+  data: Record<string, unknown>;
+  updatedAt: Date;
+}
+
+export interface PurchaseOrderRepo {
+  addPurchaseOrder(input: PurchaseOrderInput): Promise<PurchaseOrder>;
+  getPurchaseOrder(id: number): Promise<PurchaseOrder | null>;
+  updatePurchaseOrder(id: number, patch: PurchaseOrderPatch): Promise<PurchaseOrder | null>;
+  /** Más reciente primero. */
+  listPurchaseOrders(filter?: PurchaseOrderFilter): Promise<PurchaseOrder[]>;
+  getOrderProfile(companyId: number): Promise<CompanyOrderProfile | null>;
+  /** Reemplaza el perfil completo (quien llama mezcla con el anterior). */
+  setOrderProfile(companyId: number, data: Record<string, unknown>): Promise<CompanyOrderProfile>;
+}
+
+export interface PortalStore extends CompanyRepo, FleetRepo, SalesRepo, UserRepo, ContactRepo, OpportunityRepo, ActivityRepo, AppointmentRepo, PortalConversationRepo, VocabularyRepo, PurchaseOrderRepo {
   /** Escribe lo pendiente (JSON); no-op en Postgres. Los CLI la llaman antes de salir. */
   flush(): Promise<void>;
   close(): Promise<void>;

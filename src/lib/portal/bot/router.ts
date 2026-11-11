@@ -20,6 +20,9 @@
  *     conocida...) -> report, o ambiguous si además hay señales débiles de pedido (para, cliente, necesito, una marca).
  *     Cualquier otro caso -> passthrough.
  *  8. Quien no es usuario del portal nunca recibe report/ambiguous: quote o passthrough (el cotizador decide).
+ *  9. Un paso pendiente con `captureText: true` (preguntas del pedido de `oc`) se queda con todo texto en idle, aunque
+ *     tenga forma de pedido ("8 x Fenixway 315/80R22.5 a 254" son los ítems de la OC); con `acceptsMedia: true` también
+ *     con un adjunto (la OC enviada justo después del comando).
  */
 import { looksLikePriceMessage } from "../../ingest/whatsapp-text";
 import { findBrandInText, fold } from "../../tyre/brands";
@@ -38,8 +41,8 @@ export interface ClassifyInput {
   /** Estado del cotizador: basta el paso. */
   state: { step: QuoteStep } | QuoteStep;
   isPortalUser: boolean;
-  /** Paso pendiente del portal (null/undefined = ninguno). */
-  pendingPortalStep?: { kind: string } | string | null;
+  /** Paso pendiente del portal (null/undefined = ninguno). `captureText` / `acceptsMedia`: ver regla 9. */
+  pendingPortalStep?: { kind: string; captureText?: unknown; acceptsMedia?: unknown } | string | null;
   forwarded?: boolean;
   /** El texto nombra una empresa del padrón (lo calcula quien llama, solo si hace falta). */
   mentionsKnownCompany?: boolean;
@@ -182,6 +185,7 @@ export function looksLikeQuote(text: string): boolean {
 
 const stepOf = (s: ClassifyInput["state"]): string => (typeof s === "string" ? s : s?.step) || "idle";
 const pendingOf = (p: ClassifyInput["pendingPortalStep"]): string | null => (!p ? null : typeof p === "string" ? p : p.kind || null);
+const pendingFlag = (p: ClassifyInput["pendingPortalStep"], flag: "captureText" | "acceptsMedia"): boolean => !!p && typeof p === "object" && p[flag] === true;
 
 export function classifyIntent(input: ClassifyInput): Intent {
   const text = (input.text ?? "").trim();
@@ -202,12 +206,13 @@ export function classifyIntent(input: ClassifyInput): Intent {
     if (!input.isPortalUser) return "passthrough";
     return pending ? "portal_flow" : "report";
   }
-  if (input.hasMedia) return "passthrough";
+  if (input.hasMedia) return pending && pendingFlag(input.pendingPortalStep, "acceptsMedia") ? "portal_flow" : "passthrough";
   if (!text) return "passthrough";
   if (isCancel(text)) return "passthrough";
   if (step !== "idle") return "passthrough";
 
   const sig = textSignals(text, input.isPortalUser && !!input.mentionsKnownCompany);
+  if (pending && pendingFlag(input.pendingPortalStep, "captureText")) return "portal_flow";
   if (pending) {
     // respuestas cortas ("2", "sí", "cotización", "reporte") son del portal; un pedido de verdad o un comando del cotizador no
     const quoteShaped = findTyreSizes(text).length > 0 || (sig.strongQuote && fold(text).split(" ").length > 3);

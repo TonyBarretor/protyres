@@ -1,0 +1,484 @@
+import ExcelJS from "exceljs";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import type { PriceRow } from "../../ingest/types";
+import { buildQuote } from "../../quote/build";
+import type { QuoteItem } from "../../quote/types";
+import { SettingsSchema, type Settings } from "../../settings";
+import { JsonStore } from "../../store/json-store";
+import { FakeWhatsAppClient, type OutboundMessage } from "../../whatsapp/client";
+import { BotHandler } from "../../whatsapp/handler";
+import type { InboundMessage } from "../../whatsapp/webhook";
+import { normalizeOrderItemsText } from "../order/items";
+import { parseAgencia, parseFechaEntrega, parseFlete, parsePlazo, parseProveedor } from "../order/questions";
+import { JsonPortalStore } from "../store";
+import type { Company, PortalUser } from "../store/types";
+import { configureReportBot } from "./report";
+import { configureOrderBot, OC_STEP, parseOcArgs, PATRICIA_REMINDER, type OcStep } from "./commands/oc";
+import { getPendingHandler, type PortalContext } from "./registry";
+import { classifyIntent } from "./router";
+import { getPending, setPending } from "./state";
+
+const settings: Settings = SettingsSchema.parse({
+  company: { name: "Professional Tyres", tradeName: "360° Tyres", signatureName: "360 by Professional Tyres", taxId: "RUC: 20565716396" },
+  pricing: { currency: "USD", taxPct: 18, own: { pricesIncludeTax: true, maxDiscountPct: 20, defaultDiscountPct: 0 }, provider: { marginPct: 15, pricesIncludeTax: false }, exchangeRates: { PEN: 3.75 }, stalePriceDays: 30 },
+  quote: { numberFormat: "COT-{NNNN}", counterStart: 1, validityDays: 7, paymentType: "Factura crédito", paymentTerm: "30 días" },
+  salespeople: { default: "51900000001", "51900000001": { name: "Frank Rodríguez", title: "Key Account Manager", phone: "900 000 001", email: "frank@example.pe" } },
+});
+
+const FRANK = "51900000001";
+/** Empresas inventadas (RUC y razón social ficticios). */
+const RUC_ANDES = "20999000011";
+const RUC_ROCA = "20999000044";
+const TODAY = "2026-11-11";
+
+function row(p: Partial<PriceRow> & Pick<PriceRow, "id" | "provider" | "kind" | "brand" | "model" | "size" | "cost">): PriceRow {
+  return {
+    description: `${p.size} ${p.brand} ${p.model}`.toUpperCase(),
+    sizeDisplay: p.size,
+    sizeRaw: p.size,
+    isTyre: true,
+    ply: 18,
+    priceIncludesTax: p.kind === "own",
+    currency: "USD",
+    stock: p.kind === "provider" ? 40 : null,
+    priceDate: TODAY,
+    source: "excel",
+    sourceRef: "test.xlsx",
+    ...p,
+  };
+}
+
+const ROWS: PriceRow[] = [
+  // lista propia: 472 con IGV = 400 sin IGV
+  row({ id: "own-valor87", provider: "360 Tyres", kind: "own", brand: "Fenixway", model: "Valor 87", size: "295/80R22.5", cost: 472 }),
+  // proveedor: costo 200 sin IGV (236 con IGV); venta = 200 × 1,15 = 230 sin IGV
+  row({ id: "prov-flama77", provider: "Llantas del Sur", kind: "provider", brand: "Fenixway", model: "Flama 77", size: "315/80R22.5", cost: 200 }),
+];
+
+let seq = 0;
+let client: FakeWhatsAppClient;
+let portal: JsonPortalStore;
+let prices: JsonStore;
+let bot: BotHandler;
+let frank: PortalUser;
+let andes: Company;
+let roca: Company;
+const saved: Record<string, string | undefined> = {};
+
+const textMsg = (body: string): InboundMessage => ({ id: `wamid.oc${++seq}`, from: FRANK, timestamp: "1", type: "text", text: body, forwarded: false });
+const docMsg = (caption: string | undefined, mediaId: string, fileName = "OC-4500123.pdf"): InboundMessage => ({
+  id: `wamid.oc${++seq}`,
+  from: FRANK,
+  timestamp: "1",
+  type: "document",
+  text: caption,
+  forwarded: false,
+  media: { id: mediaId, mimeType: "application/pdf", fileName, caption },
+});
+
+/** Mensajes nuevos del bot tras `msg`. */
+async function say(msg: InboundMessage | string): Promise<OutboundMessage[]> {
+  const before = client.sent.length;
+  await bot.handle(typeof msg === "string" ? textMsg(msg) : msg);
+  return client.sent.slice(before);
+}
+const lastText = (out: OutboundMessage[]) => [...out].reverse().find((m) => m.kind === "text")?.body ?? "";
+
+async function sheetOf(doc: OutboundMessage): Promise<ExcelJS.Worksheet> {
+  const wb = new ExcelJS.Workbook();
+  await wb.xlsx.load(doc.file! as unknown as ArrayBuffer);
+  return wb.getWorksheet("Formato de Pedido")!;
+}
+const cell = (ws: ExcelJS.Worksheet, a: string) => {
+  const v = ws.getCell(a).value;
+  if (v instanceof Date) return v.toISOString().slice(0, 10);
+  if (v && typeof v === "object" && "result" in v) return (v as { result: unknown }).result;
+  return v;
+};
+
+/** Cotización 032 para ANDES enlazada a su oportunidad: 8 llantas propias a 254 + 4 del proveedor. */
+async function seedQuote(items?: QuoteItem[]) {
+  const base: QuoteItem[] = items ?? [
+    { description: "Llanta Fenixway Valor 87 295/80R22.5 18PR", brand: "Fenixway", model: "Valor 87", size: "295/80R22.5", sizeDisplay: "295/80R22.5", ply: 18, quantity: 8, unitPrice: 254, listPrice: 400, discountPct: 36.5, total: 2032, origin: "own", manualPrice: true, provider: "360 Tyres", priceDate: TODAY, available: null },
+    { description: "Llanta Fenixway Flama 77 315/80R22.5 18PR", brand: "Fenixway", model: "Flama 77", size: "315/80R22.5", sizeDisplay: "315/80R22.5", ply: 18, quantity: 4, unitPrice: 230, discountPct: 0, total: 920, origin: "provider", provider: "Llantas del Sur", unitCost: 200, priceDate: TODAY, available: 40 },
+  ];
+  const quote = buildQuote({
+    number: "NOVIEMBRE 2026 - 032",
+    request: { raw: "pedido de prueba", lines: [], parsedBy: "regex", customerCompany: "TRANSPORTES ANDES DEL PERU S.A.C.", address: "Av. Los Andes 450, Ate", paymentTerm: "45 días" },
+    items: base,
+    settings,
+    today: TODAY,
+    requestedBy: FRANK,
+  });
+  await prices.saveQuote(quote);
+  const opp = await portal.createOpportunity({ companyId: andes.id, ownerUserId: frank.id, etapa: "cotizacion_enviada", quoteNumber: quote.number, createdBy: frank.id });
+  return { quote, opp };
+}
+
+beforeEach(async () => {
+  for (const k of ["LLM_DISABLED", "PHOTOS_DISABLED", "DEEPGRAM_API_KEY", "PORTAL_SESSION_SECRET"]) saved[k] = process.env[k];
+  process.env.LLM_DISABLED = "1";
+  process.env.PHOTOS_DISABLED = "1";
+  process.env.PORTAL_SESSION_SECRET = "test-secret-0123456789abcdef";
+  delete process.env.DEEPGRAM_API_KEY;
+  client = new FakeWhatsAppClient();
+  portal = JsonPortalStore.memory();
+  prices = JsonStore.memory();
+  await prices.upsertRows(ROWS);
+  frank = await portal.upsertUser({ nombre: "Frank Rodríguez", whatsapp: FRANK, rol: "vendedor" });
+  const r = await portal.upsertCompanies([
+    { ruc: RUC_ANDES, razonSocial: "TRANSPORTES ANDES DEL PERU S.A.C.", sector: "pasajeros", departamento: "LIMA", unidades: 12, llantasPiso: 72 },
+    { ruc: RUC_ROCA, razonSocial: "E.T. LA ROCA S.R.L.", sector: "carga", departamento: "LIMA", unidades: 15, llantasPiso: 150 },
+  ]);
+  andes = (await portal.getCompany(r.ids[RUC_ANDES]))!;
+  roca = (await portal.getCompany(r.ids[RUC_ROCA]))!;
+  await portal.addContact({ companyId: andes.id, nombre: "Rosa Díaz", cargo: "jefa de flota", telefono: "987654321" });
+  configureOrderBot({ priceStore: prices, settings });
+  bot = new BotHandler({ client, store: prices, settings, portalStore: portal });
+});
+
+afterEach(() => {
+  configureOrderBot(null);
+  for (const [k, v] of Object.entries(saved)) {
+    if (v === undefined) delete process.env[k];
+    else process.env[k] = v;
+  }
+});
+
+describe("oc: con cotización enlazada y PDF adjunto", () => {
+  it("guarda la OC con el PDF, pregunta una por una, llena el Excel y cierra la oportunidad sin tocar sales", async () => {
+    const { opp } = await seedQuote();
+    const pdf = Buffer.from("%PDF-1.4 orden de compra de prueba");
+    client.media.set("oc-pdf-1", { data: pdf, mimeType: "application/pdf", fileName: "OC-4500123.pdf" });
+
+    let out = await say(docMsg("oc andes 4500123", "oc-pdf-1"));
+    expect(lastText(out)).toContain("OC *4500123* de *TRANSPORTES ANDES DEL PERU* registrada con el adjunto (OC-4500123.pdf)");
+    expect(lastText(out)).toContain("Uso la cotización *032*");
+    expect(lastText(out)).toContain("responde *sí* o escribe los ítems");
+    const [order] = await portal.listPurchaseOrders({ companyId: andes.id });
+    expect(order).toMatchObject({ numero: "4500123", status: "recibida", fileName: "OC-4500123.pdf", mimeType: "application/pdf", quoteNumber: "NOVIEMBRE 2026 - 032", userId: frank.id });
+    expect(Buffer.from(order.data!, "base64").equals(pdf)).toBe(true);
+
+    out = await say("sí");
+    expect(lastText(out)).toContain("Dirección fiscal de *TRANSPORTES ANDES DEL PERU*? (de la cotización: Av. Los Andes 450, Ate — responde *igual*");
+    out = await say("igual");
+    expect(lastText(out)).toContain("Dirección de entrega?");
+    out = await say("Jr. Las Palmeras 120, Ate");
+    expect(lastText(out)).toContain("(del portal: Rosa Díaz - Cel. 987654321");
+    out = await say("igual");
+    expect(lastText(out)).toContain("Agencia de transporte");
+    out = await say("Andeskar, Luis Pérez 987 654 321");
+    expect(lastText(out)).toContain("Fecha de entrega?");
+    // una respuesta con forma de pedido o un "sí" no se van al cotizador: el paso del pedido se queda con todo
+    out = await say("48 h post OC");
+    expect(lastText(out)).toContain("Servicio de enllante?");
+    out = await say("no");
+    expect(lastText(out)).toContain("Servicio de marcado?");
+    out = await say("sí");
+    expect(lastText(out)).toContain("Flete por cuenta de quién?");
+    out = await say("360, 20 soles x llanta");
+    expect(lastText(out)).toContain("*45 días* según la cotización 032");
+    out = await say("60");
+    expect(lastText(out)).toContain("Condiciones de pago del proveedor y dónde se recoge?");
+    out = await say("letras 90, recoge en almacén Lurín");
+    expect(lastText(out)).toContain("Observaciones?");
+    out = await say("entregar en horario de oficina");
+
+    // Excel sin leyenda y luego el resumen con el recordatorio
+    const doc = out.find((m) => m.kind === "document")!;
+    expect(doc.fileName).toMatch(/^Pedido ATC - TRANSPORTES ANDES DEL PERU - \d{2}-\d{2}-\d{4}\.xlsx$/);
+    expect(doc.caption ?? "").toBe("");
+    expect(out.indexOf(doc)).toBeLessThan(out.length - 1);
+    const summary = lastText(out);
+    expect(summary).toContain("✅ Pedido de *TRANSPORTES ANDES DEL PERU* listo (OC 4500123, cotización 032)");
+    expect(summary).toContain("Cerrado ganado");
+    expect(summary.endsWith(PATRICIA_REMINDER)).toBe(true);
+
+    const ws = await sheetOf(doc);
+    expect(cell(ws, "G5")).toBe("Frank Rodríguez");
+    expect(cell(ws, "G6")).toBe("TRANSPORTES ANDES DEL PERU S.A.C.");
+    expect(cell(ws, "G7")).toBe(Number(RUC_ANDES));
+    expect(cell(ws, "G8")).toBe("Av. Los Andes 450, Ate");
+    expect(cell(ws, "G9")).toBe("Jr. Las Palmeras 120, Ate");
+    expect(cell(ws, "G10")).toBe("48 h post OC");
+    expect(cell(ws, "G11")).toBe("CREDITO 60 DÍAS");
+    expect(cell(ws, "G12")).toBe("NO");
+    expect(cell(ws, "G13")).toBe("SI");
+    expect(cell(ws, "G14")).toBe("Rosa Díaz - Cel. 987654321");
+    expect(cell(ws, "G15")).toBe("360TYRES");
+    expect(cell(ws, "J15")).toBe("VALOR FLETE: 20 SOLES X LLANTA");
+    expect(cell(ws, "C18")).toBeNull(); // código de sistema vacío
+    expect(cell(ws, "E18")).toBe(8);
+    expect(cell(ws, "F18")).toBe("295/80R22.5 18PR FENIXWAY VALOR 87");
+    expect(cell(ws, "I18")).toBe(299.72);
+    expect(cell(ws, "E19")).toBe(4);
+    expect(cell(ws, "I19")).toBe(271.4);
+    expect(cell(ws, "J25")).toBe(3483.36);
+    expect(cell(ws, "C27")).toBe("Observaciones: entregar en horario de oficina");
+    expect(cell(ws, "G29")).toBe("LLANTAS DEL SUR");
+    expect(cell(ws, "G33")).toBe("315/80R22.5 18PR");
+    expect(cell(ws, "G36")).toBe(236);
+    expect(cell(ws, "G37")).toBe("LETRAS 90");
+    expect(cell(ws, "G38")).toBe("ALMACÉN LURÍN");
+    expect(cell(ws, "C41")).toBe("CONTACTO DE PERSONA EN AGENCIA ANDESKAR");
+    expect(cell(ws, "C42")).toBe("Luis Pérez");
+    expect(cell(ws, "D43")).toBe("987 654 321");
+
+    // oportunidad, actividad con la venta esperada, cliente, plazo, memoria y OC
+    const o = (await portal.getOpportunity(opp.id))!;
+    expect(o.etapa).toBe("cerrado_ganado");
+    expect(o.closedAt).not.toBeNull();
+    expect(o.montoEstimado).toBe(3483.36);
+    const act = (await portal.listActivities({ companyId: andes.id })).find((a) => a.tipo === "oc")!;
+    expect(act.opportunityId).toBe(opp.id);
+    expect(act.data).toMatchObject({ numero: "4500123", quoteNumber: "NOVIEMBRE 2026 - 032", ventaEsperada: { moneda: "USD", total: 3483.36, unidades: 12 } });
+    expect((act.data!.ventaEsperada as { items: unknown[] }).items).toHaveLength(2);
+    expect(await portal.salesByRuc(RUC_ANDES)).toHaveLength(0); // la venta real llega con el Excel de ventas
+    const c = (await portal.getCompany(andes.id))!;
+    expect(c.esCliente).toBe(true);
+    expect(c.creditTermsDays).toBe(60); // el vendedor dio otro plazo: queda para la empresa
+    const prof = (await portal.getOrderProfile(andes.id))!.data;
+    expect(prof).toMatchObject({ direccionFiscal: "Av. Los Andes 450, Ate", direccionEntrega: "Jr. Las Palmeras 120, Ate", contacto: "Rosa Díaz - Cel. 987654321", agencia: "Andeskar", last: { fechaEntrega: "48 h post OC", enllante: "NO", marcado: "SI", flete: "360TYRES", pagoProveedor: "LETRAS 90" } });
+    expect((await portal.getPurchaseOrder(order.id))!.status).toBe("pedido_generado");
+    expect(await getPending(portal, FRANK, new Date())).toBeNull();
+  });
+});
+
+describe("oc: sin cotización previa", () => {
+  it("pide los ítems con el formato de cotización y los arma con las listas (precio escrito manda)", async () => {
+    let out = await say("oc roca 7788");
+    expect(lastText(out)).toContain("No encontré una cotización tuya para *E.T. LA ROCA*");
+    expect(lastText(out)).toContain("Escríbeme los ítems de la OC con el formato de cotización");
+    out = await say("8 x Fenixway Flama 77 315/80R22.5 a 254\n4 x Fenixway Valor 87 295/80R22.5");
+    const t = lastText(out);
+    expect(t).toContain("Entendí:");
+    expect(t).toContain("8 × 315/80R22.5 18PR FENIXWAY FLAMA 77 — US$ 299.72 c/u _(LLANTAS DEL SUR)_"); // 254 + IGV
+    expect(t).toContain("4 × 295/80R22.5 18PR FENIXWAY VALOR 87 — US$ 472.00 c/u"); // lista propia
+    expect(t).toContain("Dirección fiscal de *E.T. LA ROCA*?");
+    const answers = ["Av. Industrial 300, Lurín", "la misma", "Pedro Soto 999888777", "ninguna", "20/11", "sí", "no", "cliente", "contado", "contado, recoge en almacén del proveedor", "ninguna"];
+    for (const a of answers) out = await say(a);
+    const doc = out.find((m) => m.kind === "document")!;
+    const ws = await sheetOf(doc);
+    expect(cell(ws, "G6")).toBe("E.T. LA ROCA S.R.L.");
+    expect(cell(ws, "F18")).toBe("315/80R22.5 18PR FENIXWAY FLAMA 77");
+    expect(cell(ws, "I18")).toBe(299.72);
+    expect(cell(ws, "F19")).toBe("295/80R22.5 18PR FENIXWAY VALOR 87");
+    expect(cell(ws, "I19")).toBe(472);
+    expect(cell(ws, "G10")).toBe("2026-11-20");
+    expect(cell(ws, "G11")).toBe("CONTADO");
+    expect(cell(ws, "G29")).toBe("LLANTAS DEL SUR");
+    expect(cell(ws, "G36")).toBe(236);
+    expect(cell(ws, "G38")).toBe("ALMACÉN DEL PROVEEDOR");
+    expect(cell(ws, "C41")).toBe("CONTACTO DE PERSONA EN AGENCIA");
+    expect(lastText(out)).toContain("(OC 7788)");
+    // sin oportunidad previa: se crea y queda en Cerrado ganado
+    const opps = await portal.listOpportunities({ companyId: roca.id });
+    expect(opps).toHaveLength(1);
+    expect(opps[0].etapa).toBe("cerrado_ganado");
+    expect((await portal.getCompany(roca.id))!.creditTermsDays).toBe(0);
+  });
+
+  it("más de 7 ítems: lo dice y pide dividir; el paso sigue esperando los ítems", async () => {
+    await say("oc roca");
+    const lines = Array.from({ length: 8 }, (_, i) => `${i + 1} x Fenixway Valor 87 295/80R22.5 precio ${200 + i}`).join("\n");
+    const out = await say(lines);
+    expect(lastText(out)).toContain("tiene 7 filas de ítems y escribiste 8");
+    expect(lastText(out)).toContain("Divide la OC en dos pedidos");
+    const step = (await getPending(portal, FRANK, new Date())) as OcStep;
+    expect(step.kind).toBe(OC_STEP);
+    expect(step.phase).toBe("items");
+    expect(out.some((m) => m.kind === "document")).toBe(false);
+  });
+
+  it("cotización enlazada de más de 7 ítems: avisa y pide los ítems", async () => {
+    const item = (i: number): QuoteItem => ({ description: `Llanta ${i}`, brand: "Fenixway", model: "Valor 87", size: "295/80R22.5", sizeDisplay: "295/80R22.5", quantity: 1, unitPrice: 250 + i, discountPct: 0, total: 250 + i, origin: "manual", provider: "manual", priceDate: TODAY, available: null });
+    await seedQuote(Array.from({ length: 8 }, (_, i) => item(i)));
+    const out = await say("oc andes 4500999");
+    expect(lastText(out)).toContain("La cotización *032* tiene 8 ítems. El formato de pedido tiene 7 filas de ítems y este pedido tiene 8. Divídelo en dos pedidos.");
+    expect(lastText(out)).toContain("Escríbeme los ítems de la OC");
+  });
+});
+
+describe("oc: memoria del cliente", () => {
+  it("ofrece los datos y las respuestas de la última vez; *igual* los acepta", async () => {
+    await portal.setOrderProfile(roca.id, {
+      direccionFiscal: "Av. Industrial 300, Lurín",
+      direccionEntrega: "Almacén Chilca km 62",
+      contacto: "Pedro Soto 999888777",
+      agencia: "",
+      last: { fechaEntrega: "48 h post OC", enllante: "SI", marcado: "NO", flete: "AGENCIA", valorFlete: "15 SOLES X LLANTA", observaciones: "llamar antes" },
+    });
+    await portal.updateCompany(roca.id, { creditTermsDays: 30 });
+    await say("oc roca 5500");
+    let out = await say("4 x Fenixway Valor 87 295/80R22.5");
+    let t = lastText(out);
+    expect(t).toContain("Datos de *E.T. LA ROCA* de la última vez:");
+    expect(t).toContain("• Dirección de entrega: Almacén Chilca km 62");
+    expect(t).toContain("• Agencia: ninguna");
+    out = await say("igual");
+    expect(lastText(out)).toContain("Fecha de entrega? (la última vez: 48 h post OC — responde *igual* o escribe otra)");
+    out = await say("igual");
+    expect(lastText(out)).toContain("la última vez: si — *igual*");
+    out = await say("igual");
+    expect(lastText(out)).toContain("la última vez: no — *igual*");
+    out = await say("ok");
+    expect(lastText(out)).toContain("La última vez: AGENCIA, 15 SOLES X LLANTA");
+    out = await say("igual");
+    t = lastText(out);
+    expect(t).toContain("*30 días* de E.T. LA ROCA en el portal");
+    out = await say("igual");
+    expect(lastText(out)).toContain("(la última vez: llamar antes — responde *igual*");
+    out = await say("igual"); // sin ítems de terceros no pregunta por el proveedor
+    const ws = await sheetOf(out.find((m) => m.kind === "document")!);
+    expect(cell(ws, "G8")).toBe("Av. Industrial 300, Lurín");
+    expect(cell(ws, "G9")).toBe("Almacén Chilca km 62");
+    expect(cell(ws, "G10")).toBe("48 h post OC");
+    expect(cell(ws, "G11")).toBe("CREDITO 30 DÍAS");
+    expect(cell(ws, "G12")).toBe("SI");
+    expect(cell(ws, "G13")).toBe("NO");
+    expect(cell(ws, "G14")).toBe("Pedro Soto 999888777");
+    expect(cell(ws, "G15")).toBe("AGENCIA");
+    expect(cell(ws, "J15")).toBe("VALOR FLETE: 15 SOLES X LLANTA");
+    expect(cell(ws, "C27")).toBe("Observaciones: llamar antes");
+    expect(cell(ws, "G29")).toBeNull();
+    expect((await portal.getCompany(roca.id))!.creditTermsDays).toBe(30); // aceptó el plazo de la empresa: no cambia
+  });
+
+  it("corrige un dato recordado con *entrega: …* y una respuesta que no se entiende repite la pregunta", async () => {
+    await portal.setOrderProfile(roca.id, { direccionFiscal: "Av. Industrial 300, Lurín", direccionEntrega: "Almacén Chilca km 62", contacto: "Pedro Soto", agencia: "" });
+    await say("oc roca");
+    await say("4 x Fenixway Valor 87 295/80R22.5");
+    let out = await say("entrega: Av. Nueva 500, Callao");
+    expect(lastText(out)).toContain("Fecha de entrega?");
+    out = await say("mañana");
+    expect(lastText(out)).toContain("Servicio de enllante?");
+    out = await say("tal vez");
+    expect(lastText(out)).toContain("Responde *sí* o *no*.");
+    expect(lastText(out)).toContain("Servicio de enllante?");
+    for (const a of ["no", "no", "cliente", "15", "ninguna"]) out = await say(a);
+    const ws = await sheetOf(out.find((m) => m.kind === "document")!);
+    expect(cell(ws, "G9")).toBe("Av. Nueva 500, Callao");
+    expect(cell(ws, "G8")).toBe("Av. Industrial 300, Lurín");
+    expect((await portal.getOrderProfile(roca.id))!.data.direccionEntrega).toBe("Av. Nueva 500, Callao");
+  });
+});
+
+describe("oc: respuesta por voz", () => {
+  it("una nota de voz en una pregunta se transcribe con el camino de los reportes y vale como respuesta", async () => {
+    process.env.DEEPGRAM_API_KEY = "dg-test-key";
+    const deepgramFetch = (async () =>
+      new Response(JSON.stringify({ metadata: { duration: 2 }, results: { channels: [{ alternatives: [{ transcript: "48 horas después de la OC", confidence: 0.9 }] }] } }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      })) as unknown as typeof fetch;
+    configureReportBot({ llm: null, deepgramFetch, downloadMedia: async () => ({ data: Buffer.from("ogg"), mimeType: "audio/ogg" }), logMessage: async () => undefined });
+    try {
+      await portal.setOrderProfile(roca.id, { direccionFiscal: "Av. Industrial 300", direccionEntrega: "Av. Industrial 300", contacto: "Pedro Soto", agencia: "" });
+      await say("oc roca");
+      await say("4 x Fenixway Valor 87 295/80R22.5");
+      await say("igual");
+      const out = await say({ id: `wamid.oc${++seq}`, from: FRANK, timestamp: "1", type: "audio", forwarded: false, media: { id: "aud-oc", mimeType: "audio/ogg" } });
+      const texts = out.filter((m) => m.kind === "text").map((m) => m.body ?? "");
+      expect(texts[0]).toContain("🎙️ Entendí: «48 horas después de la OC»");
+      expect(texts[1]).toContain("Servicio de enllante?");
+      const step = (await getPending(portal, FRANK, new Date())) as OcStep;
+      expect(step.answers.fechaEntrega).toBe("48 horas después de la OC");
+    } finally {
+      configureReportBot(null);
+    }
+  });
+});
+
+describe("oc: adjunto después del comando", () => {
+  async function ctxFor(msg: InboundMessage, out: string[]): Promise<PortalContext> {
+    return {
+      store: portal,
+      user: frank,
+      from: FRANK,
+      msg,
+      reply: async (b) => void out.push(b),
+      sendDocument: async () => undefined,
+      sendTextTo: async () => undefined,
+      requote: async () => undefined,
+      env: {},
+      now: new Date(),
+      log: () => undefined,
+      downloadMedia: (id) => client.downloadMedia(id),
+    };
+  }
+
+  it("el PDF que llega en los 10 min siguientes se guarda en la OC y repite la pregunta", async () => {
+    await say("oc roca 4500123");
+    const step = (await getPending(portal, FRANK, new Date())) as OcStep;
+    expect(step).toMatchObject({ kind: OC_STEP, captureText: true, acceptsMedia: true, hasFile: false });
+    // el router deja pasar el adjunto al paso pendiente
+    expect(classifyIntent({ text: "", hasMedia: true, mediaType: "document", state: "idle", isPortalUser: true, pendingPortalStep: step })).toBe("portal_flow");
+    client.media.set("oc-late", { data: Buffer.from("%PDF tarde"), mimeType: "application/pdf", fileName: "orden.pdf" });
+    const out: string[] = [];
+    const msg = docMsg(undefined, "oc-late", "orden.pdf");
+    await getPendingHandler(OC_STEP)!(await ctxFor(msg, out), step, "");
+    expect(out[0]).toContain("📎 Guardé la OC (orden.pdf).");
+    expect(out[0]).toContain("Escríbeme los ítems");
+    const order = (await portal.getPurchaseOrder(step.orderId))!;
+    expect(order.fileName).toBe("orden.pdf");
+    expect(Buffer.from(order.data!, "base64").toString()).toBe("%PDF tarde");
+    expect(((await getPending(portal, FRANK, new Date())) as OcStep).hasFile).toBe(true);
+  });
+
+  it("por el handler: el PDF sin leyenda justo después de oc llega al paso pendiente y se guarda", async () => {
+    await say("oc roca 4500123");
+    const step = (await getPending(portal, FRANK, new Date())) as OcStep;
+    client.media.set("oc-handler", { data: Buffer.from("%PDF por handler"), mimeType: "application/pdf", fileName: "oc.pdf" });
+    const out = await say(docMsg(undefined, "oc-handler", "oc.pdf"));
+    expect(out.map((m) => ("body" in m ? m.body : "")).join("\n")).toContain("📎 Guardé la OC (oc.pdf).");
+    expect(Buffer.from((await portal.getPurchaseOrder(step.orderId))!.data!, "base64").toString()).toBe("%PDF por handler");
+  });
+
+  it("pasados 10 min no lo guarda", async () => {
+    await say("oc roca 4500123");
+    const step = (await getPending(portal, FRANK, new Date())) as OcStep;
+    const old = { ...step, mediaUntil: new Date(Date.now() - 1000).toISOString() };
+    await setPending(portal, FRANK, old, new Date());
+    client.media.set("oc-late2", { data: Buffer.from("x"), mimeType: "application/pdf" });
+    const out: string[] = [];
+    await getPendingHandler(OC_STEP)!(await ctxFor(docMsg(undefined, "oc-late2"), out), old, "");
+    expect(out[0]).toContain("más de 10 min");
+    expect((await portal.getPurchaseOrder(step.orderId))!.data).toBeNull();
+  });
+});
+
+describe("oc: piezas puras", () => {
+  it("parseOcArgs", () => {
+    expect(parseOcArgs("zbuss 4500123")).toEqual({ empresa: "zbuss", numero: "4500123" });
+    expect(parseOcArgs("zbuss n° 45")).toEqual({ empresa: "zbuss", numero: "45" });
+    expect(parseOcArgs("20602221505 4500123")).toEqual({ empresa: "20602221505", numero: "4500123" });
+    expect(parseOcArgs("20602221505")).toEqual({ empresa: "20602221505", numero: null });
+    expect(parseOcArgs("expreso 2000")).toEqual({ empresa: "expreso 2000", numero: null });
+    expect(parseOcArgs("la roca oc OC-778")).toEqual({ empresa: "la roca", numero: "OC-778" });
+  });
+
+  it("respuestas cortas", () => {
+    expect(parseFlete("cliente")).toEqual({ flete: "CLIENTE" });
+    expect(parseFlete("360, 20 soles x llanta")).toEqual({ flete: "360TYRES", valorFlete: "20 SOLES X LLANTA" });
+    expect(parseFlete("agencia 15 soles")).toEqual({ flete: "AGENCIA", valorFlete: "15 SOLES" });
+    expect(parseProveedor("contado, recoge en Lurín")).toEqual({ pagoProveedor: "CONTADO", recojo: "LURÍN" });
+    expect(parseProveedor("letras 90")).toEqual({ pagoProveedor: "LETRAS 90" });
+    expect(parseAgencia("ninguna")).toEqual({ agencia: "" });
+    expect(parseAgencia("Andeskar, Luis Pérez 987 654 321")).toEqual({ agencia: "Andeskar", agenciaContacto: "Luis Pérez", agenciaTelefono: "987 654 321" });
+    expect(parsePlazo("45 días")).toBe(45);
+    expect(parsePlazo("contado")).toBe(0);
+    expect(parsePlazo("pronto")).toBeNull();
+    const now = new Date("2026-11-11T15:00:00Z");
+    expect(parseFechaEntrega("20/11", now)).toBe("2026-11-20");
+    expect(parseFechaEntrega("48 h post OC", now)).toBe("48 h post OC");
+    expect(normalizeOrderItemsText("8 x Fenixway Flama 77 315/80R22.5 a 254\n2 x 11R22.5 a US$ 300.50")).toBe("8 x Fenixway Flama 77 315/80R22.5 precio 254\n2 x 11R22.5 precio 300.50");
+  });
+
+  it("router: el paso del pedido se queda con textos con forma de pedido; otros pasos no", () => {
+    const base = { hasMedia: false, state: "idle", isPortalUser: true };
+    const items = "8 x Fenixway Flama 77 315/80R22.5 a 254";
+    expect(classifyIntent({ ...base, text: items, pendingPortalStep: { kind: OC_STEP, captureText: true } })).toBe("portal_flow");
+    expect(classifyIntent({ ...base, text: items, pendingPortalStep: { kind: "report_draft" } })).toBe("quote");
+    expect(classifyIntent({ ...base, text: "", hasMedia: true, mediaType: "document", pendingPortalStep: { kind: "report_draft" } })).toBe("passthrough");
+  });
+});
