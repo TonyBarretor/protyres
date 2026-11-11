@@ -503,7 +503,34 @@ export interface PortalConversationRepo {
   setPortalConversation(phone: string, state: Record<string, unknown> | null): Promise<void>;
 }
 
-export interface PortalStore extends CompanyRepo, FleetRepo, SalesRepo, UserRepo, ContactRepo, OpportunityRepo, ActivityRepo, AppointmentRepo, PortalConversationRepo {
+// ── Vocabulario aprendido (fase B, voz) ──
+
+/**
+ * Término que el bot aprendió con `aprende X = Y`: `term` es como sale en la transcripción ("flama setenta y siete") y
+ * `meaning` lo que significa ("Flama 77"). Único sin distinguir mayúsculas: volver a aprender el mismo término lo reemplaza.
+ */
+export interface VocabularyEntry {
+  id: number;
+  term: string;
+  meaning: string;
+  addedBy: number | null;
+  createdAt: Date;
+}
+
+export interface VocabularyInput {
+  term: string;
+  meaning: string;
+  addedBy?: number | null;
+}
+
+export interface VocabularyRepo {
+  /** Más antiguo primero. */
+  listVocabulary(): Promise<VocabularyEntry[]>;
+  /** Inserta o, si el término ya existe (sin distinguir mayúsculas), actualiza su significado y quién lo añadió. */
+  addVocabulary(input: VocabularyInput): Promise<VocabularyEntry>;
+}
+
+export interface PortalStore extends CompanyRepo, FleetRepo, SalesRepo, UserRepo, ContactRepo, OpportunityRepo, ActivityRepo, AppointmentRepo, PortalConversationRepo, VocabularyRepo {
   /** Escribe lo pendiente (JSON); no-op en Postgres. Los CLI la llaman antes de salir. */
   flush(): Promise<void>;
   close(): Promise<void>;

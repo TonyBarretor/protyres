@@ -279,6 +279,15 @@ const STATEMENTS = [
     state jsonb not null default '{}'::jsonb,
     updated_at timestamptz not null default now()
   )`,
+  // Vocabulario aprendido por el bot (`aprende X = Y`): términos clave de Deepgram y reemplazos en la transcripción.
+  `create table if not exists vocabulary (
+    id serial primary key,
+    term text not null,
+    meaning text not null,
+    added_by integer,
+    created_at timestamptz not null default now()
+  )`,
+  `create unique index if not exists vocabulary_term_lower_idx on vocabulary (lower(term))`,
 ];
 
 /** Desde aquí empiezan las sentencias del portal: antes de ejecutarlas se pasa la guardia (migrate-guard.ts). */

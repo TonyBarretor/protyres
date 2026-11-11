@@ -49,6 +49,8 @@ import type {
   UpsertCompaniesResult,
   UserInput,
   UserRole,
+  VocabularyEntry,
+  VocabularyInput,
 } from "./types";
 
 type Sql = ReturnType<typeof postgres>;
@@ -799,4 +801,26 @@ export class PgPortalStore implements PortalStore {
       insert into portal_conversations (phone, state, updated_at) values (${key}, ${this.sql.json(state as postgres.JSONValue)}::jsonb, now())
       on conflict (phone) do update set state = excluded.state, updated_at = now()`;
   }
+
+  // ── vocabulario aprendido ──
+
+  async listVocabulary(): Promise<VocabularyEntry[]> {
+    const rows = await this.sql`select * from vocabulary order by created_at asc, id asc`;
+    return rows.map(toVocabulary);
+  }
+
+  async addVocabulary(input: VocabularyInput): Promise<VocabularyEntry> {
+    const term = input.term.trim();
+    const meaning = input.meaning.trim();
+    if (!term || !meaning) throw new Error("Vocabulario: término y significado son obligatorios");
+    const [r] = await this.sql`
+      insert into vocabulary (term, meaning, added_by) values (${term}, ${meaning}, ${input.addedBy ?? null})
+      on conflict ((lower(term))) do update set meaning = excluded.meaning, added_by = excluded.added_by
+      returning *`;
+    return toVocabulary(r);
+  }
+}
+
+function toVocabulary(r: Row): VocabularyEntry {
+  return { id: Number(r.id), term: String(r.term), meaning: String(r.meaning), addedBy: num(r.added_by), createdAt: date(r.created_at)! };
 }

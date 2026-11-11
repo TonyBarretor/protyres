@@ -47,6 +47,8 @@ import type {
   StageHistoryEntry,
   UpsertCompaniesResult,
   UserInput,
+  VocabularyEntry,
+  VocabularyInput,
 } from "./types";
 import type { StageId } from "../stages";
 
@@ -55,7 +57,7 @@ interface StoredLoginToken extends LoginToken {
   createdAt: Date;
 }
 
-type Table = "companies" | "fleet" | "sales" | "users" | "contacts" | "opportunities" | "stageHistory" | "activities" | "appointments";
+type Table = "companies" | "fleet" | "sales" | "users" | "contacts" | "opportunities" | "stageHistory" | "activities" | "appointments" | "vocabulary";
 
 interface FileData {
   version: 1;
@@ -72,6 +74,7 @@ interface FileData {
   activities: Activity[];
   appointments: Appointment[];
   portalConversations?: PortalConversation[];
+  vocabulary?: VocabularyEntry[];
 }
 
 /** Campos Date por colección (JSON los guarda como texto ISO). */
@@ -87,6 +90,7 @@ const DATE_FIELDS: Record<string, string[]> = {
   activities: ["occurredAt", "createdAt"],
   appointments: ["startsAt", "createdAt"],
   portalConversations: ["updatedAt"],
+  vocabulary: ["createdAt"],
 };
 
 const DEBOUNCE_MS = 300;
@@ -97,7 +101,7 @@ const copy = <T extends object>(o: T): T => ({ ...o });
 const time = (d: Date | null | undefined) => (d ? d.getTime() : 0);
 
 export class JsonPortalStore implements PortalStore {
-  private seq: Record<Table, number> = { companies: 0, fleet: 0, sales: 0, users: 0, contacts: 0, opportunities: 0, stageHistory: 0, activities: 0, appointments: 0 };
+  private seq: Record<Table, number> = { companies: 0, fleet: 0, sales: 0, users: 0, contacts: 0, opportunities: 0, stageHistory: 0, activities: 0, appointments: 0, vocabulary: 0 };
   private companies = new Map<number, Company>();
   private companyByRuc = new Map<string, number>();
   private fleet = new Map<string, FleetVehicle>();
@@ -114,6 +118,7 @@ export class JsonPortalStore implements PortalStore {
   private activities: Activity[] = [];
   private appointments = new Map<number, Appointment>();
   private portalConversations = new Map<string, PortalConversation>();
+  private vocabulary: VocabularyEntry[] = [];
   /** companyId -> marcas normalizadas (se invalida al cambiar la flota). */
   private marcasCache: Map<number, Set<string>> | null = null;
   private timer: NodeJS.Timeout | null = null;
@@ -158,6 +163,7 @@ export class JsonPortalStore implements PortalStore {
     this.activities = revive("activities", raw.activities);
     for (const a of revive("appointments", raw.appointments)) this.appointments.set(a.id, a);
     for (const c of revive("portalConversations", raw.portalConversations)) this.portalConversations.set(c.phone, c);
+    this.vocabulary = revive("vocabulary", raw.vocabulary);
   }
 
   private snapshot(): FileData {
@@ -176,6 +182,7 @@ export class JsonPortalStore implements PortalStore {
       activities: this.activities,
       appointments: [...this.appointments.values()],
       portalConversations: [...this.portalConversations.values()],
+      vocabulary: this.vocabulary,
     };
   }
 
@@ -849,5 +856,28 @@ export class JsonPortalStore implements PortalStore {
     }
     this.portalConversations.set(key, { phone: key, state: JSON.parse(JSON.stringify(state)) as Record<string, unknown>, updatedAt: new Date() });
     this.changed();
+  }
+
+  // ── vocabulario aprendido ──
+
+  async listVocabulary(): Promise<VocabularyEntry[]> {
+    return this.vocabulary.map(copy).sort((a, b) => time(a.createdAt) - time(b.createdAt) || a.id - b.id);
+  }
+
+  async addVocabulary(input: VocabularyInput): Promise<VocabularyEntry> {
+    const term = input.term.trim();
+    const meaning = input.meaning.trim();
+    if (!term || !meaning) throw new Error("Vocabulario: término y significado son obligatorios");
+    const prev = this.vocabulary.find((v) => v.term.toLowerCase() === term.toLowerCase());
+    if (prev) {
+      prev.meaning = meaning;
+      prev.addedBy = input.addedBy ?? null;
+      this.changed();
+      return copy(prev);
+    }
+    const row: VocabularyEntry = { id: this.nextId("vocabulary"), term, meaning, addedBy: input.addedBy ?? null, createdAt: new Date() };
+    this.vocabulary.push(row);
+    this.changed();
+    return copy(row);
   }
 }
