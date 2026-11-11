@@ -1,12 +1,13 @@
 /**
  * Estado del portal en la conversación de WhatsApp (tabla portal_conversations / store JSON), separado del estado del
- * cotizador. Por ahora solo guarda un paso pendiente: lo que el bot preguntó y espera como respuesta.
+ * cotizador. Guarda un paso pendiente (lo que el bot preguntó y espera como respuesta) y, desde B6, los avisos que no se
+ * pudieron mandar por la ventana de 24 h de WhatsApp (`notices`): routePortal los muestra en el siguiente mensaje del usuario.
  *
  * Tipos de paso de B1: choose_company (elegir de una lista numerada), intent_choice (¿cotización o reporte?),
  * report_draft (texto del reporte guardado para el intérprete, bloque B3). Los bloques siguientes añaden los suyos.
  */
 import type { DraftField, ReportDraft } from "../report/draft";
-import type { PortalStore } from "../store/types";
+import type { PortalConversation, PortalStore } from "../store/types";
 
 /** Un paso pendiente vence a las 2 horas: después, el mensaje se clasifica como si no hubiera paso. */
 export const PENDING_TTL_MS = 2 * 60 * 60 * 1000;
@@ -18,8 +19,22 @@ export interface PendingStep {
   [key: string]: unknown;
 }
 
+/** Aviso que no se pudo enviar (fuera de la ventana de 24 h): se muestra en el siguiente mensaje del usuario. */
+export interface PortalNotice {
+  text: string;
+  /** ISO. */
+  createdAt: string;
+  /** De dónde salió ("resumen_diario", ...). */
+  kind?: string;
+}
+
+/** Se guardan como máximo estos avisos (los más recientes). */
+export const MAX_NOTICES = 7;
+
 export interface PortalConvState {
   pending?: PendingStep | null;
+  /** Opcional: los estados anteriores a B6 no lo traen. */
+  notices?: PortalNotice[];
   [key: string]: unknown;
 }
 
@@ -62,12 +77,38 @@ export function isExpired(step: PendingStep, now: Date): boolean {
   return !Number.isFinite(t) || now.getTime() - t > PENDING_TTL_MS;
 }
 
-/** El paso pendiente vigente (null si no hay o venció). */
-export async function getPending(store: PortalStore, phone: string, now: Date): Promise<PendingStep | null> {
-  const conv = await store.getPortalConversation(phone);
+/** El paso pendiente vigente de un estado ya leído (null si no hay o venció). */
+export function pendingOf(conv: PortalConversation | null | undefined, now: Date): PendingStep | null {
   const pending = (conv?.state as PortalConvState | undefined)?.pending;
   if (!pending || typeof pending !== "object" || typeof pending.kind !== "string") return null;
   return isExpired(pending, now) ? null : pending;
+}
+
+/** El paso pendiente vigente (null si no hay o venció). */
+export async function getPending(store: PortalStore, phone: string, now: Date): Promise<PendingStep | null> {
+  return pendingOf(await store.getPortalConversation(phone), now);
+}
+
+/** Avisos pendientes de un estado ya leído (los mal formados se ignoran). */
+export function noticesOf(conv: PortalConversation | null | undefined): PortalNotice[] {
+  const list = (conv?.state as PortalConvState | undefined)?.notices;
+  if (!Array.isArray(list)) return [];
+  return list.filter((n): n is PortalNotice => !!n && typeof n === "object" && typeof n.text === "string" && !!n.text.trim());
+}
+
+/** Guarda un aviso pendiente (conserva el resto del estado; como máximo MAX_NOTICES, los más recientes). */
+export async function addNotice(store: PortalStore, phone: string, notice: PortalNotice): Promise<void> {
+  const conv = await store.getPortalConversation(phone);
+  const notices = [...noticesOf(conv), notice].slice(-MAX_NOTICES);
+  await store.setPortalConversation(phone, { ...((conv?.state as PortalConvState) ?? {}), notices });
+}
+
+/** Borra los avisos de un estado ya leído; devuelve el estado que queda (null si no queda nada). */
+export async function clearNotices(store: PortalStore, phone: string, conv: PortalConversation): Promise<PortalConversation | null> {
+  const { notices: _drop, ...rest } = conv.state as PortalConvState;
+  const left = Object.keys(rest).length ? rest : null;
+  await store.setPortalConversation(phone, left);
+  return left ? { ...conv, state: left } : null;
 }
 
 export async function setPending(store: PortalStore, phone: string, step: Omit<PendingStep, "createdAt"> & { createdAt?: string }, now: Date): Promise<void> {

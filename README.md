@@ -318,6 +318,23 @@ Variables (ver `.env.example`):
 Subir ventas (supervisor/admin): .xlsx de hasta 4 MB (Vercel corta los cuerpos de más de 4,5 MB); el mismo archivo no se
 carga dos veces. `.vercelignore` evita que `vercel deploy` suba el padrón y los datos de clientes de `data/`.
 
+### Resumen diario (cron)
+
+`vercel.json` programa `GET /api/cron/daily` a las **8:00 de Lima** (`0 13 * * *`: los crons de Vercel van en UTC; Lima es
+UTC−5 todo el año). El plan Hobby solo permite crons **una vez al día** (y la hora exacta puede variar dentro de esa hora),
+así que todo lo diario corre en esa llamada (`src/lib/portal/notify/jobs.ts`; la fase C añade ahí las encuestas).
+
+- Exige `CRON_SECRET` (Vercel lo manda como `Authorization: Bearer …`): sin la variable responde 500, con otro valor 401.
+- A cada vendedor y supervisor activo le manda por WhatsApp sus citas de hoy, acciones vencidas y de hoy, y las
+  cotizaciones que piden seguimiento; al supervisor, además, una línea por vendedor. Si no hay nada, no escribe. No
+  manda dos veces el mismo día al mismo usuario.
+- WhatsApp no deja mandar mensajes libres si pasaron 24 h desde el último mensaje del usuario (error 131047; no se usan
+  plantillas): el resumen queda como aviso pendiente y el bot se lo muestra, en un mensaje aparte, la próxima vez que
+  el usuario escriba (cualquier mensaje; la respuesta del cotizador no cambia). Si Meta acepta el envío y lo rechaza
+  después (llega como estado al webhook), no se detecta.
+- Probar sin enviar nada (devuelve los textos): `curl -H "Authorization: Bearer $CRON_SECRET" "http://localhost:3000/api/cron/daily?dry=1"`.
+- En el simulador: línea `@cron` en el guion (o `@cron ventana` para simular el rechazo por la ventana de 24 h).
+
 ## Límites conocidos del piloto
 
 - Sin LLM: las fotos de llantas y las capturas de pantalla no se leen (se usa solo el texto del mensaje), y los

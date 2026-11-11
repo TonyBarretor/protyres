@@ -12,6 +12,9 @@
  *   @audio <archivo>             nota de voz: con DEEPGRAM_API_KEY se transcribe de verdad (Deepgram); sin ella se salta, con aviso
  *   @doc <archivo> [leyenda]     documento o imagen (por extensión) con leyenda opcional
  *   @fwd <texto>                 mensaje reenviado
+ *   @cron [ventana]              corre el resumen diario (runDailyDigest, como /api/cron/daily) con este WhatsApp de
+ *                                consola, para todos los usuarios; con `ventana` cada envío falla como fuera de las 24 h
+ *                                (131047) y el resumen queda como aviso pendiente para el siguiente mensaje del usuario
  * En modo interactivo valen las mismas formas y /quit.
  *
  * Datos: por defecto store JSON del portal (PORTAL_STORE=json) y del cotizador, sin DATABASE_URL (salvo --db). Trabaja
@@ -248,7 +251,27 @@ async function main() {
     return msg;
   };
 
+  /** @cron: el resumen diario con la hora real (force: aunque ya se haya mandado hoy en estos datos). */
+  const runCron = async (arg: string) => {
+    const { runDailyDigest } = await import("../lib/portal/notify/send");
+    const outside = /^ventana$/i.test(arg.trim());
+    console.log(`⏰ cron diario${outside ? " (simulando que WhatsApp rechaza por la ventana de 24 h)" : ""}`);
+    const cronClient: Pick<WhatsAppClient, "sendText"> = outside
+      ? { sendText: async () => Promise.reject(new Error("WhatsApp API 400: (#131047) Re-engagement message")) }
+      : client;
+    try {
+      const r = await runDailyDigest({ store: portal, client: cronClient, now: new Date(), force: true, log: (m) => console.error(`[cron] ${m}`) });
+      console.log(`   enviados ${r.enviados} · sin nada ${r.sinNada} · fuera de ventana ${r.fueraDeVentana} · errores ${r.errores}`);
+      for (const e of r.resultados.filter((x) => x.status === "error")) thrown.push(`@cron ${e.nombre}: ${e.error}`);
+    } catch (err) {
+      thrown.push(`@cron: ${(err as Error).message}`);
+      console.log(`💥 ${(err as Error).stack ?? err}`);
+    }
+  };
+
   const send = async (line: string) => {
+    const cron = line.match(/^@cron\b\s*(.*)$/);
+    if (cron) return runCron(cron[1]);
     const msg = toMessage(line);
     if (!msg) return;
     console.log(`👤 ${msg.media ? `[${msg.type}] ${msg.media.fileName ?? ""} ${msg.text ?? ""}`.trim() : msg.forwarded ? `[reenviado] ${msg.text}` : msg.text}`);
@@ -275,7 +298,7 @@ async function main() {
   if (lines.length) {
     for (const l of lines) await send(l);
   } else {
-    console.log('Modo interactivo: escribe un mensaje ("@doc <archivo> [leyenda]", "@audio <archivo>", "@fwd <texto>", "/quit").');
+    console.log('Modo interactivo: escribe un mensaje ("@doc <archivo> [leyenda]", "@audio <archivo>", "@fwd <texto>", "@cron [ventana]", "/quit").');
     const rl = readline.createInterface({ input: process.stdin, output: process.stdout, prompt: "> " });
     rl.prompt();
     for await (const line of rl) {
