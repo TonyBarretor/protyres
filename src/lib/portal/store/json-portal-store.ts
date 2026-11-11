@@ -1,0 +1,780 @@
+/**
+ * PortalStore en memoria, con persistencia opcional a un archivo JSON (data/portal-store.json).
+ * Sin archivo = solo memoria (tests). Con archivo: cada cambio programa una escritura atómica (tmp + rename) a los
+ * DEBOUNCE_MS; `flush()` escribe ya (los CLI la llaman antes de salir).
+ * Índices en memoria por id, RUC, (placa, origen) y companyId para aguantar ~150k vehículos.
+ */
+import fs from "node:fs";
+import path from "node:path";
+import { CLOSED_STAGES, isClosedStage, stageProbability } from "../stages";
+import { dedupeBy, defaultSince, digits, foldText, groupFleet, normMarca, pageOf, toIsoDate, type FleetAggRow } from "./shared";
+import type {
+  Activity,
+  ActivityFilter,
+  ActivityInput,
+  Appointment,
+  AppointmentFilter,
+  AppointmentInput,
+  AppointmentPatch,
+  Company,
+  CompanyInput,
+  CompanyPatch,
+  CompanyRow,
+  CompanySearch,
+  CompanySearchResult,
+  Contact,
+  ContactInput,
+  ContactPatch,
+  DepartamentoCount,
+  FleetGroup,
+  FleetVehicle,
+  FleetVehicleInput,
+  IsoDate,
+  LoginToken,
+  MarcaCount,
+  Opportunity,
+  OpportunityFilter,
+  OpportunityInput,
+  OpportunityPatch,
+  Participation,
+  PortalSession,
+  PortalStore,
+  PortalUser,
+  Sale,
+  SaleInput,
+  StageHistoryEntry,
+  UpsertCompaniesResult,
+  UserInput,
+} from "./types";
+import type { StageId } from "../stages";
+
+interface StoredLoginToken extends LoginToken {
+  usedAt: Date | null;
+  createdAt: Date;
+}
+
+type Table = "companies" | "fleet" | "sales" | "users" | "contacts" | "opportunities" | "stageHistory" | "activities" | "appointments";
+
+interface FileData {
+  version: 1;
+  seq: Partial<Record<Table, number>>;
+  companies: Company[];
+  fleet: FleetVehicle[];
+  sales: Sale[];
+  users: PortalUser[];
+  loginTokens: StoredLoginToken[];
+  sessions: PortalSession[];
+  contacts: Contact[];
+  opportunities: Opportunity[];
+  stageHistory: StageHistoryEntry[];
+  activities: Activity[];
+  appointments: Appointment[];
+}
+
+/** Campos Date por colección (JSON los guarda como texto ISO). */
+const DATE_FIELDS: Record<string, string[]> = {
+  companies: ["createdAt", "updatedAt"],
+  sales: ["createdAt"],
+  users: ["createdAt"],
+  loginTokens: ["expiresAt", "usedAt", "createdAt"],
+  sessions: ["expiresAt", "createdAt"],
+  contacts: ["createdAt", "updatedAt"],
+  opportunities: ["proximaAccionAt", "createdAt", "updatedAt", "closedAt"],
+  stageHistory: ["enteredAt", "leftAt"],
+  activities: ["occurredAt", "createdAt"],
+  appointments: ["startsAt", "createdAt"],
+};
+
+const DEBOUNCE_MS = 300;
+
+const fleetKey = (placa: string, origen: string) => `${origen}|${placa}`;
+const normPlaca = (p: string) => p.trim().toUpperCase().replace(/\s+/g, "");
+const copy = <T extends object>(o: T): T => ({ ...o });
+const time = (d: Date | null | undefined) => (d ? d.getTime() : 0);
+
+export class JsonPortalStore implements PortalStore {
+  private seq: Record<Table, number> = { companies: 0, fleet: 0, sales: 0, users: 0, contacts: 0, opportunities: 0, stageHistory: 0, activities: 0, appointments: 0 };
+  private companies = new Map<number, Company>();
+  private companyByRuc = new Map<string, number>();
+  private fleet = new Map<string, FleetVehicle>();
+  private fleetByCompany = new Map<number, Set<string>>();
+  private sales: Sale[] = [];
+  private salesByRucIdx = new Map<string, Sale[]>();
+  private users = new Map<number, PortalUser>();
+  private userByWa = new Map<string, number>();
+  private loginTokens = new Map<string, StoredLoginToken>();
+  private sessions = new Map<string, PortalSession>();
+  private contacts = new Map<number, Contact>();
+  private opportunities = new Map<number, Opportunity>();
+  private stageHistoryRows: StageHistoryEntry[] = [];
+  private activities: Activity[] = [];
+  private appointments = new Map<number, Appointment>();
+  /** companyId -> marcas normalizadas (se invalida al cambiar la flota). */
+  private marcasCache: Map<number, Set<string>> | null = null;
+  private timer: NodeJS.Timeout | null = null;
+
+  constructor(private file: string | null = null) {
+    if (file && fs.existsSync(file)) this.load(file);
+  }
+
+  /** Solo memoria (tests). */
+  static memory(): JsonPortalStore {
+    return new JsonPortalStore(null);
+  }
+
+  // ── persistencia ──
+
+  private load(file: string): void {
+    let raw: Partial<FileData>;
+    try {
+      raw = JSON.parse(fs.readFileSync(file, "utf8"));
+    } catch {
+      fs.copyFileSync(file, `${file}.corrupt-${Date.now()}`); // archivo dañado: respaldo y se empieza vacío
+      return;
+    }
+    const revive = <T>(name: string, rows: T[] | undefined): T[] => {
+      const fields = DATE_FIELDS[name] ?? [];
+      return (rows ?? []).map((r) => {
+        const o = r as Record<string, unknown>;
+        for (const f of fields) if (typeof o[f] === "string") o[f] = new Date(o[f] as string);
+        return r;
+      });
+    };
+    Object.assign(this.seq, raw.seq ?? {});
+    for (const c of revive("companies", raw.companies)) this.putCompany(c);
+    for (const v of raw.fleet ?? []) this.putVehicle(v);
+    for (const s of revive("sales", raw.sales)) this.pushSale(s);
+    for (const u of revive("users", raw.users)) this.putUser(u);
+    for (const t of revive("loginTokens", raw.loginTokens)) this.loginTokens.set(t.tokenHash, t);
+    for (const s of revive("sessions", raw.sessions)) this.sessions.set(s.id, s);
+    for (const c of revive("contacts", raw.contacts)) this.contacts.set(c.id, c);
+    for (const o of revive("opportunities", raw.opportunities)) this.opportunities.set(o.id, o);
+    this.stageHistoryRows = revive("stageHistory", raw.stageHistory);
+    this.activities = revive("activities", raw.activities);
+    for (const a of revive("appointments", raw.appointments)) this.appointments.set(a.id, a);
+  }
+
+  private snapshot(): FileData {
+    return {
+      version: 1,
+      seq: this.seq,
+      companies: [...this.companies.values()],
+      fleet: [...this.fleet.values()],
+      sales: this.sales,
+      users: [...this.users.values()],
+      loginTokens: [...this.loginTokens.values()],
+      sessions: [...this.sessions.values()],
+      contacts: [...this.contacts.values()],
+      opportunities: [...this.opportunities.values()],
+      stageHistory: this.stageHistoryRows,
+      activities: this.activities,
+      appointments: [...this.appointments.values()],
+    };
+  }
+
+  private changed(): void {
+    if (!this.file || this.timer) return;
+    this.timer = setTimeout(() => {
+      this.timer = null;
+      this.writeNow();
+    }, DEBOUNCE_MS);
+    this.timer.unref?.();
+  }
+
+  private writeNow(): void {
+    if (!this.file) return;
+    fs.mkdirSync(path.dirname(this.file), { recursive: true });
+    const tmp = `${this.file}.tmp`;
+    fs.writeFileSync(tmp, JSON.stringify(this.snapshot()));
+    fs.renameSync(tmp, this.file);
+  }
+
+  async flush(): Promise<void> {
+    if (this.timer) {
+      clearTimeout(this.timer);
+      this.timer = null;
+    }
+    this.writeNow();
+  }
+
+  async close(): Promise<void> {
+    if (this.timer) await this.flush();
+  }
+
+  private nextId(t: Table): number {
+    this.seq[t] += 1;
+    return this.seq[t];
+  }
+
+  // ── índices ──
+
+  private putCompany(c: Company): void {
+    this.companies.set(c.id, c);
+    this.companyByRuc.set(c.ruc, c.id);
+  }
+
+  private putVehicle(v: FleetVehicle): void {
+    const key = fleetKey(v.placa, v.origen);
+    const prev = this.fleet.get(key);
+    if (prev && prev.companyId !== v.companyId) this.fleetByCompany.get(prev.companyId)?.delete(key);
+    this.fleet.set(key, v);
+    let set = this.fleetByCompany.get(v.companyId);
+    if (!set) this.fleetByCompany.set(v.companyId, (set = new Set()));
+    set.add(key);
+    this.marcasCache = null;
+  }
+
+  private pushSale(s: Sale): void {
+    this.sales.push(s);
+    const list = this.salesByRucIdx.get(s.ruc);
+    if (list) list.push(s);
+    else this.salesByRucIdx.set(s.ruc, [s]);
+  }
+
+  private putUser(u: PortalUser): void {
+    this.users.set(u.id, u);
+    if (u.whatsapp) this.userByWa.set(u.whatsapp, u.id);
+  }
+
+  private marcasByCompany(): Map<number, Set<string>> {
+    if (this.marcasCache) return this.marcasCache;
+    const m = new Map<number, Set<string>>();
+    for (const v of this.fleet.values()) {
+      if (!v.marca) continue;
+      let s = m.get(v.companyId);
+      if (!s) m.set(v.companyId, (s = new Set()));
+      s.add(normMarca(v.marca));
+    }
+    this.marcasCache = m;
+    return m;
+  }
+
+  // ── empresas ──
+
+  async upsertCompanies(batch: CompanyInput[]): Promise<UpsertCompaniesResult> {
+    const now = new Date();
+    const res: UpsertCompaniesResult = { inserted: 0, updated: 0, ids: {} };
+    for (const input of dedupeBy(batch, (c) => digits(c.ruc))) {
+      const ruc = digits(input.ruc);
+      if (!ruc) continue;
+      const id = this.companyByRuc.get(ruc);
+      const prev = id === undefined ? undefined : this.companies.get(id);
+      if (prev) {
+        prev.razonSocial = input.razonSocial;
+        if (input.sector !== undefined) prev.sector = input.sector;
+        if (input.departamento !== undefined) prev.departamento = input.departamento;
+        if (input.unidades !== undefined) prev.unidades = input.unidades;
+        if (input.llantasPiso !== undefined) prev.llantasPiso = input.llantasPiso;
+        if (input.antiguedadMedia !== undefined) prev.antiguedadMedia = input.antiguedadMedia;
+        prev.updatedAt = now;
+        res.updated++;
+        res.ids[ruc] = prev.id;
+      } else {
+        const c: Company = {
+          id: this.nextId("companies"),
+          ruc,
+          razonSocial: input.razonSocial,
+          sector: input.sector ?? null,
+          departamento: input.departamento ?? null,
+          unidades: input.unidades ?? 0,
+          llantasPiso: input.llantasPiso ?? 0,
+          antiguedadMedia: input.antiguedadMedia ?? null,
+          esCliente: false,
+          ownerUserId: null,
+          temperatura: null,
+          score: null,
+          creditTermsDays: null,
+          createdAt: now,
+          updatedAt: now,
+        };
+        this.putCompany(c);
+        res.inserted++;
+        res.ids[ruc] = c.id;
+      }
+    }
+    this.changed();
+    return res;
+  }
+
+  async getCompany(id: number): Promise<Company | null> {
+    const c = this.companies.get(id);
+    return c ? copy(c) : null;
+  }
+
+  async getCompanyByRuc(ruc: string): Promise<Company | null> {
+    const id = this.companyByRuc.get(digits(ruc));
+    return id === undefined ? null : this.getCompany(id);
+  }
+
+  async updateCompany(id: number, patch: CompanyPatch): Promise<Company | null> {
+    const c = this.companies.get(id);
+    if (!c) return null;
+    for (const [k, v] of Object.entries(patch)) if (v !== undefined) (c as unknown as Record<string, unknown>)[k] = v;
+    c.updatedAt = new Date();
+    this.changed();
+    return copy(c);
+  }
+
+  setOwner(companyId: number, userId: number | null): Promise<Company | null> {
+    return this.updateCompany(companyId, { ownerUserId: userId });
+  }
+
+  async searchCompanies(opts: CompanySearch = {}): Promise<CompanySearchResult> {
+    const since = opts.since !== undefined ? toIsoDate(opts.since) : defaultSince(opts.now);
+    const q = foldText(opts.q);
+    const qDigits = /^\d+$/.test(q) ? q : "";
+    const deps = opts.departamento?.length ? new Set(opts.departamento) : null;
+    const sectors = opts.sector?.length ? new Set<string>(opts.sector) : null;
+    const marcas = opts.marcas?.length ? opts.marcas.map(normMarca) : null;
+    const marcaIdx = marcas ? this.marcasByCompany() : null;
+    const matches: Company[] = [];
+    for (const c of this.companies.values()) {
+      if (q && !(foldText(c.razonSocial).includes(q) || (qDigits && c.ruc.startsWith(qDigits)))) continue;
+      if (deps && !(c.departamento && deps.has(c.departamento))) continue;
+      if (sectors && !(c.sector && sectors.has(c.sector))) continue;
+      if (opts.minUnits !== undefined && c.unidades < opts.minUnits) continue;
+      if (opts.maxUnits !== undefined && c.unidades > opts.maxUnits) continue;
+      if (opts.esCliente !== undefined && c.esCliente !== opts.esCliente) continue;
+      if (opts.ownerUserId !== undefined && c.ownerUserId !== opts.ownerUserId) continue;
+      if (marcas && marcaIdx) {
+        const set = marcaIdx.get(c.id);
+        if (!set || !marcas.some((m) => set.has(m))) continue;
+      }
+      matches.push(c);
+    }
+    const part = this.participationSync(
+      matches.map((c) => c.ruc),
+      since,
+    );
+    const rows: CompanyRow[] = matches.map((c) => ({ ...c, participacion: part[c.ruc]?.cantidad ?? 0, participacionDemo: part[c.ruc]?.demo ?? false }));
+    const orderBy = opts.orderBy ?? "unidades";
+    const val = (r: CompanyRow) => (orderBy === "llantas" ? r.llantasPiso : orderBy === "participacion" ? r.participacion : r.unidades);
+    rows.sort((a, b) => val(b) - val(a) || a.razonSocial.localeCompare(b.razonSocial) || a.id - b.id);
+    const { pageSize, offset } = pageOf(opts.page, opts.pageSize);
+    return { rows: rows.slice(offset, offset + pageSize), total: rows.length };
+  }
+
+  async listMarcas(): Promise<MarcaCount[]> {
+    const m = new Map<string, { vehiculos: number; empresas: Set<number> }>();
+    for (const v of this.fleet.values()) {
+      const marca = normMarca(v.marca);
+      if (!marca) continue;
+      let e = m.get(marca);
+      if (!e) m.set(marca, (e = { vehiculos: 0, empresas: new Set() }));
+      e.vehiculos++;
+      e.empresas.add(v.companyId);
+    }
+    return [...m.entries()].map(([marca, e]) => ({ marca, vehiculos: e.vehiculos, empresas: e.empresas.size })).sort((a, b) => b.vehiculos - a.vehiculos || a.marca.localeCompare(b.marca));
+  }
+
+  async listDepartamentos(): Promise<DepartamentoCount[]> {
+    const m = new Map<string, number>();
+    for (const c of this.companies.values()) if (c.departamento) m.set(c.departamento, (m.get(c.departamento) ?? 0) + 1);
+    return [...m.entries()].map(([departamento, empresas]) => ({ departamento, empresas })).sort((a, b) => b.empresas - a.empresas || a.departamento.localeCompare(b.departamento));
+  }
+
+  async countCompanies(): Promise<number> {
+    return this.companies.size;
+  }
+
+  // ── flota ──
+
+  async upsertFleet(batch: FleetVehicleInput[]): Promise<{ inserted: number; updated: number }> {
+    let inserted = 0;
+    let updated = 0;
+    for (const input of dedupeBy(batch, (v) => fleetKey(normPlaca(v.placa), v.origen))) {
+      const placa = normPlaca(input.placa);
+      if (!placa) continue;
+      const prev = this.fleet.get(fleetKey(placa, input.origen));
+      if (prev) updated++;
+      else inserted++;
+      this.putVehicle({ ...input, placa, id: prev?.id ?? this.nextId("fleet") });
+    }
+    this.changed();
+    return { inserted, updated };
+  }
+
+  async replaceFleet(companyId: number, vehicles: Omit<FleetVehicleInput, "companyId">[]): Promise<{ removed: number; upserted: number }> {
+    const keep = new Set(vehicles.map((v) => fleetKey(normPlaca(v.placa), v.origen)));
+    let removed = 0;
+    for (const key of [...(this.fleetByCompany.get(companyId) ?? [])]) {
+      if (keep.has(key)) continue;
+      this.fleet.delete(key);
+      this.fleetByCompany.get(companyId)?.delete(key);
+      removed++;
+    }
+    this.marcasCache = null;
+    const r = await this.upsertFleet(vehicles.map((v) => ({ ...v, companyId })));
+    return { removed, upserted: r.inserted + r.updated };
+  }
+
+  async listFleet(companyId: number): Promise<FleetVehicle[]> {
+    const keys = this.fleetByCompany.get(companyId) ?? new Set<string>();
+    return [...keys].map((k) => copy(this.fleet.get(k)!)).sort((a, b) => a.placa.localeCompare(b.placa));
+  }
+
+  async fleetByBrand(companyId: number): Promise<FleetGroup[]> {
+    const agg = new Map<string, FleetAggRow>();
+    for (const key of this.fleetByCompany.get(companyId) ?? []) {
+      const v = this.fleet.get(key)!;
+      const marca = v.marca ? normMarca(v.marca) : null;
+      const k = [marca, v.clase, v.medidaProbable, v.confianza].join("\u0000");
+      let r = agg.get(k);
+      if (!r) agg.set(k, (r = { marca, clase: v.clase, medida: v.medidaProbable, confianza: v.confianza, unidades: 0, anioMin: null, anioMax: null, llantas: 0, unidadesConLlantas: 0 }));
+      r.unidades++;
+      if (v.anio !== null) {
+        r.anioMin = r.anioMin === null ? v.anio : Math.min(r.anioMin, v.anio);
+        r.anioMax = r.anioMax === null ? v.anio : Math.max(r.anioMax, v.anio);
+      }
+      if (v.llantas !== null) {
+        r.llantas += v.llantas;
+        r.unidadesConLlantas++;
+      }
+    }
+    return groupFleet([...agg.values()]);
+  }
+
+  async countFleet(): Promise<number> {
+    return this.fleet.size;
+  }
+
+  // ── ventas ──
+
+  async insertSales(rows: SaleInput[]): Promise<number> {
+    const now = new Date();
+    for (const r of rows) {
+      this.pushSale({
+        id: this.nextId("sales"),
+        fecha: toIsoDate(r.fecha),
+        ruc: digits(r.ruc),
+        razonSocial: r.razonSocial ?? null,
+        medida: r.medida ?? null,
+        marca: r.marca ?? null,
+        diseno: r.diseno ?? null,
+        cantidad: r.cantidad,
+        precioUnitario: r.precioUnitario ?? null,
+        total: r.total ?? null,
+        vendedor: r.vendedor ?? null,
+        origen: r.origen ?? null,
+        isDemo: r.isDemo ?? false,
+        createdAt: now,
+      });
+    }
+    this.changed();
+    return rows.length;
+  }
+
+  async deleteDemoSales(): Promise<number> {
+    const before = this.sales.length;
+    this.sales = this.sales.filter((s) => !s.isDemo);
+    for (const [ruc, list] of this.salesByRucIdx) {
+      const kept = list.filter((s) => !s.isDemo);
+      if (kept.length) this.salesByRucIdx.set(ruc, kept);
+      else this.salesByRucIdx.delete(ruc);
+    }
+    const removed = before - this.sales.length;
+    if (removed) this.changed();
+    return removed;
+  }
+
+  async salesByRuc(ruc: string, since?: Date | IsoDate): Promise<Sale[]> {
+    const from = since === undefined ? "" : toIsoDate(since);
+    return (this.salesByRucIdx.get(digits(ruc)) ?? [])
+      .filter((s) => s.fecha >= from)
+      .map(copy)
+      .sort((a, b) => b.fecha.localeCompare(a.fecha) || b.id - a.id);
+  }
+
+  private participationSync(rucs: string[], since: IsoDate): Record<string, Participation> {
+    const out: Record<string, Participation> = {};
+    for (const ruc of rucs) {
+      for (const s of this.salesByRucIdx.get(ruc) ?? []) {
+        if (s.fecha < since) continue;
+        const p = (out[ruc] ??= { cantidad: 0, demo: false });
+        p.cantidad += s.cantidad;
+        if (s.isDemo) p.demo = true;
+      }
+    }
+    return out;
+  }
+
+  async participation(rucs: string[], since: Date | IsoDate): Promise<Record<string, Participation>> {
+    return this.participationSync([...new Set(rucs.map(digits))], toIsoDate(since));
+  }
+
+  // ── usuarios y sesiones ──
+
+  async upsertUser(input: UserInput): Promise<PortalUser> {
+    const wa = digits(input.whatsapp);
+    if (!wa) throw new Error("upsertUser: falta el número de WhatsApp");
+    const id = this.userByWa.get(wa);
+    const prev = id === undefined ? undefined : this.users.get(id);
+    let u: PortalUser;
+    if (prev) {
+      prev.nombre = input.nombre;
+      prev.rol = input.rol;
+      if (input.activo !== undefined) prev.activo = input.activo;
+      u = prev;
+    } else {
+      u = { id: this.nextId("users"), nombre: input.nombre, whatsapp: wa, rol: input.rol, activo: input.activo ?? true, createdAt: new Date() };
+      this.putUser(u);
+    }
+    this.changed();
+    return copy(u);
+  }
+
+  async getUser(id: number): Promise<PortalUser | null> {
+    const u = this.users.get(id);
+    return u ? copy(u) : null;
+  }
+
+  async getUserByWhatsapp(whatsapp: string): Promise<PortalUser | null> {
+    const id = this.userByWa.get(digits(whatsapp));
+    return id === undefined ? null : this.getUser(id);
+  }
+
+  async listUsers(): Promise<PortalUser[]> {
+    return [...this.users.values()].map(copy).sort((a, b) => a.id - b.id);
+  }
+
+  async saveLoginToken(token: LoginToken): Promise<void> {
+    this.loginTokens.set(token.tokenHash, { ...token, usedAt: null, createdAt: new Date() });
+    this.changed();
+  }
+
+  async consumeLoginToken(tokenHash: string, now: Date): Promise<number | null> {
+    const t = this.loginTokens.get(tokenHash);
+    if (!t || t.usedAt || t.expiresAt.getTime() <= now.getTime()) return null;
+    t.usedAt = now; // sin await entre la lectura y la marca: atómico en el event loop
+    this.changed();
+    return t.userId;
+  }
+
+  async createSession(session: { id: string; userId: number; expiresAt: Date }): Promise<PortalSession> {
+    const s: PortalSession = { ...session, createdAt: new Date() };
+    this.sessions.set(s.id, s);
+    this.changed();
+    return copy(s);
+  }
+
+  async getSession(id: string, now: Date): Promise<PortalSession | null> {
+    const s = this.sessions.get(id);
+    if (!s || s.expiresAt.getTime() <= now.getTime()) return null;
+    return copy(s);
+  }
+
+  async deleteSession(id: string): Promise<void> {
+    if (this.sessions.delete(id)) this.changed();
+  }
+
+  // ── contactos ──
+
+  async addContact(input: ContactInput): Promise<Contact> {
+    const now = new Date();
+    const c: Contact = {
+      id: this.nextId("contacts"),
+      companyId: input.companyId,
+      nombre: input.nombre,
+      cargo: input.cargo ?? null,
+      telefono: input.telefono ?? null,
+      email: input.email ?? null,
+      notas: input.notas ?? null,
+      createdBy: input.createdBy ?? null,
+      createdAt: now,
+      updatedAt: now,
+    };
+    this.contacts.set(c.id, c);
+    this.changed();
+    return copy(c);
+  }
+
+  async getContact(id: number): Promise<Contact | null> {
+    const c = this.contacts.get(id);
+    return c ? copy(c) : null;
+  }
+
+  async listContacts(companyId: number): Promise<Contact[]> {
+    return [...this.contacts.values()]
+      .filter((c) => c.companyId === companyId)
+      .map(copy)
+      .sort((a, b) => a.id - b.id);
+  }
+
+  async updateContact(id: number, patch: ContactPatch): Promise<Contact | null> {
+    const c = this.contacts.get(id);
+    if (!c) return null;
+    for (const [k, v] of Object.entries(patch)) if (v !== undefined) (c as unknown as Record<string, unknown>)[k] = v;
+    c.updatedAt = new Date();
+    this.changed();
+    return copy(c);
+  }
+
+  async deleteContact(id: number): Promise<boolean> {
+    const ok = this.contacts.delete(id);
+    if (ok) this.changed();
+    return ok;
+  }
+
+  // ── oportunidades ──
+
+  async createOpportunity(input: OpportunityInput): Promise<Opportunity> {
+    const at = input.at ?? new Date();
+    const etapa: StageId = input.etapa ?? "prospecto";
+    const o: Opportunity = {
+      id: this.nextId("opportunities"),
+      companyId: input.companyId,
+      ownerUserId: input.ownerUserId ?? null,
+      etapa,
+      probabilidad: stageProbability(etapa),
+      montoEstimado: input.montoEstimado ?? null,
+      cierreEsperado: input.cierreEsperado ?? null,
+      proximaAccion: input.proximaAccion ?? null,
+      proximaAccionAt: input.proximaAccionAt ?? null,
+      quoteNumber: input.quoteNumber ?? null,
+      createdAt: at,
+      updatedAt: at,
+      closedAt: isClosedStage(etapa) ? at : null,
+    };
+    this.opportunities.set(o.id, o);
+    this.stageHistoryRows.push({ id: this.nextId("stageHistory"), opportunityId: o.id, etapa, enteredAt: at, leftAt: null, changedBy: input.createdBy ?? null });
+    this.changed();
+    return copy(o);
+  }
+
+  async getOpportunity(id: number): Promise<Opportunity | null> {
+    const o = this.opportunities.get(id);
+    return o ? copy(o) : null;
+  }
+
+  async getOpenOpportunity(companyId: number, ownerId?: number): Promise<Opportunity | null> {
+    const [first] = await this.listOpportunities({ companyId, ownerId, open: true });
+    return first ?? null;
+  }
+
+  async listOpportunities(filter: OpportunityFilter = {}): Promise<Opportunity[]> {
+    const etapas = filter.etapas?.length ? new Set<string>(filter.etapas) : null;
+    return [...this.opportunities.values()]
+      .filter(
+        (o) =>
+          (filter.ownerId === undefined || o.ownerUserId === filter.ownerId) &&
+          (filter.companyId === undefined || o.companyId === filter.companyId) &&
+          (!etapas || etapas.has(o.etapa)) &&
+          (filter.open === undefined || (o.closedAt === null) === filter.open),
+      )
+      .map(copy)
+      .sort((a, b) => time(b.updatedAt) - time(a.updatedAt) || b.id - a.id);
+  }
+
+  async moveStage(opportunityId: number, etapa: StageId, userId: number | null, at: Date = new Date()): Promise<Opportunity | null> {
+    const o = this.opportunities.get(opportunityId);
+    if (!o) return null;
+    if (o.etapa === etapa) return copy(o);
+    for (const h of this.stageHistoryRows) if (h.opportunityId === opportunityId && h.leftAt === null) h.leftAt = at;
+    this.stageHistoryRows.push({ id: this.nextId("stageHistory"), opportunityId, etapa, enteredAt: at, leftAt: null, changedBy: userId });
+    o.etapa = etapa;
+    o.probabilidad = stageProbability(etapa);
+    o.updatedAt = at;
+    o.closedAt = (CLOSED_STAGES as string[]).includes(etapa) ? at : null;
+    this.changed();
+    return copy(o);
+  }
+
+  async updateOpportunity(id: number, patch: OpportunityPatch): Promise<Opportunity | null> {
+    const o = this.opportunities.get(id);
+    if (!o) return null;
+    for (const [k, v] of Object.entries(patch)) if (v !== undefined) (o as unknown as Record<string, unknown>)[k] = v;
+    o.updatedAt = new Date();
+    this.changed();
+    return copy(o);
+  }
+
+  async stageHistory(opportunityId: number): Promise<StageHistoryEntry[]> {
+    return this.stageHistoryRows
+      .filter((h) => h.opportunityId === opportunityId)
+      .map(copy)
+      .sort((a, b) => time(a.enteredAt) - time(b.enteredAt) || a.id - b.id);
+  }
+
+  // ── actividades ──
+
+  async addActivity(input: ActivityInput): Promise<Activity> {
+    const now = new Date();
+    const a: Activity = {
+      id: this.nextId("activities"),
+      companyId: input.companyId,
+      opportunityId: input.opportunityId ?? null,
+      userId: input.userId ?? null,
+      tipo: input.tipo,
+      texto: input.texto ?? "",
+      canal: input.canal ?? null,
+      data: input.data ?? null,
+      occurredAt: input.occurredAt ?? now,
+      createdAt: now,
+    };
+    this.activities.push(a);
+    this.changed();
+    return copy(a);
+  }
+
+  async listActivities(filter: ActivityFilter = {}): Promise<Activity[]> {
+    const rows = this.activities
+      .filter(
+        (a) =>
+          (filter.companyId === undefined || a.companyId === filter.companyId) &&
+          (filter.userId === undefined || a.userId === filter.userId) &&
+          (filter.opportunityId === undefined || a.opportunityId === filter.opportunityId) &&
+          (!filter.since || a.occurredAt.getTime() >= filter.since.getTime()) &&
+          (!filter.until || a.occurredAt.getTime() < filter.until.getTime()),
+      )
+      .map(copy)
+      .sort((a, b) => time(b.occurredAt) - time(a.occurredAt) || b.id - a.id);
+    return filter.limit ? rows.slice(0, filter.limit) : rows;
+  }
+
+  // ── citas ──
+
+  async addAppointment(input: AppointmentInput): Promise<Appointment> {
+    const a: Appointment = {
+      id: this.nextId("appointments"),
+      companyId: input.companyId,
+      opportunityId: input.opportunityId ?? null,
+      userId: input.userId ?? null,
+      startsAt: input.startsAt,
+      lugar: input.lugar ?? null,
+      conTecnico: input.conTecnico ?? false,
+      notas: input.notas ?? null,
+      estado: input.estado ?? "programada",
+      createdAt: new Date(),
+    };
+    this.appointments.set(a.id, a);
+    this.changed();
+    return copy(a);
+  }
+
+  async getAppointment(id: number): Promise<Appointment | null> {
+    const a = this.appointments.get(id);
+    return a ? copy(a) : null;
+  }
+
+  async updateAppointment(id: number, patch: AppointmentPatch): Promise<Appointment | null> {
+    const a = this.appointments.get(id);
+    if (!a) return null;
+    for (const [k, v] of Object.entries(patch)) if (v !== undefined) (a as unknown as Record<string, unknown>)[k] = v;
+    this.changed();
+    return copy(a);
+  }
+
+  async listAppointments(filter: AppointmentFilter = {}): Promise<Appointment[]> {
+    return [...this.appointments.values()]
+      .filter(
+        (a) =>
+          (filter.userId === undefined || a.userId === filter.userId) &&
+          (filter.companyId === undefined || a.companyId === filter.companyId) &&
+          (filter.estado === undefined || a.estado === filter.estado) &&
+          (!filter.from || a.startsAt.getTime() >= filter.from.getTime()) &&
+          (!filter.to || a.startsAt.getTime() < filter.to.getTime()),
+      )
+      .map(copy)
+      .sort((a, b) => time(a.startsAt) - time(b.startsAt) || a.id - b.id);
+  }
+}

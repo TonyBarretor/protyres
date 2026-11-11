@@ -1,0 +1,739 @@
+/**
+ * PortalStore en Postgres (Supabase) con la lib `postgres`. Tablas: `npm run db:migrate`.
+ * El import masivo usa inserciones por lotes (`sql(rows, cols)`) con `on conflict`.
+ */
+import postgres from "postgres";
+import { isClosedStage, stageProbability, type StageId } from "../stages";
+import { dedupeBy, defaultSince, digits, foldText, groupFleet, normMarca, pageOf, toIsoDate, type FleetAggRow } from "./shared";
+import type {
+  Activity,
+  ActivityFilter,
+  ActivityInput,
+  Appointment,
+  AppointmentFilter,
+  AppointmentInput,
+  AppointmentPatch,
+  Company,
+  CompanyInput,
+  CompanyPatch,
+  CompanyRow,
+  CompanySearch,
+  CompanySearchResult,
+  Confianza,
+  Contact,
+  ContactInput,
+  ContactPatch,
+  DepartamentoCount,
+  FleetGroup,
+  FleetOrigen,
+  FleetVehicle,
+  FleetVehicleInput,
+  IsoDate,
+  LoginToken,
+  MarcaCount,
+  Opportunity,
+  OpportunityFilter,
+  OpportunityInput,
+  OpportunityPatch,
+  Participation,
+  PortalSession,
+  PortalStore,
+  PortalUser,
+  Sale,
+  SaleInput,
+  Sector,
+  StageHistoryEntry,
+  Temperatura,
+  UpsertCompaniesResult,
+  UserInput,
+  UserRole,
+} from "./types";
+
+type Sql = ReturnType<typeof postgres>;
+type Row = Record<string, unknown>;
+type Fragment = postgres.PendingQuery<postgres.Row[]>;
+
+const BATCH = 1000;
+
+const num = (v: unknown): number | null => (v === null || v === undefined ? null : Number(v));
+const str = (v: unknown): string | null => (v === null || v === undefined ? null : String(v));
+const date = (v: unknown): Date | null => (v === null || v === undefined ? null : v instanceof Date ? v : new Date(String(v)));
+const normPlaca = (p: string) => p.trim().toUpperCase().replace(/\s+/g, "");
+
+function toCompany(r: Row): Company {
+  return {
+    id: Number(r.id),
+    ruc: String(r.ruc),
+    razonSocial: String(r.razon_social ?? ""),
+    sector: (r.sector as Sector | null) ?? null,
+    departamento: str(r.departamento),
+    unidades: Number(r.unidades ?? 0),
+    llantasPiso: Number(r.llantas_piso ?? 0),
+    antiguedadMedia: num(r.antiguedad_media),
+    esCliente: Boolean(r.es_cliente),
+    ownerUserId: num(r.owner_user_id),
+    temperatura: (r.temperatura as Temperatura | null) ?? null,
+    score: num(r.score),
+    creditTermsDays: num(r.credit_terms_days),
+    createdAt: date(r.created_at)!,
+    updatedAt: date(r.updated_at)!,
+  };
+}
+
+function toVehicle(r: Row): FleetVehicle {
+  return {
+    id: Number(r.id),
+    companyId: Number(r.company_id),
+    placa: String(r.placa),
+    marca: str(r.marca),
+    clase: str(r.clase),
+    anio: num(r.anio),
+    ejes: num(r.ejes),
+    llantas: num(r.llantas),
+    llantasFuente: str(r.llantas_fuente),
+    pesoBruto: num(r.peso_bruto),
+    chasis: str(r.chasis),
+    departamento: str(r.departamento),
+    origen: r.origen as FleetOrigen,
+    medidaProbable: str(r.medida_probable),
+    confianza: (r.confianza as Confianza | null) ?? null,
+  };
+}
+
+function toSale(r: Row): Sale {
+  return {
+    id: Number(r.id),
+    fecha: String(r.fecha),
+    ruc: String(r.ruc),
+    razonSocial: str(r.razon_social),
+    medida: str(r.medida),
+    marca: str(r.marca),
+    diseno: str(r.diseno),
+    cantidad: Number(r.cantidad ?? 0),
+    precioUnitario: num(r.precio_unitario),
+    total: num(r.total),
+    vendedor: str(r.vendedor),
+    origen: str(r.origen),
+    isDemo: Boolean(r.is_demo),
+    createdAt: date(r.created_at)!,
+  };
+}
+
+function toUser(r: Row): PortalUser {
+  return { id: Number(r.id), nombre: String(r.nombre), whatsapp: str(r.whatsapp), rol: r.rol as UserRole, activo: Boolean(r.activo), createdAt: date(r.created_at)! };
+}
+
+function toSession(r: Row): PortalSession {
+  return { id: String(r.id), userId: Number(r.user_id), expiresAt: date(r.expires_at)!, createdAt: date(r.created_at)! };
+}
+
+function toContact(r: Row): Contact {
+  return {
+    id: Number(r.id),
+    companyId: Number(r.company_id),
+    nombre: String(r.nombre),
+    cargo: str(r.cargo),
+    telefono: str(r.telefono),
+    email: str(r.email),
+    notas: str(r.notas),
+    createdBy: num(r.created_by),
+    createdAt: date(r.created_at)!,
+    updatedAt: date(r.updated_at)!,
+  };
+}
+
+function toOpportunity(r: Row): Opportunity {
+  return {
+    id: Number(r.id),
+    companyId: Number(r.company_id),
+    ownerUserId: num(r.owner_user_id),
+    etapa: r.etapa as StageId,
+    probabilidad: Number(r.probabilidad ?? 0),
+    montoEstimado: num(r.monto_estimado),
+    cierreEsperado: str(r.cierre_esperado),
+    proximaAccion: str(r.proxima_accion),
+    proximaAccionAt: date(r.proxima_accion_at),
+    quoteNumber: str(r.quote_number),
+    createdAt: date(r.created_at)!,
+    updatedAt: date(r.updated_at)!,
+    closedAt: date(r.closed_at),
+  };
+}
+
+function toHistory(r: Row): StageHistoryEntry {
+  return { id: Number(r.id), opportunityId: Number(r.opportunity_id), etapa: r.etapa as StageId, enteredAt: date(r.entered_at)!, leftAt: date(r.left_at), changedBy: num(r.changed_by) };
+}
+
+function toActivity(r: Row): Activity {
+  return {
+    id: Number(r.id),
+    companyId: Number(r.company_id),
+    opportunityId: num(r.opportunity_id),
+    userId: num(r.user_id),
+    tipo: String(r.tipo),
+    texto: String(r.texto ?? ""),
+    canal: str(r.canal),
+    data: (r.data as Record<string, unknown> | null) ?? null,
+    occurredAt: date(r.occurred_at)!,
+    createdAt: date(r.created_at)!,
+  };
+}
+
+function toAppointment(r: Row): Appointment {
+  return {
+    id: Number(r.id),
+    companyId: Number(r.company_id),
+    opportunityId: num(r.opportunity_id),
+    userId: num(r.user_id),
+    startsAt: date(r.starts_at)!,
+    lugar: str(r.lugar),
+    conTecnico: Boolean(r.con_tecnico),
+    notas: str(r.notas),
+    estado: String(r.estado),
+    createdAt: date(r.created_at)!,
+  };
+}
+
+/** camelCase -> columna, solo para los campos que se pueden parchear. */
+const COMPANY_COLS: Record<string, string> = {
+  razonSocial: "razon_social",
+  sector: "sector",
+  departamento: "departamento",
+  unidades: "unidades",
+  llantasPiso: "llantas_piso",
+  antiguedadMedia: "antiguedad_media",
+  esCliente: "es_cliente",
+  ownerUserId: "owner_user_id",
+  temperatura: "temperatura",
+  score: "score",
+  creditTermsDays: "credit_terms_days",
+};
+const CONTACT_COLS: Record<string, string> = { nombre: "nombre", cargo: "cargo", telefono: "telefono", email: "email", notas: "notas" };
+const OPPORTUNITY_COLS: Record<string, string> = {
+  ownerUserId: "owner_user_id",
+  montoEstimado: "monto_estimado",
+  cierreEsperado: "cierre_esperado",
+  proximaAccion: "proxima_accion",
+  proximaAccionAt: "proxima_accion_at",
+  quoteNumber: "quote_number",
+  probabilidad: "probabilidad",
+};
+const APPOINTMENT_COLS: Record<string, string> = { startsAt: "starts_at", lugar: "lugar", conTecnico: "con_tecnico", notas: "notas", estado: "estado", opportunityId: "opportunity_id" };
+
+/** Patch camelCase -> objeto por columna (ignora undefined; null sí se escribe). */
+function patchColumns(patch: object, map: Record<string, string>): Record<string, postgres.ParameterOrJSON<never>> {
+  const out: Record<string, postgres.ParameterOrJSON<never>> = {};
+  for (const [k, v] of Object.entries(patch)) if (v !== undefined && map[k]) out[map[k]] = v as postgres.ParameterOrJSON<never>;
+  return out;
+}
+
+/** Une fragmentos con AND (o `true` si no hay). */
+function where(sql: Sql, conds: Fragment[]): Fragment {
+  if (!conds.length) return sql`true`;
+  return conds.slice(1).reduce((acc, c) => sql`${acc} and ${c}`, conds[0]);
+}
+
+/** Mismo plegado que foldText(): minúsculas y sin tildes. */
+const FOLD_FROM = "áàäâãéèëêíìïîóòöôõúùüûñç";
+const FOLD_TO = "aaaaaeeeeiiiiooooouuuunc";
+
+export class PgPortalStore implements PortalStore {
+  private constructor(private sql: Sql) {}
+
+  static connect(url: string): PgPortalStore {
+    return new PgPortalStore(postgres(url, { prepare: false, max: 5, onnotice: () => undefined })); // prepare:false: pooler de Supabase
+  }
+
+  async flush(): Promise<void> {}
+
+  async close(): Promise<void> {
+    await this.sql.end({ timeout: 5 });
+  }
+
+  // ── empresas ──
+
+  async upsertCompanies(batch: CompanyInput[]): Promise<UpsertCompaniesResult> {
+    const res: UpsertCompaniesResult = { inserted: 0, updated: 0, ids: {} };
+    const rows = dedupeBy(
+      batch.map((c) => ({ ...c, ruc: digits(c.ruc) })).filter((c) => c.ruc),
+      (c) => c.ruc,
+    );
+    // Los campos opcionales que no vienen (undefined) conservan lo guardado: se agrupa por el conjunto de columnas presentes
+    // y cada grupo actualiza solo las suyas. es_cliente, dueño, temperatura, score y crédito nunca los toca el import.
+    const groups = new Map<string, Record<string, postgres.ParameterOrJSON<never>>[]>();
+    for (const c of rows) {
+      const rec: Record<string, postgres.ParameterOrJSON<never>> = { ruc: c.ruc, razon_social: c.razonSocial };
+      if (c.sector !== undefined) rec.sector = c.sector;
+      if (c.departamento !== undefined) rec.departamento = c.departamento;
+      if (c.unidades !== undefined) rec.unidades = c.unidades;
+      if (c.llantasPiso !== undefined) rec.llantas_piso = c.llantasPiso;
+      if (c.antiguedadMedia !== undefined) rec.antiguedad_media = c.antiguedadMedia;
+      const sig = Object.keys(rec).join(",");
+      const list = groups.get(sig);
+      if (list) list.push(rec);
+      else groups.set(sig, [rec]);
+    }
+    const sql = this.sql;
+    for (const [sig, recs] of groups) {
+      const cols = sig.split(",");
+      const set = cols
+        .filter((c) => c !== "ruc")
+        .reduce((acc, c) => sql`${acc}, ${sql(c)} = excluded.${sql(c)}`, sql`updated_at = now()`);
+      for (let i = 0; i < recs.length; i += BATCH) {
+        const out = await sql<{ id: number; ruc: string; inserted: boolean }[]>`
+          insert into companies ${sql(recs.slice(i, i + BATCH), cols)}
+          on conflict (ruc) do update set ${set}
+          returning id, ruc, (xmax = 0) as inserted`;
+        for (const r of out) {
+          res.ids[r.ruc] = Number(r.id);
+          if (r.inserted) res.inserted++;
+          else res.updated++;
+        }
+      }
+    }
+    return res;
+  }
+
+  async getCompany(id: number): Promise<Company | null> {
+    const [r] = await this.sql`select * from companies where id = ${id}`;
+    return r ? toCompany(r) : null;
+  }
+
+  async getCompanyByRuc(ruc: string): Promise<Company | null> {
+    const [r] = await this.sql`select * from companies where ruc = ${digits(ruc)}`;
+    return r ? toCompany(r) : null;
+  }
+
+  async updateCompany(id: number, patch: CompanyPatch): Promise<Company | null> {
+    const cols = patchColumns(patch, COMPANY_COLS);
+    const [r] = Object.keys(cols).length
+      ? await this.sql`update companies set ${this.sql(cols)}, updated_at = now() where id = ${id} returning *`
+      : await this.sql`update companies set updated_at = now() where id = ${id} returning *`;
+    return r ? toCompany(r) : null;
+  }
+
+  setOwner(companyId: number, userId: number | null): Promise<Company | null> {
+    return this.updateCompany(companyId, { ownerUserId: userId });
+  }
+
+  async searchCompanies(opts: CompanySearch = {}): Promise<CompanySearchResult> {
+    const sql = this.sql;
+    const since = opts.since !== undefined ? toIsoDate(opts.since) : defaultSince(opts.now);
+    const conds: Fragment[] = [];
+    const q = foldText(opts.q);
+    if (q) {
+      const like = `%${q.replace(/[\\%_]/g, (m) => `\\${m}`)}%`;
+      const byName = sql`translate(lower(c.razon_social), ${FOLD_FROM}, ${FOLD_TO}) like ${like}`;
+      conds.push(/^\d+$/.test(q) ? sql`(${byName} or c.ruc like ${`${q}%`})` : byName);
+    }
+    if (opts.departamento?.length) conds.push(sql`c.departamento in ${sql(opts.departamento)}`);
+    if (opts.sector?.length) conds.push(sql`c.sector in ${sql(opts.sector)}`);
+    if (opts.minUnits !== undefined) conds.push(sql`c.unidades >= ${opts.minUnits}`);
+    if (opts.maxUnits !== undefined) conds.push(sql`c.unidades <= ${opts.maxUnits}`);
+    if (opts.esCliente !== undefined) conds.push(sql`c.es_cliente = ${opts.esCliente}`);
+    if (opts.ownerUserId !== undefined) conds.push(sql`c.owner_user_id = ${opts.ownerUserId}`);
+    if (opts.marcas?.length) {
+      const marcas = [...new Set(opts.marcas.map(normMarca))];
+      conds.push(sql`exists (select 1 from fleet_vehicles f where f.company_id = c.id and upper(trim(f.marca)) in ${sql(marcas)})`);
+    }
+    const orderCol = opts.orderBy === "llantas" ? sql`c.llantas_piso` : opts.orderBy === "participacion" ? sql`coalesce(p.cantidad, 0)` : sql`c.unidades`;
+    const { pageSize, offset } = pageOf(opts.page, opts.pageSize);
+    const rows = await sql`
+      with p as (
+        select ruc, sum(cantidad)::float8 as cantidad, bool_or(is_demo) as demo from sales where fecha >= ${since}::date group by ruc
+      )
+      select c.*, coalesce(p.cantidad, 0) as participacion, coalesce(p.demo, false) as participacion_demo, count(*) over () as total_count
+      from companies c left join p on p.ruc = c.ruc
+      where ${where(sql, conds)}
+      order by ${orderCol} desc, c.razon_social asc, c.id asc
+      limit ${pageSize} offset ${offset}`;
+    let total = rows.length ? Number(rows[0].total_count) : 0;
+    if (!rows.length && offset > 0) {
+      const [{ n }] = await sql`select count(*)::int as n from companies c where ${where(sql, conds)}`;
+      total = Number(n);
+    }
+    return {
+      rows: rows.map((r): CompanyRow => ({ ...toCompany(r), participacion: Number(r.participacion), participacionDemo: Boolean(r.participacion_demo) })),
+      total,
+    };
+  }
+
+  async listMarcas(): Promise<MarcaCount[]> {
+    const rows = await this.sql`
+      select upper(trim(marca)) as marca, count(*)::int as vehiculos, count(distinct company_id)::int as empresas
+      from fleet_vehicles where marca is not null and trim(marca) <> ''
+      group by 1 order by vehiculos desc, marca asc`;
+    return rows.map((r) => ({ marca: String(r.marca).replace(/\s+/g, " "), vehiculos: Number(r.vehiculos), empresas: Number(r.empresas) }));
+  }
+
+  async listDepartamentos(): Promise<DepartamentoCount[]> {
+    const rows = await this.sql`
+      select departamento, count(*)::int as empresas from companies where departamento is not null and departamento <> ''
+      group by departamento order by empresas desc, departamento asc`;
+    return rows.map((r) => ({ departamento: String(r.departamento), empresas: Number(r.empresas) }));
+  }
+
+  async countCompanies(): Promise<number> {
+    const [{ n }] = await this.sql`select count(*)::int as n from companies`;
+    return Number(n);
+  }
+
+  // ── flota ──
+
+  private async upsertFleetWith(sql: Sql | postgres.TransactionSql, batch: FleetVehicleInput[]): Promise<{ inserted: number; updated: number }> {
+    let inserted = 0;
+    let updated = 0;
+    const rows = dedupeBy(
+      batch.map((v) => ({ ...v, placa: normPlaca(v.placa) })).filter((v) => v.placa),
+      (v) => `${v.origen}|${v.placa}`,
+    );
+    for (let i = 0; i < rows.length; i += BATCH) {
+      const chunk = rows.slice(i, i + BATCH).map((v) => ({
+        company_id: v.companyId,
+        placa: v.placa,
+        marca: v.marca,
+        clase: v.clase,
+        anio: v.anio,
+        ejes: v.ejes,
+        llantas: v.llantas,
+        llantas_fuente: v.llantasFuente,
+        peso_bruto: v.pesoBruto,
+        chasis: v.chasis,
+        departamento: v.departamento,
+        origen: v.origen,
+        medida_probable: v.medidaProbable,
+        confianza: v.confianza,
+      }));
+      const out = await sql<{ inserted: boolean }[]>`
+        insert into fleet_vehicles ${sql(chunk)}
+        on conflict (placa, origen) do update set
+          company_id = excluded.company_id, marca = excluded.marca, clase = excluded.clase, anio = excluded.anio, ejes = excluded.ejes,
+          llantas = excluded.llantas, llantas_fuente = excluded.llantas_fuente, peso_bruto = excluded.peso_bruto, chasis = excluded.chasis,
+          departamento = excluded.departamento, medida_probable = excluded.medida_probable, confianza = excluded.confianza
+        returning (xmax = 0) as inserted`;
+      for (const r of out) {
+        if (r.inserted) inserted++;
+        else updated++;
+      }
+    }
+    return { inserted, updated };
+  }
+
+  upsertFleet(batch: FleetVehicleInput[]): Promise<{ inserted: number; updated: number }> {
+    return this.upsertFleetWith(this.sql, batch);
+  }
+
+  async replaceFleet(companyId: number, vehicles: Omit<FleetVehicleInput, "companyId">[]): Promise<{ removed: number; upserted: number }> {
+    const keep = dedupeBy(
+      vehicles.map((v) => ({ placa: normPlaca(v.placa), origen: v.origen })),
+      (v) => `${v.origen}|${v.placa}`,
+    );
+    return this.sql.begin(async (tx) => {
+      const removed = keep.length
+        ? await tx`
+            delete from fleet_vehicles f where f.company_id = ${companyId}
+            and not exists (select 1 from jsonb_to_recordset(${tx.json(keep)}) as k(placa text, origen text) where k.placa = f.placa and k.origen = f.origen)`
+        : await tx`delete from fleet_vehicles where company_id = ${companyId}`;
+      const r = await this.upsertFleetWith(
+        tx,
+        vehicles.map((v) => ({ ...v, companyId })),
+      );
+      return { removed: removed.count, upserted: r.inserted + r.updated };
+    }) as Promise<{ removed: number; upserted: number }>;
+  }
+
+  async listFleet(companyId: number): Promise<FleetVehicle[]> {
+    const rows = await this.sql`select * from fleet_vehicles where company_id = ${companyId} order by placa`;
+    return rows.map(toVehicle);
+  }
+
+  async fleetByBrand(companyId: number): Promise<FleetGroup[]> {
+    const rows = await this.sql`
+      select upper(trim(marca)) as marca, clase, medida_probable as medida, confianza, count(*)::int as unidades,
+        min(anio)::int as anio_min, max(anio)::int as anio_max, coalesce(sum(llantas), 0)::int as llantas, count(llantas)::int as con_llantas
+      from fleet_vehicles where company_id = ${companyId}
+      group by 1, clase, medida_probable, confianza`;
+    const agg: FleetAggRow[] = rows.map((r) => ({
+      marca: r.marca === null ? null : String(r.marca).replace(/\s+/g, " ") || null,
+      clase: str(r.clase),
+      medida: str(r.medida),
+      confianza: (r.confianza as Confianza | null) ?? null,
+      unidades: Number(r.unidades),
+      anioMin: num(r.anio_min),
+      anioMax: num(r.anio_max),
+      llantas: Number(r.llantas),
+      unidadesConLlantas: Number(r.con_llantas),
+    }));
+    return groupFleet(agg);
+  }
+
+  async countFleet(): Promise<number> {
+    const [{ n }] = await this.sql`select count(*)::int as n from fleet_vehicles`;
+    return Number(n);
+  }
+
+  // ── ventas ──
+
+  async insertSales(rows: SaleInput[]): Promise<number> {
+    for (let i = 0; i < rows.length; i += BATCH) {
+      const chunk = rows.slice(i, i + BATCH).map((r) => ({
+        fecha: toIsoDate(r.fecha),
+        ruc: digits(r.ruc),
+        razon_social: r.razonSocial ?? null,
+        medida: r.medida ?? null,
+        marca: r.marca ?? null,
+        diseno: r.diseno ?? null,
+        cantidad: r.cantidad,
+        precio_unitario: r.precioUnitario ?? null,
+        total: r.total ?? null,
+        vendedor: r.vendedor ?? null,
+        origen: r.origen ?? null,
+        is_demo: r.isDemo ?? false,
+      }));
+      await this.sql`insert into sales ${this.sql(chunk)}`;
+    }
+    return rows.length;
+  }
+
+  async deleteDemoSales(): Promise<number> {
+    const r = await this.sql`delete from sales where is_demo = true`;
+    return r.count;
+  }
+
+  async salesByRuc(ruc: string, since?: Date | IsoDate): Promise<Sale[]> {
+    const rows = since === undefined
+      ? await this.sql`select *, fecha::text as fecha from sales where ruc = ${digits(ruc)} order by fecha desc, id desc`
+      : await this.sql`select *, fecha::text as fecha from sales where ruc = ${digits(ruc)} and fecha >= ${toIsoDate(since)}::date order by fecha desc, id desc`;
+    return rows.map(toSale);
+  }
+
+  async participation(rucs: string[], since: Date | IsoDate): Promise<Record<string, Participation>> {
+    const list = [...new Set(rucs.map(digits).filter(Boolean))];
+    const out: Record<string, Participation> = {};
+    if (!list.length) return out;
+    const rows = await this.sql`
+      select ruc, sum(cantidad)::float8 as cantidad, bool_or(is_demo) as demo from sales
+      where ruc in ${this.sql(list)} and fecha >= ${toIsoDate(since)}::date group by ruc`;
+    for (const r of rows) out[String(r.ruc)] = { cantidad: Number(r.cantidad), demo: Boolean(r.demo) };
+    return out;
+  }
+
+  // ── usuarios y sesiones ──
+
+  async upsertUser(input: UserInput): Promise<PortalUser> {
+    const wa = digits(input.whatsapp);
+    if (!wa) throw new Error("upsertUser: falta el número de WhatsApp");
+    const [r] = await this.sql`
+      insert into users (nombre, whatsapp, rol, activo) values (${input.nombre}, ${wa}, ${input.rol}, ${input.activo ?? true})
+      on conflict (whatsapp) do update set nombre = excluded.nombre, rol = excluded.rol,
+        activo = ${input.activo === undefined ? this.sql`users.activo` : this.sql`excluded.activo`}
+      returning *`;
+    return toUser(r);
+  }
+
+  async getUser(id: number): Promise<PortalUser | null> {
+    const [r] = await this.sql`select * from users where id = ${id}`;
+    return r ? toUser(r) : null;
+  }
+
+  async getUserByWhatsapp(whatsapp: string): Promise<PortalUser | null> {
+    const wa = digits(whatsapp);
+    if (!wa) return null;
+    const [r] = await this.sql`select * from users where whatsapp = ${wa}`;
+    return r ? toUser(r) : null;
+  }
+
+  async listUsers(): Promise<PortalUser[]> {
+    const rows = await this.sql`select * from users order by id`;
+    return rows.map(toUser);
+  }
+
+  async saveLoginToken(token: LoginToken): Promise<void> {
+    await this.sql`
+      insert into login_tokens (token_hash, user_id, expires_at) values (${token.tokenHash}, ${token.userId}, ${token.expiresAt})
+      on conflict (token_hash) do nothing`;
+  }
+
+  async consumeLoginToken(tokenHash: string, now: Date): Promise<number | null> {
+    const [r] = await this.sql`
+      update login_tokens set used_at = ${now}
+      where token_hash = ${tokenHash} and used_at is null and expires_at > ${now}
+      returning user_id`;
+    return r ? Number(r.user_id) : null;
+  }
+
+  async createSession(session: { id: string; userId: number; expiresAt: Date }): Promise<PortalSession> {
+    const [r] = await this.sql`
+      insert into portal_sessions (id, user_id, expires_at) values (${session.id}, ${session.userId}, ${session.expiresAt})
+      on conflict (id) do update set user_id = excluded.user_id, expires_at = excluded.expires_at
+      returning *`;
+    return toSession(r);
+  }
+
+  async getSession(id: string, now: Date): Promise<PortalSession | null> {
+    const [r] = await this.sql`select * from portal_sessions where id = ${id} and expires_at > ${now}`;
+    return r ? toSession(r) : null;
+  }
+
+  async deleteSession(id: string): Promise<void> {
+    await this.sql`delete from portal_sessions where id = ${id}`;
+  }
+
+  // ── contactos ──
+
+  async addContact(input: ContactInput): Promise<Contact> {
+    const [r] = await this.sql`
+      insert into contacts (company_id, nombre, cargo, telefono, email, notas, created_by)
+      values (${input.companyId}, ${input.nombre}, ${input.cargo ?? null}, ${input.telefono ?? null}, ${input.email ?? null}, ${input.notas ?? null}, ${input.createdBy ?? null})
+      returning *`;
+    return toContact(r);
+  }
+
+  async getContact(id: number): Promise<Contact | null> {
+    const [r] = await this.sql`select * from contacts where id = ${id}`;
+    return r ? toContact(r) : null;
+  }
+
+  async listContacts(companyId: number): Promise<Contact[]> {
+    const rows = await this.sql`select * from contacts where company_id = ${companyId} order by id`;
+    return rows.map(toContact);
+  }
+
+  async updateContact(id: number, patch: ContactPatch): Promise<Contact | null> {
+    const cols = patchColumns(patch, CONTACT_COLS);
+    const [r] = Object.keys(cols).length
+      ? await this.sql`update contacts set ${this.sql(cols)}, updated_at = now() where id = ${id} returning *`
+      : await this.sql`update contacts set updated_at = now() where id = ${id} returning *`;
+    return r ? toContact(r) : null;
+  }
+
+  async deleteContact(id: number): Promise<boolean> {
+    const r = await this.sql`delete from contacts where id = ${id}`;
+    return r.count > 0;
+  }
+
+  // ── oportunidades ──
+
+  async createOpportunity(input: OpportunityInput): Promise<Opportunity> {
+    const at = input.at ?? new Date();
+    const etapa: StageId = input.etapa ?? "prospecto";
+    return this.sql.begin(async (tx) => {
+      const [r] = await tx`
+        insert into opportunities (company_id, owner_user_id, etapa, probabilidad, monto_estimado, cierre_esperado, proxima_accion, proxima_accion_at, quote_number, created_at, updated_at, closed_at)
+        values (${input.companyId}, ${input.ownerUserId ?? null}, ${etapa}, ${stageProbability(etapa)}, ${input.montoEstimado ?? null}, ${input.cierreEsperado ?? null},
+          ${input.proximaAccion ?? null}, ${input.proximaAccionAt ?? null}, ${input.quoteNumber ?? null}, ${at}, ${at}, ${isClosedStage(etapa) ? at : null})
+        returning *, cierre_esperado::text as cierre_esperado`;
+      await tx`insert into opportunity_stage_history (opportunity_id, etapa, entered_at, changed_by) values (${r.id}, ${etapa}, ${at}, ${input.createdBy ?? null})`;
+      return toOpportunity(r);
+    }) as Promise<Opportunity>;
+  }
+
+  async getOpportunity(id: number): Promise<Opportunity | null> {
+    const [r] = await this.sql`select *, cierre_esperado::text as cierre_esperado from opportunities where id = ${id}`;
+    return r ? toOpportunity(r) : null;
+  }
+
+  async getOpenOpportunity(companyId: number, ownerId?: number): Promise<Opportunity | null> {
+    const [first] = await this.listOpportunities({ companyId, ownerId, open: true });
+    return first ?? null;
+  }
+
+  async listOpportunities(filter: OpportunityFilter = {}): Promise<Opportunity[]> {
+    const sql = this.sql;
+    const conds: Fragment[] = [];
+    if (filter.ownerId !== undefined) conds.push(sql`owner_user_id = ${filter.ownerId}`);
+    if (filter.companyId !== undefined) conds.push(sql`company_id = ${filter.companyId}`);
+    if (filter.etapas?.length) conds.push(sql`etapa in ${sql(filter.etapas)}`);
+    if (filter.open === true) conds.push(sql`closed_at is null`);
+    if (filter.open === false) conds.push(sql`closed_at is not null`);
+    const rows = await sql`select *, cierre_esperado::text as cierre_esperado from opportunities where ${where(sql, conds)} order by updated_at desc, id desc`;
+    return rows.map(toOpportunity);
+  }
+
+  async moveStage(opportunityId: number, etapa: StageId, userId: number | null, at: Date = new Date()): Promise<Opportunity | null> {
+    return this.sql.begin(async (tx) => {
+      const [cur] = await tx`select *, cierre_esperado::text as cierre_esperado from opportunities where id = ${opportunityId} for update`;
+      if (!cur) return null;
+      if (cur.etapa === etapa) return toOpportunity(cur);
+      await tx`update opportunity_stage_history set left_at = ${at} where opportunity_id = ${opportunityId} and left_at is null`;
+      await tx`insert into opportunity_stage_history (opportunity_id, etapa, entered_at, changed_by) values (${opportunityId}, ${etapa}, ${at}, ${userId})`;
+      const [r] = await tx`
+        update opportunities set etapa = ${etapa}, probabilidad = ${stageProbability(etapa)}, updated_at = ${at}, closed_at = ${isClosedStage(etapa) ? at : null}
+        where id = ${opportunityId} returning *, cierre_esperado::text as cierre_esperado`;
+      return toOpportunity(r);
+    }) as Promise<Opportunity | null>;
+  }
+
+  async updateOpportunity(id: number, patch: OpportunityPatch): Promise<Opportunity | null> {
+    const cols = patchColumns(patch, OPPORTUNITY_COLS);
+    const [r] = Object.keys(cols).length
+      ? await this.sql`update opportunities set ${this.sql(cols)}, updated_at = now() where id = ${id} returning *, cierre_esperado::text as cierre_esperado`
+      : await this.sql`update opportunities set updated_at = now() where id = ${id} returning *, cierre_esperado::text as cierre_esperado`;
+    return r ? toOpportunity(r) : null;
+  }
+
+  async stageHistory(opportunityId: number): Promise<StageHistoryEntry[]> {
+    const rows = await this.sql`select * from opportunity_stage_history where opportunity_id = ${opportunityId} order by entered_at asc, id asc`;
+    return rows.map(toHistory);
+  }
+
+  // ── actividades ──
+
+  async addActivity(input: ActivityInput): Promise<Activity> {
+    const [r] = await this.sql`
+      insert into activities (company_id, opportunity_id, user_id, tipo, texto, canal, data, occurred_at)
+      values (${input.companyId}, ${input.opportunityId ?? null}, ${input.userId ?? null}, ${input.tipo}, ${input.texto ?? ""}, ${input.canal ?? null},
+        ${input.data ? this.sql.json(input.data as postgres.JSONValue) : null}, ${input.occurredAt ?? new Date()})
+      returning *`;
+    return toActivity(r);
+  }
+
+  async listActivities(filter: ActivityFilter = {}): Promise<Activity[]> {
+    const sql = this.sql;
+    const conds: Fragment[] = [];
+    if (filter.companyId !== undefined) conds.push(sql`company_id = ${filter.companyId}`);
+    if (filter.userId !== undefined) conds.push(sql`user_id = ${filter.userId}`);
+    if (filter.opportunityId !== undefined) conds.push(sql`opportunity_id = ${filter.opportunityId}`);
+    if (filter.since) conds.push(sql`occurred_at >= ${filter.since}`);
+    if (filter.until) conds.push(sql`occurred_at < ${filter.until}`);
+    const rows = filter.limit
+      ? await sql`select * from activities where ${where(sql, conds)} order by occurred_at desc, id desc limit ${filter.limit}`
+      : await sql`select * from activities where ${where(sql, conds)} order by occurred_at desc, id desc`;
+    return rows.map(toActivity);
+  }
+
+  // ── citas ──
+
+  async addAppointment(input: AppointmentInput): Promise<Appointment> {
+    const [r] = await this.sql`
+      insert into appointments (company_id, opportunity_id, user_id, starts_at, lugar, con_tecnico, notas, estado)
+      values (${input.companyId}, ${input.opportunityId ?? null}, ${input.userId ?? null}, ${input.startsAt}, ${input.lugar ?? null}, ${input.conTecnico ?? false},
+        ${input.notas ?? null}, ${input.estado ?? "programada"})
+      returning *`;
+    return toAppointment(r);
+  }
+
+  async getAppointment(id: number): Promise<Appointment | null> {
+    const [r] = await this.sql`select * from appointments where id = ${id}`;
+    return r ? toAppointment(r) : null;
+  }
+
+  async updateAppointment(id: number, patch: AppointmentPatch): Promise<Appointment | null> {
+    const cols = patchColumns(patch, APPOINTMENT_COLS);
+    if (!Object.keys(cols).length) return this.getAppointment(id);
+    const [r] = await this.sql`update appointments set ${this.sql(cols)} where id = ${id} returning *`;
+    return r ? toAppointment(r) : null;
+  }
+
+  async listAppointments(filter: AppointmentFilter = {}): Promise<Appointment[]> {
+    const sql = this.sql;
+    const conds: Fragment[] = [];
+    if (filter.userId !== undefined) conds.push(sql`user_id = ${filter.userId}`);
+    if (filter.companyId !== undefined) conds.push(sql`company_id = ${filter.companyId}`);
+    if (filter.estado !== undefined) conds.push(sql`estado = ${filter.estado}`);
+    if (filter.from) conds.push(sql`starts_at >= ${filter.from}`);
+    if (filter.to) conds.push(sql`starts_at < ${filter.to}`);
+    const rows = await sql`select * from appointments where ${where(sql, conds)} order by starts_at asc, id asc`;
+    return rows.map(toAppointment);
+  }
+}

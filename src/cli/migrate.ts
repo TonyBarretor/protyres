@@ -122,6 +122,154 @@ const STATEMENTS = [
     created_at timestamptz not null default now()
   )`,
   `create index if not exists messages_phone_created_idx on messages (phone, created_at)`,
+  // ── Portal comercial (fase A): empresas del padrón MTC, flota, ventas, usuarios/sesiones y CRM ──
+  `create table if not exists companies (
+    id serial primary key,
+    ruc text not null unique,
+    razon_social text not null default '',
+    sector text,
+    departamento text,
+    unidades integer not null default 0,
+    llantas_piso integer not null default 0,
+    antiguedad_media numeric(6,2),
+    es_cliente boolean not null default false,
+    owner_user_id integer,
+    temperatura text,
+    score numeric(8,2),
+    credit_terms_days integer,
+    created_at timestamptz not null default now(),
+    updated_at timestamptz not null default now()
+  )`,
+  `create index if not exists companies_departamento_idx on companies (departamento)`,
+  `create index if not exists companies_owner_idx on companies (owner_user_id)`,
+  `create index if not exists companies_unidades_idx on companies (unidades desc)`,
+  `create table if not exists fleet_vehicles (
+    id serial primary key,
+    company_id integer not null,
+    placa text not null,
+    marca text,
+    clase text,
+    anio integer,
+    ejes integer,
+    llantas integer,
+    llantas_fuente text,
+    peso_bruto numeric(10,2),
+    chasis text,
+    departamento text,
+    origen text not null,
+    medida_probable text,
+    confianza text,
+    unique (placa, origen)
+  )`,
+  `create index if not exists fleet_vehicles_company_idx on fleet_vehicles (company_id)`,
+  `create index if not exists fleet_vehicles_marca_idx on fleet_vehicles (marca)`,
+  `create table if not exists sales (
+    id serial primary key,
+    fecha date not null,
+    ruc text not null,
+    razon_social text,
+    medida text,
+    marca text,
+    diseno text,
+    cantidad numeric(12,2) not null default 0,
+    precio_unitario numeric(12,2),
+    total numeric(14,2),
+    vendedor text,
+    origen text,
+    is_demo boolean not null default false,
+    created_at timestamptz not null default now()
+  )`,
+  `create index if not exists sales_ruc_idx on sales (ruc)`,
+  `create index if not exists sales_fecha_idx on sales (fecha)`,
+  `create table if not exists users (
+    id serial primary key,
+    nombre text not null,
+    whatsapp text unique,
+    rol text not null default 'vendedor',
+    activo boolean not null default true,
+    created_at timestamptz not null default now()
+  )`,
+  `create table if not exists login_tokens (
+    token_hash text primary key,
+    user_id integer not null,
+    expires_at timestamptz not null,
+    used_at timestamptz,
+    created_at timestamptz not null default now()
+  )`,
+  `create table if not exists portal_sessions (
+    id text primary key,
+    user_id integer not null,
+    expires_at timestamptz not null,
+    created_at timestamptz not null default now()
+  )`,
+  `create index if not exists portal_sessions_user_idx on portal_sessions (user_id)`,
+  `create table if not exists contacts (
+    id serial primary key,
+    company_id integer not null,
+    nombre text not null,
+    cargo text,
+    telefono text,
+    email text,
+    notas text,
+    created_by integer,
+    created_at timestamptz not null default now(),
+    updated_at timestamptz not null default now()
+  )`,
+  `create index if not exists contacts_company_idx on contacts (company_id)`,
+  `create table if not exists opportunities (
+    id serial primary key,
+    company_id integer not null,
+    owner_user_id integer,
+    etapa text not null default 'prospecto',
+    probabilidad integer not null default 10,
+    monto_estimado numeric(14,2),
+    cierre_esperado date,
+    proxima_accion text,
+    proxima_accion_at timestamptz,
+    quote_number text,
+    created_at timestamptz not null default now(),
+    updated_at timestamptz not null default now(),
+    closed_at timestamptz
+  )`,
+  `create index if not exists opportunities_company_idx on opportunities (company_id)`,
+  `create index if not exists opportunities_owner_idx on opportunities (owner_user_id, etapa)`,
+  `create table if not exists opportunity_stage_history (
+    id serial primary key,
+    opportunity_id integer not null,
+    etapa text not null,
+    entered_at timestamptz not null default now(),
+    left_at timestamptz,
+    changed_by integer
+  )`,
+  `create index if not exists opportunity_stage_history_opp_idx on opportunity_stage_history (opportunity_id, entered_at)`,
+  `create table if not exists activities (
+    id serial primary key,
+    company_id integer not null,
+    opportunity_id integer,
+    user_id integer,
+    tipo text not null,
+    texto text not null default '',
+    canal text,
+    data jsonb,
+    occurred_at timestamptz not null default now(),
+    created_at timestamptz not null default now()
+  )`,
+  `create index if not exists activities_company_idx on activities (company_id, occurred_at)`,
+  `create index if not exists activities_user_idx on activities (user_id, occurred_at)`,
+  `create table if not exists appointments (
+    id serial primary key,
+    company_id integer not null,
+    opportunity_id integer,
+    user_id integer,
+    starts_at timestamptz not null,
+    lugar text,
+    con_tecnico boolean not null default false,
+    notas text,
+    estado text not null default 'programada',
+    created_at timestamptz not null default now()
+  )`,
+  `create index if not exists appointments_user_idx on appointments (user_id, starts_at)`,
+  `create index if not exists appointments_company_idx on appointments (company_id)`,
 ];
 
 async function main() {
@@ -140,6 +288,13 @@ async function main() {
     const [{ contracts }] = await sql`select count(*)::int as contracts from contract_prices`;
     const [{ msgs }] = await sql`select count(*)::int as msgs from messages`;
     console.log(`\nListo. Filas de precios: ${rows} (con foto: ${photos}). Archivos de cotizaciones enviadas: ${files}. Precios de contrato cambiados desde WhatsApp: ${contracts}. Mensajes registrados: ${msgs}. Si las fotos están en 0, vuelve a ingerir la lista de Steel.`);
+    const portalTables = ["companies", "fleet_vehicles", "sales", "users", "contacts", "opportunities", "activities", "appointments"];
+    const portalCounts: string[] = [];
+    for (const t of portalTables) {
+      const [{ n }] = await sql.unsafe(`select count(*)::int as n from ${t}`);
+      portalCounts.push(`${t}: ${n}`);
+    }
+    console.log(`Portal — ${portalCounts.join(", ")}.`);
   } finally {
     await sql.end({ timeout: 5 });
   }
