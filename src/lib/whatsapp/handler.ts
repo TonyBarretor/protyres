@@ -19,6 +19,8 @@ import { ingestWhatsAppText, looksLikePriceMessage } from "../ingest/whatsapp-te
 import { loadProvidersConfig, resolveSourceOptions } from "../ingest/sources";
 import { extractPricesWithLLM, llmAvailable } from "../llm/extract-prices";
 import { parseRequestWithLLM } from "../llm/parse-request";
+import { handlePortalCommand } from "../portal/bot";
+import type { PortalStore } from "../portal/store/types";
 import type { IngestResult } from "../ingest/types";
 import { fold, findBrandInText } from "../tyre/brands";
 import { findTyreSizes, parseTyreSize } from "../tyre/spec";
@@ -49,6 +51,8 @@ export interface HandlerDeps {
   /** Sends the quote email (default: Resend, or a dry-run file without RESEND_API_KEY); tests capture it. */
   sendEmail?: (quote: Quote, attachments: EmailAttachment[], draft: EmailDraft) => Promise<SendResult>;
   log?: (msg: string) => void;
+  /** Store del portal comercial (tests); por defecto getPortalStore(), solo si el mensaje es del portal. */
+  portalStore?: PortalStore;
 }
 
 const HELP = [
@@ -388,6 +392,8 @@ export class BotHandler {
         if (state.step === "need_provider") return this.reply(from, "Cancelado. No guardé esa lista.");
         return this.reply(from, "Listo, cancelado. ¿Qué cotizamos?");
       }
+      // portal comercial: único enganche (src/lib/portal/bot); false = sigue el cotizador
+      if (!msg.media && (await handlePortalCommand({ from, text, reply: (body) => this.reply(from, body), store: this.deps.portalStore, log: (m) => this.log(m) }))) return;
       if (cmd === "proveedores" || cmd === "listas") return this.replyProviders(from);
       if (state.step !== "review_quote" && /^(precios?|stock)\s+/.test(cmd) && findTyreSizes(text).length > 0) return this.replyPrices(from, text.replace(/^(precios?|stock)\s+/i, ""));
       // history and contract commands work in any state and leave the conversation as it is
