@@ -12,8 +12,8 @@ empresa zbuss
 asignarme 20602221505
 # 4. Primer contacto
 contacto zbuss: Carlos Quispe, jefe de flota, 987 654 321
-# 5. Cita con el jefe del Dpto. Técnico (B2: .ics sin leyenda + resumen + aviso a Danyer)
-#TODO B2: cita zbuss martes 10am en su base de Ate con danyer
+# 5. Cita con el jefe del Dpto. Técnico: .ics sin leyenda + resumen + aviso a Danyer (sin PORTAL_TECH_LEAD_NUMBER, el bot lo dice)
+cita zbuss martes 10am en su base de Ate con danyer
 # 6. Reporte de visita en texto y confirmación (B3)
 #TODO B3: Visité ZBUSS, me atendió Carlos Quispe, jefe de flota. Usan 295/80R22.5 en sus ómnibus y quieren probar Fenixway. Quedamos en mandarle la cotización el jueves.
 #TODO B3: sí

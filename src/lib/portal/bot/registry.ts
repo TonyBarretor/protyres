@@ -21,6 +21,11 @@ export interface PortalContext {
   reply(body: string): Promise<void>;
   /** Documento al mismo usuario (sin leyenda si caption es "" o undefined). */
   sendDocument(file: Buffer, fileName: string, caption?: string, mimeType?: string): Promise<void>;
+  /**
+   * Texto a OTRO usuario interno (p. ej. aviso al jefe técnico). Solo a números de usuarios activos en `users`: a
+   * cualquier otro número lanza error (el bot nunca escribe a clientes). Lanza también si WhatsApp rechaza el envío.
+   */
+  sendTextTo(phone: string, body: string): Promise<void>;
   /** Pasa `text` al cotizador como si el usuario lo hubiera escrito (respuesta "cotización" a la pregunta ambigua). */
   requote(text: string): Promise<void>;
   env: Record<string, string | undefined>;

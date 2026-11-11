@@ -8,8 +8,19 @@
   "users": [
     { "nombre": "Frank Rodríguez", "rol": "vendedor", "whatsappSalesperson": "Frank" },
     { "nombre": "Juan Bustios", "rol": "supervisor", "whatsappEnv": "PORTAL_SUPERVISOR_NUMBER" },
-    { "nombre": "Tony Barreto", "rol": "admin", "whatsappEnv": ["PORTAL_ADMIN_NUMBER", "ADMIN_NUMBERS"] }
+    { "nombre": "Tony Barreto", "rol": "admin", "whatsappEnv": ["PORTAL_ADMIN_NUMBER", "ADMIN_NUMBERS"] },
+    { "nombre": "Danyer Saavedra", "rol": "tecnico", "whatsappEnv": "PORTAL_TECH_LEAD_NUMBER" }
   ],
+  "appointments": {
+    "_comment": "Comando cita: duración de la cita en el .ics y aviso del calendario antes (minutos; 0 = sin aviso).",
+    "durationMinutes": 60,
+    "alarmMinutes": 30
+  },
+  "techLead": {
+    "_comment": "Jefe del Dpto. Técnico ('cita ... con danyer'). Número: 'whatsapp' fijo (solo dígitos) o la variable de 'whatsappEnv'. Sin número, el bot avisa al vendedor.",
+    "nombre": "Danyer Saavedra",
+    "whatsappEnv": "PORTAL_TECH_LEAD_NUMBER"
+  },
   "sales": {
     "_comment": "Subir ventas (.xlsx): para cada campo, encabezados posibles del Excel (sin importar mayúsculas, tildes ni espacios). Obligatorios: fecha, ruc, cantidad. Primer encabezado que coincide gana.",
     "columnMap": {

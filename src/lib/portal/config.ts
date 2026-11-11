@@ -14,12 +14,31 @@ const ImportSchema = z.object({
   dir: z.string().default("data/mtc"),
 });
 
+/** Citas del bot (comando `cita`). */
+const AppointmentsSchema = z.object({
+  /** Duración de la cita en el .ics. */
+  durationMinutes: z.number().int().min(5).max(24 * 60).default(60),
+  /** Aviso del calendario antes de la cita (minutos; 0 = sin aviso). */
+  alarmMinutes: z.number().int().min(0).max(24 * 60).default(30),
+});
+
+/** Jefe del Dpto. Técnico ("cita … con danyer"): número fijo o variable de entorno; sin número, el bot lo dice. */
+const TechLeadSchema = z.object({
+  nombre: z.string().min(1).default("Danyer Saavedra"),
+  whatsapp: z.string().optional(),
+  whatsappEnv: z.string().default("PORTAL_TECH_LEAD_NUMBER"),
+});
+
 export const PortalConfigSchema = z.looseObject({
   import: ImportSchema.prefault({}),
+  appointments: AppointmentsSchema.prefault({}),
+  techLead: TechLeadSchema.prefault({}),
 });
 
 export type PortalConfig = z.infer<typeof PortalConfigSchema>;
 export type PortalImportConfig = PortalConfig["import"];
+export type PortalAppointmentsConfig = PortalConfig["appointments"];
+export type PortalTechLeadConfig = PortalConfig["techLead"];
 
 export function portalConfigPath(): string {
   return process.env.PORTAL_CONFIG || path.join(process.cwd(), "config", "portal.json");

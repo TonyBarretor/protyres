@@ -390,7 +390,7 @@ export class BotHandler {
       // Va primero para que `cancelar` limpie también el paso del portal y una nota de voz de un usuario del portal no
       // reciba "no leo audios"; con el cotizador a mitad de un flujo solo entran comandos explícitos del portal.
       const quoteStep = pendingProfile(state) ? "profile" : state.step;
-      if (await routePortal({ from, text, msg, quoteStep, reply: (body) => this.reply(from, body), sendDocument: (file, name, caption, mime) => this.client.sendDocument(from, file, name, caption, mime), requote: (m) => this.handle(m), store: this.deps.portalStore, log: (m) => this.log(m) })) return;
+      if (await routePortal({ from, text, msg, quoteStep, reply: (body) => this.reply(from, body), sendDocument: (file, name, caption, mime) => this.client.sendDocument(from, file, name, caption, mime), sendTextTo: (to, body) => this.client.sendText(to, body), requote: (m) => this.handle(m), store: this.deps.portalStore, log: (m) => this.log(m) })) return;
       if (["ayuda", "help", "?", "hola", "menu", "inicio"].includes(cmd)) return this.reply(from, HELP);
       if (["cancelar", "cancel", "salir", "reset"].includes(cmd)) {
         await this.store.setConversation(from, null);

@@ -11,6 +11,7 @@
  */
 import type { InboundMessage } from "../../whatsapp/webhook";
 import { getPortalStore } from "../store";
+import { digits } from "../store/shared";
 import type { PortalStore, PortalUser } from "../store/types";
 import { companyKey, findCompanies } from "./companies";
 import { comingSoon } from "./commands";
@@ -33,6 +34,8 @@ export interface PortalRouteInput {
   quoteStep?: string;
   reply: (body: string) => Promise<void>;
   sendDocument?: (file: Buffer, fileName: string, caption?: string, mimeType?: string) => Promise<void>;
+  /** Texto a otro número (el portal solo lo usa con usuarios internos registrados; ver PortalContext.sendTextTo). */
+  sendTextTo?: (to: string, body: string) => Promise<void>;
   /** Vuelve a pasar un mensaje por BotHandler.handle() (respuesta "cotización" a la pregunta ambigua). */
   requote?: (msg: InboundMessage) => Promise<void>;
   /** Inyectado en tests y simulador; por defecto getPortalStore() (perezoso: solo si el mensaje puede ser del portal). */
@@ -165,6 +168,13 @@ export async function routePortal(input: PortalRouteInput): Promise<boolean> {
     msg,
     reply: input.reply,
     sendDocument: input.sendDocument ?? (async () => input.reply("(no puedo enviar archivos por este canal)")),
+    sendTextTo: async (to: string, body: string) => {
+      const phone = digits(to);
+      const target = phone ? await store.getUserByWhatsapp(phone) : null;
+      if (!target || !target.activo) throw new Error(`el número ${phone || to} no es de un usuario activo del portal`);
+      if (!input.sendTextTo) throw new Error("este canal no puede escribir a otros números");
+      await input.sendTextTo(phone, body);
+    },
     requote: async (t: string) => {
       const again: InboundMessage = { ...msg, id: `${msg.id}#cotizacion`, type: "text", text: t, media: undefined, forwarded: false };
       PASS.add(again);
