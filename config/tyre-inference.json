@@ -1,0 +1,14 @@
+{
+  "_comment": "Medida probable del neumático a partir del padrón MTC. Reglas en orden: gana la primera que coincide. Todos los límites son inclusivos. ejes/llantas/llantasPorEje: número exacto o {\"min\":..,\"max\":..}. pesoBrutoKg en kg. clases sin tildes (OMNIBUS, CAMION, REMOLCADOR, SEMIRREMOLQUE, REMOLQUE, CMTA PICKUP...). Si una regla pide ejes/llantas/peso y el vehículo no lo tiene, la regla no aplica. Sin regla → medida null, confianza null.",
+  "rules": [
+    { "id": "omnibus-3e-8ll", "clases": ["OMNIBUS"], "ejes": 3, "llantas": 8, "medida": "295/80R22.5", "confianza": "alta" },
+    { "id": "omnibus-2e-6ll", "clases": ["OMNIBUS"], "ejes": 2, "llantas": 6, "medida": "295/80R22.5", "confianza": "media" },
+    { "id": "remolcador", "clases": ["REMOLCADOR"], "medida": "295/80R22.5", "confianza": "media" },
+    { "id": "camion-3-4e-25t", "clases": ["CAMION"], "ejes": { "min": 3, "max": 4 }, "pesoBrutoKg": { "min": 25000 }, "medida": "12R22.5", "confianza": "media" },
+    { "id": "semirremolque-2ll-eje", "clases": ["SEMIRREMOLQUE"], "llantasPorEje": 2, "medida": "385/65R22.5", "confianza": "media", "nota": "rueda simple (super single)" },
+    { "id": "semirremolque-4ll-eje", "clases": ["SEMIRREMOLQUE"], "llantasPorEje": 4, "medida": "11R22.5", "confianza": "media" },
+    { "id": "camion-2e-lt9t", "clases": ["CAMION"], "ejes": 2, "pesoBrutoKg": { "max": 8999 }, "medida": "215/75R17.5", "confianza": "baja" },
+    { "id": "camion-2e-9-14t", "clases": ["CAMION"], "ejes": 2, "pesoBrutoKg": { "min": 9000, "max": 14000 }, "medida": "235/75R17.5", "confianza": "media" },
+    { "id": "camion-2e-gt14t", "clases": ["CAMION"], "ejes": 2, "pesoBrutoKg": { "min": 14001 }, "medida": "11R22.5", "confianza": "media" }
+  ]
+}

@@ -1,0 +1,8 @@
+{
+  "import": {
+    "minUnits": 10,
+    "currentCut": "20251231",
+    "tyreCuts": ["20241231", "20231231", "20221231"],
+    "dir": "data/mtc"
+  }
+}
