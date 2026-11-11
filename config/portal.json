@@ -9,5 +9,20 @@
     { "nombre": "Frank Rodríguez", "rol": "vendedor", "whatsappSalesperson": "Frank" },
     { "nombre": "Juan Bustios", "rol": "supervisor", "whatsappEnv": "PORTAL_SUPERVISOR_NUMBER" },
     { "nombre": "Tony Barreto", "rol": "admin", "whatsappEnv": ["PORTAL_ADMIN_NUMBER", "ADMIN_NUMBERS"] }
-  ]
+  ],
+  "sales": {
+    "_comment": "Subir ventas (.xlsx): para cada campo, encabezados posibles del Excel (sin importar mayúsculas, tildes ni espacios). Obligatorios: fecha, ruc, cantidad. Primer encabezado que coincide gana.",
+    "columnMap": {
+      "fecha": ["fecha", "fecha factura", "fecha de factura", "fecha emision", "fecha de emision", "date", "invoice date"],
+      "ruc": ["ruc", "ruc cliente", "nif", "vat", "nro documento", "numero de documento", "documento"],
+      "razonSocial": ["razon social", "cliente", "nombre cliente", "customer", "partner", "empresa"],
+      "medida": ["medida", "medida neumatico", "size", "tamano"],
+      "marca": ["marca", "brand"],
+      "diseno": ["diseno", "modelo", "model", "pattern"],
+      "cantidad": ["cantidad", "cant", "cant.", "unidades", "qty", "quantity"],
+      "precioUnitario": ["precio unitario", "precio unit", "p. unit", "p unit", "precio", "unit price", "price unit"],
+      "total": ["total", "importe", "subtotal", "monto", "amount"],
+      "vendedor": ["vendedor", "comercial", "salesperson", "vendedor/a"]
+    }
+  }
 }
