@@ -33,6 +33,8 @@ export const MAX_NOTICES = 7;
 
 export interface PortalConvState {
   pending?: PendingStep | null;
+  /** Pasos apartados para retomarlos después (p. ej. el pedido de una OC cuando el vendedor pasó a cotizar), por tipo. */
+  parked?: Record<string, PendingStep & { parkedAt: string }>;
   /** Opcional: los estados anteriores a B6 no lo traen. */
   notices?: PortalNotice[];
   [key: string]: unknown;
@@ -123,4 +125,30 @@ export async function clearPending(store: PortalStore, phone: string): Promise<v
   if (!conv) return;
   const { pending: _drop, ...rest } = conv.state as PortalConvState;
   await store.setPortalConversation(phone, Object.keys(rest).length ? rest : null);
+}
+
+/** Un paso apartado se puede retomar durante 24 h. */
+export const PARKED_TTL_MS = 24 * 60 * 60 * 1000;
+
+/** El paso apartado de este tipo (null si no hay o venció). */
+export function parkedOf(conv: PortalConversation | null | undefined, kind: string, now: Date): PendingStep | null {
+  const p = (conv?.state as PortalConvState | undefined)?.parked?.[kind];
+  if (!p || typeof p !== "object" || p.kind !== kind) return null;
+  const t = Date.parse(p.parkedAt);
+  if (!Number.isFinite(t) || now.getTime() - t > PARKED_TTL_MS) return null;
+  const { parkedAt: _at, ...step } = p;
+  return step as PendingStep;
+}
+
+/** Aparta un paso (o lo borra con null), conservando el resto del estado. */
+export async function setParked(store: PortalStore, phone: string, kind: string, step: PendingStep | null, now: Date): Promise<void> {
+  const conv = await store.getPortalConversation(phone);
+  const state = { ...((conv?.state as PortalConvState) ?? {}) };
+  const parked = { ...(state.parked ?? {}) };
+  if (step) parked[kind] = { ...step, parkedAt: now.toISOString() };
+  else delete parked[kind];
+  if (Object.keys(parked).length) state.parked = parked;
+  else delete state.parked;
+  if (!conv && !step) return;
+  await store.setPortalConversation(phone, Object.keys(state).length ? state : null);
 }

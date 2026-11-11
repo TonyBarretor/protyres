@@ -568,6 +568,9 @@ export interface PurchaseOrderInput {
   createdAt?: Date;
 }
 
+/** Una OC en un listado: sin `data` (el PDF en base64 solo lo trae getPurchaseOrder). */
+export type PurchaseOrderSummary = Omit<PurchaseOrder, "data">;
+
 export type PurchaseOrderPatch = Partial<Pick<PurchaseOrder, "opportunityId" | "numero" | "quoteNumber" | "fileName" | "mimeType" | "data" | "status">>;
 
 export interface PurchaseOrderFilter {
@@ -590,8 +593,8 @@ export interface PurchaseOrderRepo {
   addPurchaseOrder(input: PurchaseOrderInput): Promise<PurchaseOrder>;
   getPurchaseOrder(id: number): Promise<PurchaseOrder | null>;
   updatePurchaseOrder(id: number, patch: PurchaseOrderPatch): Promise<PurchaseOrder | null>;
-  /** Más reciente primero. */
-  listPurchaseOrders(filter?: PurchaseOrderFilter): Promise<PurchaseOrder[]>;
+  /** Más reciente primero. Sin `data` (el archivo): para eso, getPurchaseOrder. */
+  listPurchaseOrders(filter?: PurchaseOrderFilter): Promise<PurchaseOrderSummary[]>;
   getOrderProfile(companyId: number): Promise<CompanyOrderProfile | null>;
   /** Reemplaza el perfil completo (quien llama mezcla con el anterior). */
   setOrderProfile(companyId: number, data: Record<string, unknown>): Promise<CompanyOrderProfile>;

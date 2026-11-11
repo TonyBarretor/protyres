@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { classifyIntent, isCancel, isQuoterCommand, parsePortalCommand, type ClassifyInput } from "./router";
+import { classifyIntent, isCancel, isQuoterCommand, mediaAccepted, parsePortalCommand, type ClassifyInput } from "./router";
 
 const user = (text: string, extra: Partial<ClassifyInput> = {}): ClassifyInput => ({ text, state: { step: "idle" }, isPortalUser: true, ...extra });
 const stranger = (text: string, extra: Partial<ClassifyInput> = {}): ClassifyInput => ({ text, state: { step: "idle" }, isPortalUser: false, ...extra });
@@ -45,8 +45,29 @@ describe("parsePortalCommand", () => {
     expect(parsePortalCommand("cotizaciones")).toBeNull();
   });
 
-  it("con adjunto solo valen los comandos que lo aceptan (oc)", () => {
+  it("un comando es de una sola línea, sin medida de llanta ni forma de campo del cotizador", () => {
+    expect(parsePortalCommand("Empresa Transportes ABC\n295/80R22.5 x4 Fenixway")).toBeNull();
+    expect(parsePortalCommand("Contacto Juan Perez 987654321\n11R22.5 x4")).toBeNull();
+    expect(parsePortalCommand("OC 4500123 Transportes ABC 295/80R22.5 x8 a 254")).toBeNull();
+    expect(parsePortalCommand("contacto de: Juan")).toBeNull();
+    expect(parsePortalCommand("Empresa del: ACME")).toBeNull();
+    expect(parsePortalCommand("empresa zbuss\nhoy")).toBeNull();
+    // los de siempre siguen siendo comandos
+    expect(parsePortalCommand("contacto zbuss: Carlos Quispe, jefe de flota, 987 654 321")?.name).toBe("contacto");
+    expect(parsePortalCommand("contacto de transportes abc: Juan")?.name).toBe("contacto");
+    expect(parsePortalCommand("empresa 20602221505")?.name).toBe("empresa");
+    expect(parsePortalCommand("oc zbuss 4500123")?.name).toBe("oc");
+    // por el router: un pedido de varias líneas que empieza con "Empresa …" es una cotización
+    expect(classifyIntent(user("Empresa Transportes ABC\n295/80R22.5 x4 Fenixway"))).toBe("quote");
+    expect(classifyIntent(user("Contacto Juan Perez 987654321\n11R22.5 x4"))).toBe("quote");
+    expect(classifyIntent(user("OC 4500123 Transportes ABC 295/80R22.5 x8 a 254"))).toBe("quote");
+    expect(classifyIntent(stranger("Empresa Transportes ABC\n295/80R22.5 x4"))).toBe("quote");
+  });
+
+  it("con adjunto solo valen los comandos que lo aceptan (oc), con la leyenda de una línea", () => {
     expect(parsePortalCommand("oc zbuss 123", { withMedia: true })?.name).toBe("oc");
+    expect(parsePortalCommand("OC 4500123 Transportes ABC", { withMedia: true })?.name).toBe("oc");
+    expect(parsePortalCommand("oc zbuss 123\n295/80R22.5 x8", { withMedia: true })).toBeNull();
     expect(parsePortalCommand("empresa zbuss", { withMedia: true })).toBeNull();
   });
 });
@@ -134,12 +155,46 @@ describe("classifyIntent", () => {
 
   it("audio: reporte para usuarios del portal; cotizador (no leo audios) para otros; otros adjuntos al cotizador", () => {
     expect(classifyIntent(user("", { hasMedia: true, mediaType: "audio" }))).toBe("report");
-    expect(classifyIntent(user("", { hasMedia: true, mediaType: "audio", state: "review_quote" }))).toBe("report");
+    // con el cotizador a mitad de un flujo la nota de voz es del cotizador (el "sí" siguiente no confirma un borrador)
+    for (const step of QUOTE_STEPS) expect([step, classifyIntent(user("", { hasMedia: true, mediaType: "audio", state: step }))]).toEqual([step, "passthrough"]);
+    expect(classifyIntent(user("", { hasMedia: true, mediaType: "audio", state: "review_quote", pendingPortalStep: { kind: "report_draft" } }))).toBe("passthrough");
     expect(classifyIntent(user("", { hasMedia: true, mediaType: "audio", pendingPortalStep: { kind: "order_question" } }))).toBe("portal_flow");
     expect(classifyIntent(stranger("", { hasMedia: true, mediaType: "audio" }))).toBe("passthrough");
     expect(classifyIntent(user("lista de precios", { hasMedia: true, mediaType: "document" }))).toBe("passthrough");
     expect(classifyIntent(user("foto Michelin XZE2+", { hasMedia: true, mediaType: "image" }))).toBe("passthrough");
     expect(classifyIntent(user("oc zbuss 4500123", { hasMedia: true, mediaType: "document" }))).toBe("portal_command");
+  });
+
+  it("pasos del pedido de oc: captureText (ítems) y keepText (preguntas)", () => {
+    const items = { kind: "oc_pedido", captureText: true, keepText: false };
+    const questions = { kind: "oc_pedido", captureText: false, keepText: true };
+    // ítems: todo es del paso, salvo los comandos del cotizador
+    expect(classifyIntent(user("8 x Fenixway Flama 77 315/80R22.5 a 254", { pendingPortalStep: items }))).toBe("portal_flow");
+    expect(classifyIntent(user("proveedores", { pendingPortalStep: items }))).toBe("passthrough");
+    expect(classifyIntent(user("ayuda", { pendingPortalStep: items }))).toBe("passthrough");
+    // preguntas: las respuestas son del paso aunque parezcan campos; una medida es un pedido nuevo
+    for (const t of ["entrega: Av. Nueva 500, Callao", "360, 20 soles x llanta", "48 h post OC", "sí", "igual", "Andeskar, Luis Pérez 987 654 321"]) {
+      expect([t, classifyIntent(user(t, { pendingPortalStep: questions }))]).toEqual([t, "portal_flow"]);
+    }
+    expect(classifyIntent(user("Fenixway 295/80R22.5 x4 para Transportes ABC", { pendingPortalStep: questions }))).toBe("quote");
+    expect(classifyIntent(user("11R22.5", { pendingPortalStep: questions }))).toBe("quote");
+    expect(classifyIntent(user("proveedores", { pendingPortalStep: questions }))).toBe("passthrough");
+    expect(classifyIntent(user("ayuda", { pendingPortalStep: questions }))).toBe("passthrough");
+  });
+
+  it("adjuntos para un paso pendiente: dentro de mediaUntil y sin leyenda de otra cosa", () => {
+    const now = new Date("2026-11-11T15:00:00Z");
+    const step = { kind: "oc_pedido", acceptsMedia: true, mediaUntil: "2026-11-11T15:05:00Z" };
+    const doc = (text: string, extra: Partial<ClassifyInput> = {}) => user(text, { hasMedia: true, mediaType: "document", pendingPortalStep: step, now, ...extra });
+    expect(classifyIntent(doc(""))).toBe("portal_flow");
+    expect(classifyIntent(doc("la OC firmada"))).toBe("portal_flow");
+    expect(classifyIntent(doc("orden de compra"))).toBe("portal_flow");
+    expect(classifyIntent(doc("foto Michelin XZE2+", { mediaType: "image" }))).toBe("passthrough");
+    expect(classifyIntent(doc("lista de precios Llantas del Sur"))).toBe("passthrough");
+    expect(classifyIntent(doc("", { now: new Date("2026-11-11T15:06:00Z") }))).toBe("passthrough"); // pasados los 10 min
+    expect(classifyIntent(doc("", { state: "review_quote" }))).toBe("passthrough");
+    expect(mediaAccepted({ kind: "x", acceptsMedia: true }, "", now)).toBe(true); // sin mediaUntil: sin límite
+    expect(mediaAccepted({ kind: "x" }, "", now)).toBe(false);
   });
 
   it("mensajes reenviados: siempre al cotizador", () => {

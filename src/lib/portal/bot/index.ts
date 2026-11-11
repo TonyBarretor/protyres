@@ -8,6 +8,13 @@
  * explícitos del portal dan error; todo lo demás sigue al cotizador.
  *
  * `cancelar` llega aquí primero: borra el paso pendiente del portal y devuelve false (el cotizador cancela lo suyo).
+ * Cuando un paso pendiente se deja (cancelar, otro comando, o el mensaje sigue al cotizador) corre su manejador de descarte
+ * si lo tiene (registerPendingDrop): `oc` aparta el pedido para retomarlo y avisa, o marca la OC cancelada.
+ *
+ * Latencia: lo que no es comando explícito tiene PORTAL_ROUTE_TIMEOUT_MS (4 s) para las lecturas que deciden (usuario,
+ * estado, avisos, empresas nombradas); si vence, se registra y sigue el cotizador. Ya decidido que el mensaje es del
+ * portal (reporte, respuesta a un paso), el manejador corre sin límite: cortarlo dejaría el mensaje a medias y además
+ * lo procesaría el cotizador. Un comando explícito espera al store (y si falla, da error).
  *
  * Avisos pendientes (B6, `notices` en el estado del portal: lo que el cron diario no pudo mandar por la ventana de 24 h):
  * con CUALQUIER mensaje del usuario, también los que van al cotizador, se mandan primero en un mensaje aparte y se borran;
@@ -24,8 +31,9 @@ import { noticesMessage } from "../notify/notices";
 import { mentionsKnownCompany } from "./companies";
 import "./report";
 import { comingSoon } from "./commands";
-import { getPendingHandler, getPortalCommand, handleReport, registerPendingHandler, type PortalContext } from "./registry";
-import { classifyIntent, isCancel, isQuoterCommand, parsePortalCommand, textSignals, type Intent } from "./router";
+import { getPendingDrop, getPendingHandler, getPortalCommand, handleReport, registerPendingHandler, type DropContext, type DropReason, type PortalContext } from "./registry";
+import { classifyIntent, isCancel, isQuoterCommand, mediaAccepted, parsePortalCommand, textSignals, type Intent } from "./router";
+import { withTimeout } from "../quotes/link";
 import { clearNotices, clearPending, noticesOf, pendingOf, setPending, type IntentChoiceStep, type PendingStep } from "./state";
 import { fold } from "../../tyre/brands";
 
@@ -58,12 +66,21 @@ export interface PortalRouteInput {
   downloadMedia?: (mediaId: string) => Promise<{ data: Buffer; mimeType: string; fileName?: string }>;
   /** Registro en `messages` (transcripciones). Opcional: sin él, getStore().logMessage. */
   logMessage?: (entry: MessageLogEntry) => Promise<void>;
+  /** Tiempo límite de las decisiones que no son comando explícito (tests); por defecto PORTAL_ROUTE_TIMEOUT_MS. */
+  timeoutMs?: number;
 }
 
 /** Compatibilidad con la fase A. */
 export type PortalCommandInput = PortalRouteInput;
 
 export const NOT_REGISTERED = "Tu número no está registrado en el portal. Pide a Tony que te agregue.";
+/**
+ * Tiempo máximo para decidir si un mensaje es del portal cuando no es un comando explícito (leer usuario, estado y
+ * avisos): si la base tarda más, se registra y sigue el cotizador. Los comandos explícitos esperan lo que haga falta.
+ */
+export const PORTAL_ROUTE_TIMEOUT_MS = 4000;
+const routeTimeout = (input: PortalRouteInput) => input.timeoutMs ?? PORTAL_ROUTE_TIMEOUT_MS;
+
 export const AMBIGUOUS_QUESTION = "¿Es una *cotización* o un *reporte* de visita/llamada? Responde *cotización* o *reporte*.";
 
 /** Mensajes que el portal devuelve al cotizador (requote): el router no los vuelve a mirar. */
@@ -118,29 +135,61 @@ async function deliverNotices(input: PortalRouteInput, store: PortalStore, conv:
   }
 }
 
-/** Salidas tempranas hacia el cotizador: solo mira si hay avisos pendientes (una lectura). */
+/** Salidas tempranas hacia el cotizador: solo mira si hay avisos pendientes (una lectura, con tiempo límite). */
 async function deliverNoticesOnly(input: PortalRouteInput): Promise<void> {
   const log = input.log ?? (() => undefined);
   try {
-    const store = input.store ?? (await getPortalStore());
-    await deliverNotices(input, store, await store.getPortalConversation(input.from), log);
+    await withTimeout(
+      (async () => {
+        const store = input.store ?? (await getPortalStore());
+        await deliverNotices(input, store, await store.getPortalConversation(input.from), log);
+      })(),
+      routeTimeout(input),
+    );
   } catch (err) {
     log(`portal: no pude revisar los avisos pendientes: ${(err as Error).message}`);
   }
 }
 
 /** ¿Hay un paso pendiente del portal que espera este adjunto (p.ej. la OC tras `oc …`)? Solo con el cotizador en idle. */
-async function mediaForPendingStep(input: PortalRouteInput, m: { forwarded: boolean; hasMedia: boolean; quoteStep: string }): Promise<boolean> {
+async function mediaForPendingStep(input: PortalRouteInput, m: { forwarded: boolean; hasMedia: boolean; quoteStep: string; text: string }): Promise<boolean> {
   if (m.forwarded || !m.hasMedia || m.quoteStep !== "idle") return false;
   try {
-    const store = input.store ?? (await getPortalStore());
-    const user = await store.getUserByWhatsapp(input.from);
-    if (!user || !user.activo) return false;
-    const pending = pendingOf(await store.getPortalConversation(input.from), input.now ?? new Date());
-    return !!pending && (pending as { acceptsMedia?: unknown }).acceptsMedia === true;
+    return await withTimeout(
+      (async () => {
+        const store = input.store ?? (await getPortalStore());
+        const user = await store.getUserByWhatsapp(input.from);
+        if (!user || !user.activo) return false;
+        const now = input.now ?? new Date();
+        return mediaAccepted(pendingOf(await store.getPortalConversation(input.from), now), m.text, now);
+      })(),
+      routeTimeout(input),
+    );
   } catch (err) {
     (input.log ?? (() => undefined))(`portal: no pude revisar el paso pendiente: ${(err as Error).message}`);
     return false;
+  }
+}
+
+/** Lo que se lee del store para decidir (usuario, estado, paso pendiente y si el texto nombra una empresa conocida). */
+interface Decision {
+  store: PortalStore;
+  active: PortalUser | null;
+  conv: PortalConversation | null;
+}
+
+/**
+ * Descarta el paso pendiente: su manejador de descarte (si tiene) puede apartarlo o cerrar lo que dejó abierto y devolver un
+ * aviso, que se manda antes de que siga el cotizador. Nunca lanza.
+ */
+async function dropPending(input: PortalRouteInput, dctx: DropContext, step: PendingStep | null, reason: DropReason, notify = true): Promise<void> {
+  try {
+    const hook = step ? getPendingDrop(step.kind) : undefined;
+    const notice = hook ? await hook(dctx, step!, reason) : null;
+    await clearPending(dctx.store, dctx.from);
+    if (notice && notify) await input.reply(notice);
+  } catch (err) {
+    dctx.log(`portal: no pude dejar el paso pendiente: ${(err as Error).message}`);
   }
 }
 
@@ -154,43 +203,49 @@ export async function routePortal(input: PortalRouteInput): Promise<boolean> {
   const quoteStep = input.quoteStep ?? "idle";
   const cmd = msg.forwarded ? null : parsePortalCommand(text, { withMedia: hasMedia && !isAudio });
   const cancel = !hasMedia && isCancel(text);
+  const log = input.log ?? (() => undefined);
 
-  // nada de esto puede ser del portal: va al cotizador (antes, los avisos pendientes si los hay)
-  if (msg.forwarded || (!cmd && !cancel && !isAudio && (hasMedia || quoteStep !== "idle" || !text))) {
+  // nada de esto puede ser del portal: va al cotizador (antes, los avisos pendientes si los hay). Una nota de voz con el
+  // cotizador a mitad de un flujo también es del cotizador (router, regla 6).
+  if (msg.forwarded || (!cmd && !cancel && (isAudio ? quoteStep !== "idle" : hasMedia || quoteStep !== "idle" || !text))) {
     // excepción: un adjunto sin leyenda justo después de `oc` (paso pendiente con acceptsMedia) es del portal
-    if (!(await mediaForPendingStep(input, { forwarded: !!msg.forwarded, hasMedia, quoteStep }))) {
+    if (!(await mediaForPendingStep(input, { forwarded: !!msg.forwarded, hasMedia: hasMedia && !isAudio, quoteStep, text }))) {
       await deliverNoticesOnly(input);
       return false;
     }
   }
 
-  const log = input.log ?? (() => undefined);
-  let store: PortalStore;
-  let user: PortalUser | null;
+  // lecturas para decidir: un comando explícito espera lo que haga falta (y si el store falla, da error); cualquier otra
+  // cosa tiene PORTAL_ROUTE_TIMEOUT_MS y, si vence o falla, sigue el cotizador
+  const decide = async (): Promise<Decision> => {
+    const store = input.store ?? (await getPortalStore());
+    const user = await store.getUserByWhatsapp(from);
+    const active = user && user.activo ? user : null;
+    const conv = active ? await store.getPortalConversation(from) : null;
+    return { store, active, conv };
+  };
+  let d: Decision;
   try {
-    store = input.store ?? (await getPortalStore());
-    user = await store.getUserByWhatsapp(from);
+    d = cmd ? await decide() : await withTimeout(decide(), routeTimeout(input));
   } catch (err) {
     if (cmd) throw err;
-    log(`portal: store no disponible, sigue el cotizador: ${(err as Error).message}`);
+    log(`portal: store no disponible o lento, sigue el cotizador: ${(err as Error).message}`);
     return false;
   }
-  const active = user && user.activo ? user : null;
+  const { store, active } = d;
   const now = input.now ?? new Date();
-  // una sola lectura del estado del portal: avisos pendientes y paso pendiente
-  let conv: PortalConversation | null = null;
-  if (active) {
-    try {
-      conv = await store.getPortalConversation(from);
-    } catch (err) {
-      if (cmd) throw err;
-      log(`portal: no pude leer el paso pendiente: ${(err as Error).message}`);
-      return false;
-    }
-    conv = await deliverNotices(input, store, conv, log);
+  // avisos pendientes (con tiempo límite: si tarda, se quedan para el próximo mensaje)
+  let conv = d.conv;
+  if (active && conv) {
+    const before = conv;
+    conv = await withTimeout(deliverNotices(input, store, conv, log), routeTimeout(input)).catch((err: Error) => {
+      log(`portal: los avisos pendientes tardaron: ${err.message}`);
+      return before;
+    });
   }
+  const dctx: DropContext = { store, from, now, log };
   if (cancel) {
-    if (active) await clearPending(store, from).catch((err: Error) => log(`portal: no pude limpiar el paso pendiente: ${err.message}`));
+    if (active) await withTimeout(dropPending(input, dctx, pendingOf(conv, now), "cancel"), routeTimeout(input)).catch((err: Error) => log(`portal: no pude limpiar el paso pendiente: ${err.message}`));
     return false;
   }
   if (cmd?.name === "portal" && !active) {
@@ -208,7 +263,12 @@ export async function routePortal(input: PortalRouteInput): Promise<boolean> {
     const sig = textSignals(text);
     const words = fold(text).split(" ").filter(Boolean).length;
     if (!sig.strongQuote && !sig.strongReport && !sig.weakReport && words >= 1 && words <= 15) {
-      mentions = await mentionsKnownCompany(store, text).catch(() => false);
+      try {
+        mentions = await withTimeout(mentionsKnownCompany(store, text), routeTimeout(input));
+      } catch (err) {
+        log(`portal: no pude buscar empresas en el texto, sigue el cotizador: ${(err as Error).message}`);
+        return false;
+      }
     }
   }
 
@@ -238,36 +298,37 @@ export async function routePortal(input: PortalRouteInput): Promise<boolean> {
     downloadMedia: input.downloadMedia,
     logMessage: input.logMessage,
   };
-  const base = { text, hasMedia, mediaType: msg.type, state: quoteStep, isPortalUser: true, forwarded: msg.forwarded, mentionsKnownCompany: mentions };
+  const base = { text, hasMedia, mediaType: msg.type, state: quoteStep, isPortalUser: true, forwarded: msg.forwarded, mentionsKnownCompany: mentions, now };
   let intent: Intent = classifyIntent({ ...base, pendingPortalStep: live });
 
   if (intent === "portal_command" && cmd) {
-    if (pending) await clearPending(store, from); // un comando nuevo deja atrás la pregunta anterior
+    // un comando nuevo deja atrás la pregunta anterior (`oc` avisa él mismo si retoma o reemplaza un pedido)
+    if (pending) await dropPending(input, dctx, pending, "command", cmd.name !== "oc");
     const handler = getPortalCommand(cmd.name);
     if (handler) await handler(ctx, cmd.args);
     else await input.reply(comingSoon(cmd.name));
-        return true;
+    return true;
   }
+  let dropped = false;
   if (intent === "portal_flow" && live) {
     const consumed = await getPendingHandler(live.kind)!(ctx, live, text);
-    if (consumed) {
-            return true;
-    }
-    await clearPending(store, from);
+    if (consumed) return true;
+    await dropPending(input, dctx, live, "quoter");
+    dropped = true;
     intent = classifyIntent({ ...base, pendingPortalStep: null });
   }
   if (intent === "report") {
     await handleReport(ctx, text, { occurredAt: occurredAt(msg, now), audio: isAudio && msg.media ? { id: msg.media.id, mimeType: msg.media.mimeType } : null });
-        return true;
+    return true;
   }
   if (intent === "ambiguous") {
     const step: Omit<IntentChoiceStep, "createdAt"> = { kind: "intent_choice", text, occurredAt: occurredAt(msg, now).toISOString() };
     await setPending(store, from, step, now);
     await input.reply(AMBIGUOUS_QUESTION);
-        return true;
+    return true;
   }
   // quote / passthrough: el cotizador. Un paso pendiente queda descartado (el usuario pasó a otra cosa).
-  if (pending) await clearPending(store, from).catch((err: Error) => log(`portal: no pude limpiar el paso pendiente: ${err.message}`));
+  if (pending && !dropped) await dropPending(input, dctx, pending, "quoter");
   return false;
 }
 

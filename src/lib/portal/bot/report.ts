@@ -9,6 +9,8 @@
  *     El borrador vive en el paso pendiente `report_draft` (vence a las 2 h; `cancelar` lo borra).
  *  3. `sí` guarda: actividad (occurred_at = lo dicho o la hora del mensaje), oportunidad (la crea si no hay; la etapa solo
  *     avanza, con historial), próxima acción y contacto nuevo. `no` descarta. Otro texto corrige el borrador.
+ *     La oportunidad solo se toca si el vendedor puede editar la empresa (canEditCompany, como `cita`/`contacto`); si no,
+ *     se guarda solo la actividad (sin oportunidad ni contacto) y se le dice de quién es la empresa.
  *
  * Dependencias inyectables (tests y simulador) con configureReportBot: cliente de Anthropic, fetch de Deepgram, descarga
  * de medios y registro de mensajes. La descarga inyectada con configureReportBot manda sobre ctx.downloadMedia (el simulador no tiene Graph API).
@@ -19,6 +21,7 @@ import { GraphWhatsAppClient, graphConfigFromEnv } from "../../whatsapp/client";
 import { applyCorrection, draftToRecords, formatDraftSummary, isConfirmation, isRejection, makeDraft, nextQuestion, type DraftField, type ReportDraft } from "../report/draft";
 import { extractReport, type ExtractContext, type LlmClient } from "../report/extract";
 import { displayName, matchCompanies, type CompanyRef } from "../report/match";
+import { canEditCompany } from "../auth/permissions";
 import { stageIndex, stageLabel, type StageId } from "../stages";
 import type { Company, PortalStore } from "../store/types";
 import { formatLimaDateTime } from "../ui/time";
@@ -220,8 +223,12 @@ async function saveDraft(ctx: PortalContext, draft: ReportDraft): Promise<void> 
     await showDraft(ctx, again, { text: draft.texto, occurredAt: draft.messageAt });
     return;
   }
-  const opp = await store.getOpenOpportunity(company.id);
   const contacts = await store.listContacts(company.id);
+  if (!canEditCompany(user, company)) {
+    await saveActivityOnly(ctx, draft, company, contacts);
+    return;
+  }
+  const opp = await store.getOpenOpportunity(company.id);
   const rec = draftToRecords({ ...draft, etapaSugerida: targetStage(draft) }, { userId: user.id, now, opportunity: opp, contacts });
   const lines: string[] = [];
   let oppId = opp?.id ?? null;
@@ -255,6 +262,25 @@ async function saveDraft(ctx: PortalContext, draft: ReportDraft): Promise<void> 
   await clearPending(store, ctx.from);
   const tipo = draft.tipo === "visita" ? "visita" : draft.tipo === "llamada" ? "llamada" : "nota";
   await ctx.reply(`✔ Guardado: ${tipo} — *${displayName(company.razonSocial)}* (${formatLimaDateTime(activity.occurredAt)}).${lines.length ? `\n${lines.join("\n")}` : ""}`);
+}
+
+/** "La empresa es de Juan: …" / "La empresa no tiene dueño: …". */
+async function ownerPhrase(store: PortalStore, company: Company): Promise<string> {
+  const owner = company.ownerUserId !== null ? await store.getUser(company.ownerUserId).catch(() => null) : null;
+  if (owner) return `La empresa es de ${owner.nombre}`;
+  return company.ownerUserId === null ? `La empresa no tiene dueño (*asignarme ${company.ruc}* para tomarla)` : "La empresa es de otro vendedor";
+}
+
+/** Empresa que el vendedor no puede editar: solo la actividad (sin oportunidad); la oportunidad y los contactos no se tocan. */
+async function saveActivityOnly(ctx: PortalContext, draft: ReportDraft, company: Company, contacts: Awaited<ReturnType<PortalStore["listContacts"]>>): Promise<void> {
+  const { store, user, now } = ctx;
+  const rec = draftToRecords({ ...draft, etapaSugerida: null }, { userId: user.id, now, opportunity: null, contacts });
+  const { createdAt: _createdAt, ...activity } = rec.activity;
+  await store.addActivity({ ...activity, opportunityId: null });
+  await clearPending(store, ctx.from);
+  const tipo = draft.tipo === "visita" ? "visita" : draft.tipo === "llamada" ? "llamada" : "nota";
+  const extra = rec.newContact ? `\n_El contacto ${rec.newContact.nombre} queda en el texto del reporte; agregarlo es del dueño._` : "";
+  await ctx.reply(`✔ Guardado: ${tipo} — *${displayName(company.razonSocial)}* (${formatLimaDateTime(activity.occurredAt)}).\n${await ownerPhrase(store, company)}: guardé la actividad sin mover su oportunidad.${extra}`);
 }
 
 /** Respuesta al borrador: sí / no / respuesta a la pregunta / corrección (también por voz). */

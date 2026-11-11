@@ -6,7 +6,7 @@ import { BotHandler } from "../../whatsapp/handler";
 import type { InboundMessage } from "../../whatsapp/webhook";
 import { verifyLoginToken } from "../auth/tokens";
 import { JsonPortalStore } from "../store";
-import { handlePortalCommand, NOT_REGISTERED } from ".";
+import { handlePortalCommand, NOT_REGISTERED, PORTAL_ROUTE_TIMEOUT_MS, routePortal } from ".";
 
 const settings: Settings = SettingsSchema.parse({
   company: { name: "Professional Tyres", tradeName: "360° Tyres", signatureName: "360 by Professional Tyres", taxId: "RUC: 20565716396" },
@@ -74,4 +74,60 @@ describe("bot command 'portal'", () => {
     expect(await handlePortalCommand({ from: FRANK, text: "ayuda", reply, store: portal })).toBe(false);
     expect(replies).toEqual([]);
   });
+});
+
+describe("store lento: el cotizador no espera al portal", () => {
+  /** El mismo store, con cada lectura retrasada `ms`. */
+  function slow(store: JsonPortalStore, ms: number): JsonPortalStore {
+    return new Proxy(store, {
+      get(target, prop, receiver) {
+        const v = Reflect.get(target, prop, receiver);
+        if (typeof v !== "function") return v;
+        return async (...args: unknown[]) => {
+          await new Promise((r) => setTimeout(r, ms));
+          return (v as (...a: unknown[]) => unknown).apply(target, args);
+        };
+      },
+    });
+  }
+
+  it("el tiempo límite por defecto es 4 s", () => {
+    expect(PORTAL_ROUTE_TIMEOUT_MS).toBe(4000);
+  });
+
+  it("texto que no es comando: si el store tarda más que el límite, se registra y sigue el cotizador", async () => {
+    const logs: string[] = [];
+    const replies: string[] = [];
+    const t0 = Date.now();
+    const handled = await routePortal({ from: FRANK, text: "Visité ZBUSS, me atendió el jefe de flota", reply: async (b) => void replies.push(b), store: slow(portal, 300), timeoutMs: 40, log: (m) => logs.push(m) });
+    expect(handled).toBe(false);
+    expect(Date.now() - t0).toBeLessThan(250);
+    expect(replies).toEqual([]);
+    expect(logs.join("\n")).toMatch(/sigue el cotizador: el portal no respondió en 40 ms/);
+  });
+
+  it("mensaje que va directo al cotizador (adjunto, flujo a medias): los avisos pendientes también tienen límite", async () => {
+    await portal.setPortalConversation(FRANK, { notices: [{ text: "Resumen del día", createdAt: new Date().toISOString() }] });
+    const logs: string[] = [];
+    const t0 = Date.now();
+    const handled = await routePortal({ from: FRANK, text: "ok", quoteStep: "review_quote", reply: async () => undefined, store: slow(portal, 300), timeoutMs: 40, log: (m) => logs.push(m) });
+    expect(handled).toBe(false);
+    expect(Date.now() - t0).toBeLessThan(250);
+    expect(logs.join("\n")).toContain("no pude revisar los avisos pendientes");
+  });
+
+  it("un comando explícito espera al store (no hay a quién más pasárselo)", async () => {
+    const replies: string[] = [];
+    const handled = await routePortal({ from: FRANK, text: "hoy", reply: async (b) => void replies.push(b), store: slow(portal, 60), timeoutMs: 20 });
+    expect(handled).toBe(true);
+    expect(replies.length).toBeGreaterThan(0);
+  });
+
+  it("por el handler: con el store del portal lento, un pedido se cotiza igual", async () => {
+    const quick = new BotHandler({ client, store: JsonStore.memory(), settings, portalStore: slow(portal, 5000) });
+    const t0 = Date.now();
+    await quick.handle(text(FRANK, "hola"));
+    expect(Date.now() - t0).toBeLessThan(4800); // el límite por defecto (4 s), no los 5 s del store
+    expect(client.texts().at(-1)).toContain("cotiz");
+  }, 10_000);
 });

@@ -47,6 +47,7 @@ import type {
   PurchaseOrderFilter,
   PurchaseOrderInput,
   PurchaseOrderPatch,
+  PurchaseOrderSummary,
   Sale,
   SaleInput,
   StageHistoryEntry,
@@ -930,7 +931,7 @@ export class JsonPortalStore implements PortalStore {
     return copy(o);
   }
 
-  async listPurchaseOrders(filter: PurchaseOrderFilter = {}): Promise<PurchaseOrder[]> {
+  async listPurchaseOrders(filter: PurchaseOrderFilter = {}): Promise<PurchaseOrderSummary[]> {
     return [...this.purchaseOrders.values()]
       .filter(
         (o) =>
@@ -938,7 +939,7 @@ export class JsonPortalStore implements PortalStore {
           (filter.userId === undefined || o.userId === filter.userId) &&
           (filter.status === undefined || o.status === filter.status),
       )
-      .map(copy)
+      .map(({ data: _data, ...o }) => copy(o))
       .sort((a, b) => time(b.createdAt) - time(a.createdAt) || b.id - a.id);
   }
 

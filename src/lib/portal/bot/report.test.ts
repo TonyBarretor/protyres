@@ -5,6 +5,7 @@
  */
 import type Anthropic from "@anthropic-ai/sdk";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import type { PriceRow } from "../../ingest/types";
 import { SettingsSchema, type Settings } from "../../settings";
 import { JsonStore } from "../../store/json-store";
 import type { ConversationState } from "../../store/types";
@@ -265,5 +266,73 @@ describe("el sí del cotizador y el borrador del reporte", () => {
     await setPending(portal, FRANK, { kind: "report_draft", text: "Visité Zeta Bus", occurredAt: "2026-11-11T14:00:00.000Z", audio: null }, new Date());
     await bot.handle(text("sí"));
     expect(last()).toContain("*Reporte de visita* — TRANSPORTES ZETA BUS");
+  });
+});
+
+describe("revisión B: nota de voz con el cotizador a mitad de flujo", () => {
+  const STRANGER = "51911111111";
+  const ROWS: PriceRow[] = [
+    { id: "own-valor87", provider: "360 Tyres", kind: "own", description: "295/80R22.5 FENIXWAY VALOR 87", brand: "Fenixway", model: "Valor 87", size: "295/80R22.5", sizeDisplay: "295/80R22.5", sizeRaw: "295/80R22.5", isTyre: true, ply: 18, cost: 472, priceIncludesTax: true, currency: "USD", stock: null, priceDate: "2026-11-10", source: "excel", sourceRef: "t.xlsx" },
+  ];
+  const as = (from: string, m: InboundMessage): InboundMessage => ({ ...m, from });
+  /** Pedido -> ok (review_quote) -> nota de voz -> sí, desde `from`; las respuestas de cada paso (sin el número de cotización). */
+  async function run(from: string): Promise<string[][]> {
+    const steps: InboundMessage[] = [text("Fenixway Valor 87 295/80R22.5 x4 para Transportes Beta, compras@beta.pe"), text("ok"), audio("aud-rq", "2026-11-11T15:00:00Z"), text("sí")];
+    const out: string[][] = [];
+    for (const m of steps) {
+      const before = client.sent.length;
+      await bot.handle(as(from, m));
+      out.push(client.sent.slice(before).map((s) => `${s.kind}:${"body" in s ? (s.body ?? "") : ""}${s.fileName ?? ""}`.replace(/COT-\d+/g, "COT-N")));
+    }
+    return out;
+  }
+
+  it("cotización en review_quote -> audio -> sí: el cotizador responde como a cualquier número; el portal no arma borrador", async () => {
+    process.env.DEEPGRAM_API_KEY = "dg-test-key";
+    const dg = fakeDeepgram("Visité Zeta Bus, me atendió el jefe de flota, quedamos en llamar el lunes");
+    configureReportBot({ llm: null, deepgramFetch: dg.fetchImpl, downloadMedia: (id) => client.downloadMedia(id), logMessage: (e) => prices.logMessage(e) });
+    client.media.set("aud-rq", { data: Buffer.from("OggS"), mimeType: "audio/ogg" });
+    await prices.upsertRows(ROWS);
+
+    const stranger = await run(STRANGER);
+    const frank = await run(FRANK);
+    expect((await prices.getConversation(STRANGER))?.step ?? "idle").toBe((await prices.getConversation(FRANK))?.step ?? "idle");
+    // desde la nota de voz, mismas respuestas que un número que no es del portal
+    expect(frank.slice(2)).toEqual(stranger.slice(2));
+    expect(frank.flat().join("\n")).not.toContain("🎙️ Entendí");
+    expect(frank.flat().join("\n")).not.toContain("Reporte de visita");
+    expect(dg.urls).toHaveLength(0); // ni siquiera se transcribió
+    expect(await getPending(portal, FRANK, new Date())).toBeNull();
+    expect(await portal.listActivities({ companyId: ids[RUC_ZETA] })).toHaveLength(0);
+  });
+});
+
+describe("revisión B: reporte sobre una empresa de otro vendedor", () => {
+  it("guarda solo la actividad, no toca su oportunidad y dice de quién es", async () => {
+    const juan = await portal.upsertUser({ nombre: "Juan Bustios", whatsapp: "51900000009", rol: "vendedor" });
+    await portal.setOwner(ids[RUC_ZETA], juan.id);
+    const opp = (await portal.getOpenOpportunity(ids[RUC_ZETA]))!;
+    await bot.handle(text("Visité Zeta Bus, me atendió el jefe de flota", "2026-11-11T14:30:00Z"));
+    expect(last()).toContain("*Reporte de visita* — TRANSPORTES ZETA BUS");
+    await bot.handle(text("sí"));
+    expect(last()).toContain("✔ Guardado: visita — *TRANSPORTES ZETA BUS*");
+    expect(last()).toContain("La empresa es de Juan Bustios: guardé la actividad sin mover su oportunidad.");
+    const after = (await portal.getOpportunity(opp.id))!;
+    expect(after.etapa).toBe("cita_agendada"); // no avanzó a Visita realizada
+    expect(await portal.listOpportunities({ companyId: ids[RUC_ZETA] })).toHaveLength(1);
+    const acts = await portal.listActivities({ companyId: ids[RUC_ZETA] });
+    expect(acts).toHaveLength(1);
+    expect(acts[0]).toMatchObject({ tipo: "visita", opportunityId: null, userId: frankId });
+  });
+
+  it("empresa sin dueño: no crea oportunidad y pide asignársela", async () => {
+    const c = await portal.upsertCompanies([{ ruc: "20999000088", razonSocial: "TRANSPORTES OMEGA SUR S.A.C.", sector: "carga", departamento: "LIMA", unidades: 30, llantasPiso: 300 }]);
+    const id = c.ids["20999000088"];
+    await bot.handle(text("Visité Transportes Omega Sur, todo bien"));
+    expect(last()).toContain("TRANSPORTES OMEGA SUR");
+    await bot.handle(text("sí"));
+    expect(last()).toContain("La empresa no tiene dueño (*asignarme 20999000088* para tomarla): guardé la actividad sin mover su oportunidad.");
+    expect(await portal.listOpportunities({ companyId: id })).toHaveLength(0);
+    expect(await portal.listActivities({ companyId: id })).toHaveLength(1);
   });
 });

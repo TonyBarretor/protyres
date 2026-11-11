@@ -46,6 +46,7 @@ import type {
   PurchaseOrderFilter,
   PurchaseOrderInput,
   PurchaseOrderPatch,
+  PurchaseOrderSummary,
   Sale,
   SaleInput,
   Sector,
@@ -252,7 +253,9 @@ export class PgPortalStore implements PortalStore {
   private constructor(private sql: Sql) {}
 
   static connect(url: string): PgPortalStore {
-    return new PgPortalStore(postgres(url, { prepare: false, max: 5, onnotice: () => undefined })); // prepare:false: pooler de Supabase
+    // prepare:false: pooler de Supabase. connect_timeout: si la base no contesta en 10 s, falla (el bot sigue con el
+    // cotizador); idle_timeout libera conexiones ociosas de la función; max 3 por instancia.
+    return new PgPortalStore(postgres(url, { prepare: false, max: 3, connect_timeout: 10, idle_timeout: 20, onnotice: () => undefined }));
   }
 
   async flush(): Promise<void> {}
@@ -849,14 +852,20 @@ export class PgPortalStore implements PortalStore {
     return r ? toPurchaseOrder(r) : null;
   }
 
-  async listPurchaseOrders(filter: PurchaseOrderFilter = {}): Promise<PurchaseOrder[]> {
+  async listPurchaseOrders(filter: PurchaseOrderFilter = {}): Promise<PurchaseOrderSummary[]> {
     const sql = this.sql;
     const conds: Fragment[] = [];
     if (filter.companyId !== undefined) conds.push(sql`company_id = ${filter.companyId}`);
     if (filter.userId !== undefined) conds.push(sql`user_id = ${filter.userId}`);
     if (filter.status !== undefined) conds.push(sql`status = ${filter.status}`);
-    const rows = await sql`select * from purchase_orders where ${where(sql, conds)} order by created_at desc, id desc`;
-    return rows.map(toPurchaseOrder);
+    // sin `data` (el PDF en base64): los listados no lo necesitan
+    const rows = await sql`
+      select id, company_id, opportunity_id, user_id, numero, quote_number, file_name, mime_type, status, created_at
+      from purchase_orders where ${where(sql, conds)} order by created_at desc, id desc`;
+    return rows.map((r) => {
+      const { data: _data, ...o } = toPurchaseOrder(r);
+      return o;
+    });
   }
 
   async getOrderProfile(companyId: number): Promise<CompanyOrderProfile | null> {

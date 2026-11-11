@@ -68,6 +68,26 @@ export function getPendingHandler(kind: string): PendingHandler | undefined {
   return pendingHandlers.get(kind);
 }
 
+/**
+ * Por qué se deja un paso pendiente: el mensaje siguió al cotizador ("quoter"), llegó otro comando del portal ("command")
+ * o el usuario escribió `cancelar` ("cancel").
+ */
+export type DropReason = "quoter" | "command" | "cancel";
+/** Lo que necesita un manejador de descarte (sin el mensaje: con `cancelar` no se arma el contexto completo). */
+export type DropContext = Pick<PortalContext, "store" | "from" | "now" | "log">;
+/** Al descartar un paso de este tipo: puede apartarlo o cerrar lo que dejó abierto; el texto devuelto se le dice al usuario. */
+export type PendingDropHandler = (ctx: DropContext, step: PendingStep, reason: DropReason) => Promise<string | null>;
+
+const dropHandlers = new Map<string, PendingDropHandler>();
+
+export function registerPendingDrop(kind: string, handler: PendingDropHandler): void {
+  dropHandlers.set(kind, handler);
+}
+
+export function getPendingDrop(kind: string): PendingDropHandler | undefined {
+  return dropHandlers.get(kind);
+}
+
 export function registerCompanyAction(action: string, handler: CompanyActionHandler): void {
   companyActions.set(action, handler);
 }

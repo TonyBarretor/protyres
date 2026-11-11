@@ -754,8 +754,10 @@ export class BotHandler {
     // portal: plazo de crédito de la empresa cuando ni el pedido ni la memoria lo dan (null fuera del portal: sin cambios)
     const credit = await portalCreditTerm({ from, text, req, store: this.deps.portalStore, log: (m) => this.log(m) });
     if (credit) {
+      // la línea queda en el texto (lo que se guarda y se vuelve a leer después); el plazo se aplica sin re-parsear (con LLM
+      // sería otra llamada que podría leer distinto). Es lo mismo que el parser saca de "plazo: N días".
       text = `${text}\n${credit.line}`;
-      req = await this.parseFor(text, contract);
+      req = { ...req, paymentTerm: credit.term };
       note = `${note ? note + "\n" : ""}${credit.note}`;
     }
     return this.showOptions(from, text, req, profile, { note, newQuote: true, lead: opts.lead });

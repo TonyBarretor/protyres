@@ -16,7 +16,7 @@ import { configureReportBot } from "./report";
 import { configureOrderBot, OC_STEP, parseOcArgs, PATRICIA_REMINDER, type OcStep } from "./commands/oc";
 import { getPendingHandler, type PortalContext } from "./registry";
 import { classifyIntent } from "./router";
-import { getPending, setPending } from "./state";
+import { getPending, parkedOf, setPending } from "./state";
 
 const settings: Settings = SettingsSchema.parse({
   company: { name: "Professional Tyres", tradeName: "360° Tyres", signatureName: "360 by Professional Tyres", taxId: "RUC: 20565716396" },
@@ -130,8 +130,9 @@ beforeEach(async () => {
     { ruc: RUC_ANDES, razonSocial: "TRANSPORTES ANDES DEL PERU S.A.C.", sector: "pasajeros", departamento: "LIMA", unidades: 12, llantasPiso: 72 },
     { ruc: RUC_ROCA, razonSocial: "E.T. LA ROCA S.R.L.", sector: "carga", departamento: "LIMA", unidades: 15, llantasPiso: 150 },
   ]);
-  andes = (await portal.getCompany(r.ids[RUC_ANDES]))!;
-  roca = (await portal.getCompany(r.ids[RUC_ROCA]))!;
+  // `oc` exige poder editar la empresa (como `cita`): las dos son de Frank
+  andes = (await portal.updateCompany(r.ids[RUC_ANDES], { ownerUserId: frank.id }))!;
+  roca = (await portal.updateCompany(r.ids[RUC_ROCA], { ownerUserId: frank.id }))!;
   await portal.addContact({ companyId: andes.id, nombre: "Rosa Díaz", cargo: "jefa de flota", telefono: "987654321" });
   configureOrderBot({ priceStore: prices, settings });
   bot = new BotHandler({ client, store: prices, settings, portalStore: portal });
@@ -154,10 +155,11 @@ describe("oc: con cotización enlazada y PDF adjunto", () => {
     let out = await say(docMsg("oc andes 4500123", "oc-pdf-1"));
     expect(lastText(out)).toContain("OC *4500123* de *TRANSPORTES ANDES DEL PERU* registrada con el adjunto (OC-4500123.pdf)");
     expect(lastText(out)).toContain("Uso la cotización *032*");
-    expect(lastText(out)).toContain("responde *sí* o escribe los ítems");
+    expect(lastText(out)).toContain("responde *sí*, o *no* para escribir otros ítems");
     const [order] = await portal.listPurchaseOrders({ companyId: andes.id });
     expect(order).toMatchObject({ numero: "4500123", status: "recibida", fileName: "OC-4500123.pdf", mimeType: "application/pdf", quoteNumber: "NOVIEMBRE 2026 - 032", userId: frank.id });
-    expect(Buffer.from(order.data!, "base64").equals(pdf)).toBe(true);
+    expect("data" in order).toBe(false); // el listado no trae el archivo
+    expect(Buffer.from((await portal.getPurchaseOrder(order.id))!.data!, "base64").equals(pdf)).toBe(true);
 
     out = await say("sí");
     expect(lastText(out)).toContain("Dirección fiscal de *TRANSPORTES ANDES DEL PERU*? (de la cotización: Av. Los Andes 450, Ate — responde *igual*");
@@ -480,5 +482,170 @@ describe("oc: piezas puras", () => {
     expect(classifyIntent({ ...base, text: items, pendingPortalStep: { kind: OC_STEP, captureText: true } })).toBe("portal_flow");
     expect(classifyIntent({ ...base, text: items, pendingPortalStep: { kind: "report_draft" } })).toBe("quote");
     expect(classifyIntent({ ...base, text: "", hasMedia: true, mediaType: "document", pendingPortalStep: { kind: "report_draft" } })).toBe("passthrough");
+  });
+});
+
+describe("revisión B: el pedido de la OC no se queda con lo que no es suyo", () => {
+  const imgMsg = (caption: string, mediaId: string): InboundMessage => ({ id: `wamid.oc${++seq}`, from: FRANK, timestamp: "1", type: "image", text: caption, forwarded: false, media: { id: mediaId, mimeType: "image/jpeg", caption } });
+  const all = (out: OutboundMessage[]) => out.map((m) => ("body" in m ? (m.body ?? "") : "")).join("\n");
+  const parked = async () => parkedOf(await portal.getPortalConversation(FRANK), OC_STEP, new Date()) as OcStep | null;
+  const NOTICE = `⏸️ Dejé pendiente el pedido de la OC 7788 (E.T. LA ROCA); escribe *oc ${RUC_ROCA}* para retomarlo.`;
+
+  async function toQuestions() {
+    await say("oc roca 7788");
+    const out = await say("4 x Fenixway Valor 87 295/80R22.5");
+    expect(lastText(out)).toContain("Dirección fiscal de *E.T. LA ROCA*?");
+    const step = (await getPending(portal, FRANK, new Date())) as OcStep;
+    expect(step).toMatchObject({ phase: "questions", captureText: false, keepText: true });
+    return step;
+  }
+
+  it("fase de ítems: *ayuda* y *proveedores* van al cotizador; el pedido se aparta con aviso y *oc <RUC>* lo retoma", async () => {
+    await say("oc roca 7788");
+    const step = (await getPending(portal, FRANK, new Date())) as OcStep;
+    expect(step).toMatchObject({ phase: "items", captureText: true, keepText: false });
+    let out = await say("ayuda");
+    expect(all(out)).toContain(NOTICE);
+    expect(all(out)).toContain("cotiz"); // la ayuda del cotizador
+    expect(await getPending(portal, FRANK, new Date())).toBeNull();
+    expect((await parked())?.orderId).toBe(step.orderId);
+    out = await say(`oc ${RUC_ROCA}`);
+    expect(lastText(out)).toContain("▶️ Retomo el pedido de la OC *7788* de *E.T. LA ROCA*.");
+    expect(lastText(out)).toContain("Escríbeme los ítems de la OC");
+    expect(((await getPending(portal, FRANK, new Date())) as OcStep).orderId).toBe(step.orderId);
+    expect(await portal.listPurchaseOrders({ companyId: roca.id })).toHaveLength(1); // misma OC, no otra
+    expect(await parked()).toBeNull();
+    out = await say("proveedores");
+    expect(all(out)).toContain(NOTICE);
+  });
+
+  it("preguntas: un pedido nuevo (con medida) va al cotizador; un *gracias* después no se lo queda el pedido", async () => {
+    const step = await toQuestions();
+    const out = await say("Fenixway Valor 87 295/80R22.5 x4 para Transportes Beta");
+    expect(all(out)).toContain(NOTICE);
+    expect(all(out)).toContain("Cotización nueva");
+    expect(await getPending(portal, FRANK, new Date())).toBeNull();
+    // retomarlo conserva lo respondido (la pregunta en curso)
+    await prices.setConversation(FRANK, null);
+    const back = await say("oc roca 7788");
+    expect(lastText(back)).toContain("Dirección fiscal de *E.T. LA ROCA*?");
+    expect(((await getPending(portal, FRANK, new Date())) as OcStep).items).toEqual(step.items);
+  });
+
+  it("preguntas: *proveedores* y *ayuda* van al cotizador; *entrega: …* sigue siendo respuesta", async () => {
+    await toQuestions();
+    await say("Av. Industrial 300, Lurín");
+    const out = await say("proveedores");
+    expect(all(out)).toContain(NOTICE);
+    expect(await getPending(portal, FRANK, new Date())).toBeNull();
+  });
+
+  it("fase de cotización: un texto con medida de llanta es un pedido nuevo", async () => {
+    await seedQuote();
+    await say("oc andes 4500777");
+    const out = await say("Fenixway Valor 87 295/80R22.5 x2 para Transportes Beta");
+    expect(all(out)).toContain("Dejé pendiente el pedido de la OC 4500777 (TRANSPORTES ANDES DEL PERU)");
+    expect(all(out)).toContain("Cotización nueva");
+  });
+
+  it("Observaciones: un pedido no vale como observación (va al cotizador); una observación normal sí", async () => {
+    await toQuestions();
+    for (const a of ["Av. Industrial 300, Lurín", "la misma", "Pedro Soto 999888777", "ninguna", "20/11", "sí", "no", "cliente", "contado"]) await say(a);
+    expect(((await getPending(portal, FRANK, new Date())) as OcStep).field).toBe("observaciones");
+    let out = await say("cotízame 8 llantas Fenixway para Transportes Beta");
+    expect(all(out)).toContain(NOTICE);
+    expect(out.some((m) => m.kind === "document" && /^Pedido ATC/.test(m.fileName ?? ""))).toBe(false);
+    expect((await parked())?.answers.observaciones).toBeUndefined();
+    await prices.setConversation(FRANK, null);
+    out = await say("oc roca");
+    expect(lastText(out)).toContain("Observaciones?");
+    out = await say("295/80R22.5 x4 para Transportes Beta"); // con medida: el router ya lo manda al cotizador
+    expect(all(out)).toContain(NOTICE);
+    await prices.setConversation(FRANK, null);
+    await say("oc roca");
+    out = await say("llamar antes de llegar");
+    expect(out.some((m) => m.kind === "document")).toBe(true);
+    expect(lastText(out)).toContain("Obs.: llamar antes de llegar");
+  });
+
+  it("adjuntos: foto con leyenda *foto …* y lista de precios con leyenda siguen al cotizador; fuera de los 10 min también", async () => {
+    await say("oc roca 7788");
+    const step = (await getPending(portal, FRANK, new Date())) as OcStep;
+    client.media.set("img-foto", { data: Buffer.from("jpg"), mimeType: "image/jpeg" });
+    let out = await say(imgMsg("foto Fenixway Valor 87", "img-foto"));
+    expect(all(out)).not.toContain("Guardé la OC");
+    client.media.set("lista-1", { data: Buffer.from("medida,precio\n295/80R22.5,400\n"), mimeType: "text/csv", fileName: "lista.csv" });
+    out = await say({ ...docMsg("lista de precios Llantas del Sur", "lista-1", "lista.csv"), media: { id: "lista-1", mimeType: "text/csv", fileName: "lista.csv", caption: "lista de precios Llantas del Sur" } });
+    expect(all(out)).not.toContain("Guardé la OC");
+    expect((await portal.getPurchaseOrder(step.orderId))!.data).toBeNull();
+    // el paso no se perdió por esos adjuntos
+    await prices.setConversation(FRANK, null);
+    expect(((await getPending(portal, FRANK, new Date())) as OcStep | null)?.orderId ?? (await parked())?.orderId).toBe(step.orderId);
+    // pasados los 10 min, un PDF sin leyenda tampoco es la OC
+    await setPending(portal, FRANK, { ...step, mediaUntil: new Date(Date.now() - 1000).toISOString() }, new Date());
+    client.media.set("tarde", { data: Buffer.from("%PDF"), mimeType: "application/pdf", fileName: "lista2.pdf" });
+    out = await say(docMsg(undefined, "tarde", "lista2.pdf"));
+    expect(all(out)).toContain("lista de precios");
+    expect((await portal.getPurchaseOrder(step.orderId))!.data).toBeNull();
+  });
+});
+
+describe("revisión B: oc y el cotizador, permisos, plazo y cancelar", () => {
+  it("con una cotización a medio armar (choose) no toca nada y pide terminarla o cancelarla", async () => {
+    await say("Fenixway Valor 87 295/80R22.5 x4 para Transportes Beta");
+    const before = await prices.getConversation(FRANK);
+    expect(before?.step).not.toBe("idle");
+    expect(["review_quote", "need_email"]).not.toContain(before?.step);
+    const out = await say("oc roca 7788");
+    expect(lastText(out)).toBe("Tienes una cotización/lista a medio armar; termínala o escribe *cancelar* y vuelve a mandar *oc …*");
+    expect(await prices.getConversation(FRANK)).toEqual(before);
+    expect(await portal.listPurchaseOrders({ companyId: roca.id })).toHaveLength(0);
+    expect(await getPending(portal, FRANK, new Date())).toBeNull();
+  });
+
+  it("con un perfil esperando el pedido tampoco; con review_quote cierra el paso (la cotización ya está guardada)", async () => {
+    await prices.setConversation(FRANK, { phone: FRANK, step: "idle", profile: "prosegur", updatedAt: new Date().toISOString() });
+    expect(lastText(await say("oc roca"))).toContain("a medio armar");
+    for (const step of ["choose", "need_provider", "need_fields", "need_application", "confirm_new"] as const) {
+      await prices.setConversation(FRANK, { phone: FRANK, step, updatedAt: new Date().toISOString() });
+      expect([step, lastText(await say("oc roca"))]).toEqual([step, "Tienes una cotización/lista a medio armar; termínala o escribe *cancelar* y vuelve a mandar *oc …*"]);
+      expect((await prices.getConversation(FRANK))?.step).toBe(step);
+    }
+    for (const step of ["review_quote", "need_email"] as const) {
+      await prices.setConversation(FRANK, { phone: FRANK, step, updatedAt: new Date().toISOString() });
+      expect(lastText(await say("oc roca"))).toContain("Escríbeme los ítems de la OC");
+      expect((await prices.getConversation(FRANK))?.step ?? "idle").toBe("idle");
+      await say("cancelar");
+    }
+  });
+
+  it("empresa de otro vendedor: Primero *asignarme RUC*", async () => {
+    const juan = await portal.upsertUser({ nombre: "Juan Bustios", whatsapp: "51900000009", rol: "vendedor" });
+    await portal.updateCompany(roca.id, { ownerUserId: juan.id });
+    const out = await say("oc roca 7788");
+    expect(lastText(out)).toBe(`*E.T. LA ROCA S.R.L.* no es tuya. Primero: *asignarme ${RUC_ROCA}* (o pide al supervisor).`);
+    expect(await portal.listPurchaseOrders({ companyId: roca.id })).toHaveLength(0);
+  });
+
+  it("plazo escrito en la OC: no cambia el plazo que la empresa ya tenía y lo dice en el resumen", async () => {
+    await portal.updateCompany(roca.id, { creditTermsDays: 30 });
+    await say("oc roca 7788");
+    await say("4 x Fenixway Valor 87 295/80R22.5");
+    let out: OutboundMessage[] = [];
+    for (const a of ["Av. Industrial 300, Lurín", "la misma", "Pedro Soto 999888777", "ninguna", "20/11", "sí", "no", "cliente", "60", "ninguna"]) out = await say(a);
+    const ws = await sheetOf(out.find((m) => m.kind === "document")!);
+    expect(cell(ws, "G11")).toBe("CREDITO 60 DÍAS"); // el pedido lleva lo que dijo el vendedor
+    expect(lastText(out)).toContain("El plazo habitual sigue en 30 días; cámbialo en el portal si corresponde.");
+    expect((await portal.getCompany(roca.id))!.creditTermsDays).toBe(30);
+  });
+
+  it("*cancelar* durante el pedido marca la OC como cancelada", async () => {
+    await say("oc roca 7788");
+    const step = (await getPending(portal, FRANK, new Date())) as OcStep;
+    await say("cancelar");
+    expect((await portal.getPurchaseOrder(step.orderId))!.status).toBe("cancelada");
+    expect(await getPending(portal, FRANK, new Date())).toBeNull();
+    expect(lastText(await say("oc roca 7788"))).toContain("registrada"); // OC nueva, no la cancelada
+    expect(await portal.listPurchaseOrders({ companyId: roca.id })).toHaveLength(2);
   });
 });

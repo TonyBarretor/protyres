@@ -11,8 +11,11 @@
  *  5. Paso pendiente del portal (cotizador en idle) -> portal_flow, salvo que el texto sea un comando del cotizador o
  *     un pedido de verdad (medida de llanta, o señales de pedido en más de 3 palabras): entonces el cotizador y quien llama
  *     descarta el paso pendiente. Respuestas cortas ("2", "sí", "cotización", "reporte") son del portal.
- *  6. Audio de un usuario del portal -> report (el bloque de voz lo transcribe); de otro número -> passthrough.
- *     Otros adjuntos -> passthrough (salvo comando con adjunto, p. ej. `oc` con la orden de compra).
+ *  6. Audio de un usuario del portal con el cotizador en idle -> report (el bloque de voz lo transcribe), o portal_flow si
+ *     hay un paso pendiente (que acepta voz); con el cotizador a mitad de un flujo -> passthrough (el cotizador responde
+ *     como siempre: un "sí" posterior no puede confirmar un borrador que el vendedor no vio). De otro número -> passthrough.
+ *     Otros adjuntos -> passthrough (salvo comando con adjunto, p. ej. `oc` con la orden de compra, o un paso con
+ *     `acceptsMedia` dentro de su `mediaUntil` y sin leyenda de otra cosa: ver mediaAccepted).
  *  7. idle, usuario del portal: señales fuertes de cotización (medida, "x4", correo, dscto, margen, "cotizar"...) sin
  *     verbos de reporte -> quote; con verbos de reporte ("visité", "llamé", "me reuní"...) -> ambiguous, salvo que la única
  *     señal sea la palabra "cotización" ("quedamos en mandarle la cotización") -> report. Sin señales
@@ -20,9 +23,13 @@
  *     conocida...) -> report, o ambiguous si además hay señales débiles de pedido (para, cliente, necesito, una marca).
  *     Cualquier otro caso -> passthrough.
  *  8. Quien no es usuario del portal nunca recibe report/ambiguous: quote o passthrough (el cotizador decide).
- *  9. Un paso pendiente con `captureText: true` (preguntas del pedido de `oc`) se queda con todo texto en idle, aunque
- *     tenga forma de pedido ("8 x Fenixway 315/80R22.5 a 254" son los ítems de la OC); con `acceptsMedia: true` también
- *     con un adjunto (la OC enviada justo después del comando).
+ *  9. Un paso pendiente con `captureText: true` (los ítems de `oc`) se queda con todo texto en idle, aunque tenga forma
+ *     de pedido ("8 x Fenixway 315/80R22.5 a 254" son los ítems de la OC), salvo los comandos del cotizador (`ayuda`,
+ *     `proveedores`...). Con `keepText: true` (las demás preguntas de `oc`) se queda con todo texto salvo esos comandos y
+ *     los textos con medida de llanta (un pedido nuevo). Con `acceptsMedia: true`, un adjunto (ver regla 6).
+ *
+ * Un comando del portal es de UNA sola línea, sin medida de llanta y sin forma de campo del cotizador (`empresa: X`,
+ * `contacto de: Juan`): "Empresa Transportes ABC\n295/80R22.5 x4" es un pedido.
  */
 import { looksLikePriceMessage } from "../../ingest/whatsapp-text";
 import { findBrandInText, fold } from "../../tyre/brands";
@@ -42,10 +49,12 @@ export interface ClassifyInput {
   state: { step: QuoteStep } | QuoteStep;
   isPortalUser: boolean;
   /** Paso pendiente del portal (null/undefined = ninguno). `captureText` / `acceptsMedia`: ver regla 9. */
-  pendingPortalStep?: { kind: string; captureText?: unknown; acceptsMedia?: unknown } | string | null;
+  pendingPortalStep?: { kind: string; captureText?: unknown; keepText?: unknown; acceptsMedia?: unknown; mediaUntil?: unknown } | string | null;
   forwarded?: boolean;
   /** El texto nombra una empresa del padrón (lo calcula quien llama, solo si hace falta). */
   mentionsKnownCompany?: boolean;
+  /** Hora del mensaje (para `mediaUntil` del paso pendiente); por defecto ahora. */
+  now?: Date;
 }
 
 // ── comandos explícitos del portal ──
@@ -93,6 +102,9 @@ const RAW_HEAD: Record<PortalCommandName, RegExp> = {
   reenviada: /^reenviad[ao]\b/i,
 };
 
+/** Lo que sigue a la palabra del comando cuando la línea es un campo del cotizador: ": …" o " de: …" (a/al/de/del). */
+const FIELD_TAIL = /^(?:(?:a|al|de|del)\s*)?:/i;
+
 export interface ParsedPortalCommand {
   name: PortalCommandName;
   /** Lo que sigue a la palabra del comando, tal como se escribió (sin espacios en los extremos). */
@@ -106,13 +118,16 @@ export interface ParsedPortalCommand {
 export function parsePortalCommand(text: string, opts: { withMedia?: boolean } = {}): ParsedPortalCommand | null {
   const raw = (text ?? "").trim();
   if (!raw) return null;
+  // una sola línea y sin medida de llanta: "Empresa Transportes ABC\n295/80R22.5 x4" u "OC 4500123 ABC 295/80R22.5 x8" son pedidos
+  if (/[\r\n]/.test(raw) || findTyreSizes(raw).length > 0) return null;
   const folded = fold(raw);
   for (const c of COMMANDS) {
     if (!c.re.test(folded)) continue;
     if (opts.withMedia && !c.acceptsMedia) return null;
     const head = RAW_HEAD[c.name].exec(raw);
     const args = head ? raw.slice(head[0].length).trim() : raw.replace(/^\S+\s*/, "");
-    if (/^:/.test(args)) return null; // "empresa: ACME", "contacto: Juan" -> campo del cotizador
+    // "empresa: ACME", "contacto: Juan", "contacto de: Juan" -> campo del cotizador (como su TERM_LINE: "clave:" o "clave de:")
+    if (FIELD_TAIL.test(args)) return null;
     if (c.name === "aprende" && !/\S\s*=\s*\S/.test(args)) return null;
     return { name: c.name, args };
   }
@@ -185,7 +200,23 @@ export function looksLikeQuote(text: string): boolean {
 
 const stepOf = (s: ClassifyInput["state"]): string => (typeof s === "string" ? s : s?.step) || "idle";
 const pendingOf = (p: ClassifyInput["pendingPortalStep"]): string | null => (!p ? null : typeof p === "string" ? p : p.kind || null);
-const pendingFlag = (p: ClassifyInput["pendingPortalStep"], flag: "captureText" | "acceptsMedia"): boolean => !!p && typeof p === "object" && p[flag] === true;
+const pendingFlag = (p: ClassifyInput["pendingPortalStep"], flag: "captureText" | "keepText" | "acceptsMedia"): boolean => !!p && typeof p === "object" && p[flag] === true;
+
+/** Leyenda de un adjunto que es la OC (o ninguna): "oc", "o/c", "orden de compra". Otra leyenda ("foto …", "lista …") es de otra cosa. */
+const OC_CAPTION_RE = /^(?:$|(?:la\s+|el\s+)?(?:oc|o\/c|orden(?:\s+de\s+compra)?|pdf|adjunto)\b)/;
+
+/**
+ * ¿El paso pendiente se queda con este adjunto? Solo si acepta adjuntos, dentro de su `mediaUntil` (si lo tiene) y sin
+ * leyenda de otra cosa: una lista de precios o una `foto …` siguen al cotizador.
+ */
+export function mediaAccepted(p: ClassifyInput["pendingPortalStep"], caption: string, now: Date = new Date()): boolean {
+  if (!p || typeof p !== "object" || p.acceptsMedia !== true) return false;
+  if (p.mediaUntil !== undefined) {
+    const until = Date.parse(String(p.mediaUntil));
+    if (!Number.isFinite(until) || now.getTime() > until) return false;
+  }
+  return OC_CAPTION_RE.test(fold(caption ?? ""));
+}
 
 export function classifyIntent(input: ClassifyInput): Intent {
   const text = (input.text ?? "").trim();
@@ -203,16 +234,25 @@ export function classifyIntent(input: ClassifyInput): Intent {
   }
 
   if (isAudio) {
-    if (!input.isPortalUser) return "passthrough";
+    // con el cotizador a mitad de un flujo (revisando una cotización) la nota de voz es suya: el "sí" siguiente también
+    if (!input.isPortalUser || step !== "idle") return "passthrough";
     return pending ? "portal_flow" : "report";
   }
-  if (input.hasMedia) return pending && pendingFlag(input.pendingPortalStep, "acceptsMedia") ? "portal_flow" : "passthrough";
+  if (input.hasMedia) return pending && step === "idle" && mediaAccepted(input.pendingPortalStep, text, input.now) ? "portal_flow" : "passthrough";
   if (!text) return "passthrough";
   if (isCancel(text)) return "passthrough";
   if (step !== "idle") return "passthrough";
 
   const sig = textSignals(text, input.isPortalUser && !!input.mentionsKnownCompany);
-  if (pending && pendingFlag(input.pendingPortalStep, "captureText")) return "portal_flow";
+  if (pending && pendingFlag(input.pendingPortalStep, "captureText")) {
+    // los ítems de una OC tienen forma de pedido; los comandos del cotizador (ayuda, proveedores...) no son ítems
+    return isQuoterCommand(text) ? (sig.strongQuote ? "quote" : "passthrough") : "portal_flow";
+  }
+  if (pending && pendingFlag(input.pendingPortalStep, "keepText")) {
+    // una respuesta del pedido se queda aunque tenga "entrega: …" o "x llanta"; una medida de llanta es un pedido nuevo
+    if (isQuoterCommand(text) || findTyreSizes(text).length > 0) return sig.strongQuote ? "quote" : "passthrough";
+    return "portal_flow";
+  }
   if (pending) {
     // respuestas cortas ("2", "sí", "cotización", "reporte") son del portal; un pedido de verdad o un comando del cotizador no
     const quoteShaped = findTyreSizes(text).length > 0 || (sig.strongQuote && fold(text).split(" ").length > 3);

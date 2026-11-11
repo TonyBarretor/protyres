@@ -96,7 +96,7 @@ function itemsText(quote: Pick<Quote, "items">): string {
   return shown.join("; ");
 }
 
-function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
+export function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     const t = setTimeout(() => reject(new Error(`el portal no respondió en ${ms} ms`)), ms);
     (t as { unref?: () => void }).unref?.();
@@ -359,6 +359,8 @@ export async function setCompanyCreditTerms(store: PortalStore, companyId: numbe
 export interface CreditTerm {
   /** Línea que se añade al pedido ("plazo: 45 días"). */
   line: string;
+  /** El plazo como lo lee el parser de esa línea ("45 días"): el cotizador lo asigna a req.paymentTerm sin re-parsear. */
+  term: string;
   /** Aviso para el vendedor, como el de la memoria del cliente. */
   note: string;
   days: number;
@@ -381,6 +383,6 @@ export async function portalCreditTerm(input: HookOptions & { from: string; text
     const company = (await companyByRuc(store, rucs)) ?? (await previouslyLinked(store, user.id, customer));
     const days = company?.creditTermsDays;
     if (!company || !days || days <= 0) return null;
-    return { line: `plazo: ${days} días`, note: `📒 plazo ${days} días (condiciones de *${company.razonSocial}* en el portal)`, days, company };
+    return { line: `plazo: ${days} días`, term: `${days} días`, note: `📒 plazo ${days} días (condiciones de *${company.razonSocial}* en el portal)`, days, company };
   });
 }
