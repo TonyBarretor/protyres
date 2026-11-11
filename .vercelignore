@@ -1,0 +1,12 @@
+# Lo que `vercel deploy` (CLI) no debe subir: padrón MTC, datos de clientes y archivos locales.
+# data/seed.json.gz SÍ se sube: es la siembra de precios del store JSON (next.config.ts lo incluye en /api/**).
+# Por eso no se ignora data/ entero sino cada cosa (la negación "!data/seed.json.gz" no se probó en .vercelignore).
+data/mtc/
+data/portal-store.json*
+data/referencia-360tyres/
+data/prompts-portal/
+data/store.json*
+clientdata/
+out/
+_to_delete/
+scratch/

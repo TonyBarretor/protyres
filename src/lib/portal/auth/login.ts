@@ -3,13 +3,15 @@
  *
  *   GET  /portal/login            -> pantalla "Sin sesión" (cómo pedir el enlace)
  *   GET  /portal/login?t=...      -> firma inválida: "Enlace vencido o ya usado"; firma válida: formulario que se envía solo
- *   POST /portal/login (t=...)    -> consume el token (un solo uso), crea la sesión, pone la cookie y redirige (303) a /portal
- *   POST|GET /api/portal/logout   -> borra la sesión y la cookie, redirige a /portal/login
+ *   POST /portal/login (t=...)    -> consume el token (un solo uso), crea la sesión, pone la cookie y redirige (303) a /portal.
+ *                                    Si trae cabecera Origin y no es el mismo host de la petición: 403 sin tocar el token.
+ *   POST /api/portal/logout       -> borra la sesión y la cookie, redirige a /portal/login
+ *   GET  /api/portal/logout       -> 405 (cerrar sesión cambia estado: un enlace o una precarga no deben poder hacerlo)
  */
 import { NextResponse } from "next/server";
 import type { PortalStore } from "../store/types";
 import { HOME_PATH, LOGIN_PATH, SESSION_COOKIE } from "./constants";
-import { configErrorPage, confirmLoginPage, expiredLinkPage, noSessionPage } from "./pages";
+import { configErrorPage, confirmLoginPage, expiredLinkPage, forbiddenOriginPage, noSessionPage } from "./pages";
 import { PortalAuthConfigError, createSession, destroySession, hasValidSignature, sessionCookie, verifyLoginToken, type AuthOptions } from "./tokens";
 
 function guard(fn: () => Promise<Response>): Promise<Response> {
@@ -40,8 +42,26 @@ async function tokenFromBody(req: Request): Promise<string | null> {
   return fromQuery;
 }
 
+/** Host de la petición: el que vio el proxy (Vercel pone x-forwarded-host), si no Host, si no el de la URL. */
+function requestHost(req: Request): string {
+  const fwd = req.headers.get("x-forwarded-host")?.split(",")[0]?.trim();
+  return (fwd || req.headers.get("host") || new URL(req.url).host).toLowerCase();
+}
+
+/** true si no hay cabecera Origin (clientes viejos) o si su host coincide con el de la petición. "null" no coincide. */
+export function isSameOrigin(req: Request): boolean {
+  const origin = req.headers.get("origin");
+  if (origin === null) return true;
+  try {
+    return new URL(origin).host.toLowerCase() === requestHost(req);
+  } catch {
+    return false;
+  }
+}
+
 export function loginPost(req: Request, store: PortalStore | (() => Promise<PortalStore>), opts: AuthOptions = {}): Promise<Response> {
   return guard(async () => {
+    if (!isSameOrigin(req)) return forbiddenOriginPage();
     const token = await tokenFromBody(req);
     if (!token || !hasValidSignature(token, opts.env ?? process.env)) return expiredLinkPage();
     const s = typeof store === "function" ? await store() : store;
@@ -79,4 +99,9 @@ export async function logout(req: Request, store: PortalStore | (() => Promise<P
   const res = NextResponse.redirect(new URL(LOGIN_PATH, req.url), 303);
   res.cookies.set(SESSION_COOKIE, "", { httpOnly: true, sameSite: "lax", path: "/", maxAge: 0 });
   return res;
+}
+
+/** GET /api/portal/logout: no cierra sesión. */
+export function logoutMethodNotAllowed(): Response {
+  return new Response("Usa el botón «Salir» del portal (POST).", { status: 405, headers: { allow: "POST", "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" } });
 }

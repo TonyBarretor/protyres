@@ -49,8 +49,12 @@ describe("filtros de prospectos", () => {
     expect(filtersQuery(f, { page: 5 })).toBe("?q=bus&marca=SCANIA&orden=participacion&p=5");
     const sino = BRAND_SHORTCUTS.find((s) => s.label.startsWith("Sinotruk"))!;
     const q = filtersQuery(f, { marcas: sino.marcas });
-    expect(q).toBe("?q=bus&marca=SINOTRUK&marca=HOWO&marca=SITRAK&orden=participacion");
-    expect(isShortcutActive(parseProspectFilters({ marca: ["HOWO", "SITRAK", "SINOTRUK"] }), sino.marcas)).toBe(true);
+    expect(q).toBe("?q=bus&marca=SINOTRUK&marca=HOWO&marca=SITRAK&marca=CNHTC&orden=participacion");
+    expect(isShortcutActive(parseProspectFilters({ marca: ["HOWO", "cnhtc", "SITRAK", "SINOTRUK"] }), sino.marcas)).toBe(true);
+    expect(isShortcutActive(parseProspectFilters({ marca: ["HOWO", "SITRAK", "SINOTRUK"] }), sino.marcas)).toBe(false);
+    const shacman = BRAND_SHORTCUTS.find((s) => s.label === "Shacman")!;
+    expect(shacman.marcas).toEqual(["SHACMAN", "SHAANQI"]);
+    expect(isShortcutActive(parseProspectFilters({ marca: "Shaanqi, Shacman" }), shacman.marcas)).toBe(true);
     expect(isShortcutActive(f, sino.marcas)).toBe(false);
     expect(filtersQuery(parseProspectFilters({}))).toBe("");
     expect(pageCount(0)).toBe(1);
@@ -89,6 +93,24 @@ describe("Hoy", () => {
       [3, true],
       [1, false],
     ]);
+  });
+
+  it("próximas de mañana a hoy+7 y sin fecha (con texto, abiertas)", () => {
+    const opps = [
+      opp({ id: 1, proximaAccionAt: new Date("2026-11-12T04:00:00Z") }), // hoy: va en acciones
+      opp({ id: 2, proximaAccionAt: new Date("2026-11-12T06:00:00Z") }), // mañana
+      opp({ id: 3, proximaAccionAt: new Date("2026-11-19T04:30:00Z") }), // 18/11 23:30 Lima (día 7): dentro
+      opp({ id: 4, proximaAccionAt: new Date("2026-11-19T05:00:00Z") }), // 19/11 00:00 Lima (día 8): fuera
+      opp({ id: 5, proximaAccionAt: new Date("2026-11-13T15:00:00Z"), closedAt: new Date() }), // cerrada
+      opp({ id: 6, proximaAccion: "Llamar al jefe de flota", updatedAt: new Date("2026-11-05T00:00:00Z") }),
+      opp({ id: 7, proximaAccion: "Enviar ficha técnica", updatedAt: new Date("2026-11-08T00:00:00Z") }),
+      opp({ id: 8, proximaAccion: "   " }), // sin texto
+      opp({ id: 9, proximaAccion: "Visitar", closedAt: new Date() }), // cerrada
+    ];
+    const r = selectToday(opps, [], now);
+    expect(r.acciones.map((a) => a.opportunity.id)).toEqual([1]);
+    expect(r.proximas.map((o) => o.id)).toEqual([2, 3]);
+    expect(r.sinFecha.map((o) => o.id)).toEqual([7, 6]);
   });
 
   it("citas de hoy a hoy+7 agrupadas por día de Lima, sin canceladas", () => {

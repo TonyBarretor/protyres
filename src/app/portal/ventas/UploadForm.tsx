@@ -25,7 +25,7 @@ export function UploadForm() {
     e.preventDefault();
     if (!file) return;
     if (file.size > MAX_UPLOAD_BYTES) {
-      setPreview({ ok: false, error: "El archivo pesa más de 7 MB. Divídelo en partes (por ejemplo, por mes)." });
+      setPreview({ ok: false, error: "El archivo pesa más de 4 MB. Divídelo en partes (por ejemplo, por mes)." });
       return;
     }
     const fd = new FormData();
@@ -60,7 +60,7 @@ export function UploadForm() {
     <div className="pt-stack">
       <form className="pt-card pt-stack" onSubmit={runPreview} style={{ gap: "0.75rem" }}>
         <label className="pt-field">
-          Archivo de ventas (.xlsx, máx. 7 MB)
+          Archivo de ventas (.xlsx, máx. 4 MB)
           <input type="file" name="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" onChange={(e) => pick(e.target.files?.[0] ?? null)} />
         </label>
         <div className="pt-row">

@@ -90,6 +90,8 @@ export interface FleetVehicle {
 
 export type FleetVehicleInput = Omit<FleetVehicle, "id">;
 
+export type FleetKey = Pick<FleetVehicle, "placa" | "origen">;
+
 export type CompanyOrder = "unidades" | "llantas" | "participacion";
 
 export interface CompanySearch {
@@ -156,6 +158,8 @@ export interface CompanyRepo {
   upsertCompanies(batch: CompanyInput[]): Promise<UpsertCompaniesResult>;
   getCompany(id: number): Promise<Company | null>;
   getCompanyByRuc(ruc: string): Promise<Company | null>;
+  /** Las empresas de esos RUC que existen (una consulta; sin orden garantizado). */
+  getCompaniesByRucs(rucs: string[]): Promise<Company[]>;
   updateCompany(id: number, patch: CompanyPatch): Promise<Company | null>;
   /** userId null = liberar la empresa. */
   setOwner(companyId: number, userId: number | null): Promise<Company | null>;
@@ -171,6 +175,11 @@ export interface FleetRepo {
   upsertFleet(batch: FleetVehicleInput[]): Promise<{ inserted: number; updated: number }>;
   /** Deja como flota de la empresa exactamente `vehicles` (borra las que ya no están). */
   replaceFleet(companyId: number, vehicles: Omit<FleetVehicleInput, "companyId">[]): Promise<{ removed: number; upserted: number }>;
+  /**
+   * Poda por lotes (import del padrón): borra los vehículos de `companyIds` cuyo (placa, origen) no está en `keep`.
+   * Llamar después de upsertFleet, que ya movió a su empresa actual las placas que cambiaron de dueño. Devuelve cuántos borró.
+   */
+  pruneFleet(companyIds: number[], keep: FleetKey[]): Promise<number>;
   listFleet(companyId: number): Promise<FleetVehicle[]>;
   fleetByBrand(companyId: number): Promise<FleetGroup[]>;
   countFleet(): Promise<number>;
@@ -192,6 +201,8 @@ export interface SaleInput {
   /** "excel", "odoo", "demo", ... */
   origen?: string | null;
   isDemo?: boolean;
+  /** De dónde salió la carga, para no repetirla: "xlsx:<sha256 del archivo>". */
+  sourceRef?: string | null;
 }
 
 export interface Sale {
@@ -208,6 +219,7 @@ export interface Sale {
   vendedor: string | null;
   origen: string | null;
   isDemo: boolean;
+  sourceRef: string | null;
   createdAt: Date;
 }
 
@@ -219,6 +231,8 @@ export interface Participation {
 export interface SalesRepo {
   insertSales(rows: SaleInput[]): Promise<number>;
   deleteDemoSales(): Promise<number>;
+  /** Ventas ya guardadas con ese `sourceRef` y cuándo se cargó la primera (null si ninguna). */
+  countSalesBySource(sourceRef: string): Promise<{ total: number; firstAt: Date | null }>;
   /** Ventas guardadas: total y cuántas son demo (pantalla "Subir ventas"). */
   countSales(): Promise<{ total: number; demo: number }>;
   /** Ventas del RUC desde `since` (inclusive), la más reciente primero. */

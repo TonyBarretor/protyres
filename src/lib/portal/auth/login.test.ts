@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { JsonPortalStore } from "../store";
 import type { PortalUser } from "../store/types";
 import { SESSION_COOKIE } from "./constants";
-import { loginGet, loginPost, logout } from "./login";
+import { isSameOrigin, loginGet, loginPost, logout, logoutMethodNotAllowed } from "./login";
 import { createLoginLink, getSessionUser } from "./tokens";
 
 const env = { PORTAL_SESSION_SECRET: "test-secret-0123456789abcdef", PORTAL_BASE_URL: "https://portal.example.pe" };
@@ -16,9 +16,9 @@ beforeEach(async () => {
   frank = await store.upsertUser({ nombre: "Frank Rodríguez", whatsapp: "51900000001", rol: "vendedor" });
 });
 
-const post = (token: string, cookie?: string) => {
+const post = (token: string, cookie?: string, extra: Record<string, string> = {}) => {
   const body = new URLSearchParams({ t: token });
-  return new Request(BASE, { method: "POST", body, headers: { "content-type": "application/x-www-form-urlencoded", ...(cookie ? { cookie } : {}) } });
+  return new Request(BASE, { method: "POST", body, headers: { "content-type": "application/x-www-form-urlencoded", ...(cookie ? { cookie } : {}), ...extra } });
 };
 
 describe("/portal/login", () => {
@@ -61,6 +61,32 @@ describe("/portal/login", () => {
     const bad = `${link.token}x`;
     expect((await loginGet(new Request(`${BASE}?t=${bad}`), { env })).status).toBe(401);
     expect((await loginPost(post(bad), store, { env })).status).toBe(401);
+  });
+
+  it("POST with a foreign Origin is rejected without consuming the token; same origin works", async () => {
+    const link = await createLoginLink(store, frank, { env });
+    const evil = await loginPost(post(link.token, undefined, { origin: "https://evil.example.com" }), store, { env });
+    expect(evil.status).toBe(403);
+    expect(evil.headers.get("set-cookie")).toBeNull();
+    expect((await loginPost(post(link.token, undefined, { origin: "null" }), store, { env })).status).toBe(403);
+    const ok = await loginPost(post(link.token, undefined, { origin: "https://portal.example.pe" }), store, { env });
+    expect(ok.status).toBe(303);
+  });
+
+  it("isSameOrigin uses x-forwarded-host / host when present", () => {
+    const req = (h: Record<string, string>) => new Request("http://localhost:3000/portal/login", { method: "POST", headers: h });
+    expect(isSameOrigin(req({}))).toBe(true);
+    expect(isSameOrigin(req({ origin: "http://localhost:3000" }))).toBe(true);
+    expect(isSameOrigin(req({ origin: "https://portal.example.pe", "x-forwarded-host": "portal.example.pe" }))).toBe(true);
+    expect(isSameOrigin(req({ origin: "https://portal.example.pe", host: "portal.example.pe" }))).toBe(true);
+    expect(isSameOrigin(req({ origin: "https://otro.pe", host: "portal.example.pe" }))).toBe(false);
+  });
+
+  it("GET logout is 405 and does not touch the session", async () => {
+    const res = logoutMethodNotAllowed();
+    expect(res.status).toBe(405);
+    expect(res.headers.get("allow")).toBe("POST");
+    expect(res.headers.get("set-cookie")).toBeNull();
   });
 
   it("without secret: clear configuration page", async () => {

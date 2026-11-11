@@ -27,6 +27,7 @@ import type {
   ContactPatch,
   DepartamentoCount,
   FleetGroup,
+  FleetKey,
   FleetVehicle,
   FleetVehicleInput,
   IsoDate,
@@ -143,7 +144,7 @@ export class JsonPortalStore implements PortalStore {
     Object.assign(this.seq, raw.seq ?? {});
     for (const c of revive("companies", raw.companies)) this.putCompany(c);
     for (const v of raw.fleet ?? []) this.putVehicle(v);
-    for (const s of revive("sales", raw.sales)) this.pushSale(s);
+    for (const s of revive("sales", raw.sales)) this.pushSale({ ...s, sourceRef: s.sourceRef ?? null }); // archivos previos a source_ref
     for (const u of revive("users", raw.users)) this.putUser(u);
     for (const t of revive("loginTokens", raw.loginTokens)) this.loginTokens.set(t.tokenHash, t);
     for (const s of revive("sessions", raw.sessions)) this.sessions.set(s.id, s);
@@ -306,6 +307,16 @@ export class JsonPortalStore implements PortalStore {
     return id === undefined ? null : this.getCompany(id);
   }
 
+  async getCompaniesByRucs(rucs: string[]): Promise<Company[]> {
+    const out: Company[] = [];
+    for (const ruc of new Set(rucs.map(digits))) {
+      const id = this.companyByRuc.get(ruc);
+      const c = id === undefined ? undefined : this.companies.get(id);
+      if (c) out.push(copy(c));
+    }
+    return out;
+  }
+
   async updateCompany(id: number, patch: CompanyPatch): Promise<Company | null> {
     const c = this.companies.get(id);
     if (!c) return null;
@@ -408,6 +419,26 @@ export class JsonPortalStore implements PortalStore {
     return { removed, upserted: r.inserted + r.updated };
   }
 
+  async pruneFleet(companyIds: number[], keep: FleetKey[]): Promise<number> {
+    const keepSet = new Set(keep.map((v) => fleetKey(normPlaca(v.placa), v.origen)));
+    let removed = 0;
+    for (const companyId of new Set(companyIds)) {
+      const keys = this.fleetByCompany.get(companyId);
+      if (!keys) continue;
+      for (const key of [...keys]) {
+        if (keepSet.has(key)) continue;
+        this.fleet.delete(key);
+        keys.delete(key);
+        removed++;
+      }
+    }
+    if (removed) {
+      this.marcasCache = null;
+      this.changed();
+    }
+    return removed;
+  }
+
   async listFleet(companyId: number): Promise<FleetVehicle[]> {
     const keys = this.fleetByCompany.get(companyId) ?? new Set<string>();
     return [...keys].map((k) => copy(this.fleet.get(k)!)).sort((a, b) => a.placa.localeCompare(b.placa));
@@ -457,6 +488,7 @@ export class JsonPortalStore implements PortalStore {
         vendedor: r.vendedor ?? null,
         origen: r.origen ?? null,
         isDemo: r.isDemo ?? false,
+        sourceRef: r.sourceRef ?? null,
         createdAt: now,
       });
     }
@@ -475,6 +507,17 @@ export class JsonPortalStore implements PortalStore {
     const removed = before - this.sales.length;
     if (removed) this.changed();
     return removed;
+  }
+
+  async countSalesBySource(sourceRef: string): Promise<{ total: number; firstAt: Date | null }> {
+    let total = 0;
+    let firstAt: Date | null = null;
+    for (const s of this.sales) {
+      if (s.sourceRef !== sourceRef) continue;
+      total++;
+      if (!firstAt || s.createdAt < firstAt) firstAt = s.createdAt;
+    }
+    return { total, firstAt };
   }
 
   async countSales(): Promise<{ total: number; demo: number }> {

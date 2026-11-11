@@ -1,8 +1,11 @@
 /** Tipos compartidos entre las server actions de "Subir ventas" y el formulario (cliente). */
 import type { SaleInput } from "@/lib/portal/store/types";
 
-/** Las server actions de Next aceptan hasta 1 MB por defecto (next.config: serverActions.bodySizeLimit). */
-export const MAX_UPLOAD_BYTES = 7_500_000; // next.config.ts: serverActions.bodySizeLimit 8mb
+/**
+ * Vercel corta los cuerpos de más de 4,5 MB en las funciones (y Next acepta 1 MB por defecto en server actions; se subió a
+ * 4.5mb en next.config.ts). 4 MB deja margen para el resto del multipart.
+ */
+export const MAX_UPLOAD_BYTES = 4_000_000;
 
 export interface SalesPreview {
   ok: true;

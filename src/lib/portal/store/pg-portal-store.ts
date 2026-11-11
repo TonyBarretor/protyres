@@ -25,6 +25,7 @@ import type {
   ContactPatch,
   DepartamentoCount,
   FleetGroup,
+  FleetKey,
   FleetOrigen,
   FleetVehicle,
   FleetVehicleInput,
@@ -115,6 +116,7 @@ function toSale(r: Row): Sale {
     vendedor: str(r.vendedor),
     origen: str(r.origen),
     isDemo: Boolean(r.is_demo),
+    sourceRef: str(r.source_ref),
     createdAt: date(r.created_at)!,
   };
 }
@@ -304,6 +306,16 @@ export class PgPortalStore implements PortalStore {
     return r ? toCompany(r) : null;
   }
 
+  async getCompaniesByRucs(rucs: string[]): Promise<Company[]> {
+    const list = [...new Set(rucs.map(digits).filter(Boolean))];
+    const out: Company[] = [];
+    for (let i = 0; i < list.length; i += BATCH) {
+      const rows = await this.sql`select * from companies where ruc in ${this.sql(list.slice(i, i + BATCH))}`;
+      for (const r of rows) out.push(toCompany(r));
+    }
+    return out;
+  }
+
   async updateCompany(id: number, patch: CompanyPatch): Promise<Company | null> {
     const cols = patchColumns(patch, COMPANY_COLS);
     const [r] = Object.keys(cols).length
@@ -424,22 +436,38 @@ export class PgPortalStore implements PortalStore {
   }
 
   async replaceFleet(companyId: number, vehicles: Omit<FleetVehicleInput, "companyId">[]): Promise<{ removed: number; upserted: number }> {
-    const keep = dedupeBy(
-      vehicles.map((v) => ({ placa: normPlaca(v.placa), origen: v.origen })),
-      (v) => `${v.origen}|${v.placa}`,
-    );
+    const keep = vehicles.map((v) => ({ placa: v.placa, origen: v.origen }));
     return this.sql.begin(async (tx) => {
-      const removed = keep.length
-        ? await tx`
-            delete from fleet_vehicles f where f.company_id = ${companyId}
-            and not exists (select 1 from jsonb_to_recordset(${tx.json(keep)}) as k(placa text, origen text) where k.placa = f.placa and k.origen = f.origen)`
-        : await tx`delete from fleet_vehicles where company_id = ${companyId}`;
+      const removed = await this.pruneFleetWith(tx, [companyId], keep);
       const r = await this.upsertFleetWith(
         tx,
         vehicles.map((v) => ({ ...v, companyId })),
       );
-      return { removed: removed.count, upserted: r.inserted + r.updated };
+      return { removed, upserted: r.inserted + r.updated };
     }) as Promise<{ removed: number; upserted: number }>;
+  }
+
+  /**
+   * `keep` viaja como un solo parámetro JSON. El oid con que sql.json() lo envía depende de la versión de `postgres`
+   * (3.4.x: jsonb 3802; otras: json 114), así que se castea explícito a jsonb: jsonb_to_recordset funciona con ambos.
+   */
+  private async pruneFleetWith(sql: Sql | postgres.TransactionSql, companyIds: number[], keep: FleetKey[]): Promise<number> {
+    const ids = [...new Set(companyIds)];
+    if (!ids.length) return 0;
+    const keys = dedupeBy(
+      keep.map((v) => ({ placa: normPlaca(v.placa), origen: v.origen })).filter((v) => v.placa),
+      (v) => `${v.origen}|${v.placa}`,
+    );
+    const r = keys.length
+      ? await sql`
+          delete from fleet_vehicles f where f.company_id in ${sql(ids)}
+          and not exists (select 1 from jsonb_to_recordset(${sql.json(keys)}::jsonb) as k(placa text, origen text) where k.placa = f.placa and k.origen = f.origen)`
+      : await sql`delete from fleet_vehicles where company_id in ${sql(ids)}`;
+    return r.count;
+  }
+
+  pruneFleet(companyIds: number[], keep: FleetKey[]): Promise<number> {
+    return this.pruneFleetWith(this.sql, companyIds, keep);
   }
 
   async listFleet(companyId: number): Promise<FleetVehicle[]> {
@@ -489,6 +517,7 @@ export class PgPortalStore implements PortalStore {
         vendedor: r.vendedor ?? null,
         origen: r.origen ?? null,
         is_demo: r.isDemo ?? false,
+        source_ref: r.sourceRef ?? null,
       }));
       await this.sql`insert into sales ${this.sql(chunk)}`;
     }
@@ -498,6 +527,11 @@ export class PgPortalStore implements PortalStore {
   async deleteDemoSales(): Promise<number> {
     const r = await this.sql`delete from sales where is_demo = true`;
     return r.count;
+  }
+
+  async countSalesBySource(sourceRef: string): Promise<{ total: number; firstAt: Date | null }> {
+    const [r] = await this.sql`select count(*)::int as total, min(created_at) as first_at from sales where source_ref = ${sourceRef}`;
+    return { total: Number(r?.total ?? 0), firstAt: date(r?.first_at) };
   }
 
   async countSales(): Promise<{ total: number; demo: number }> {

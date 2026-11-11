@@ -25,6 +25,11 @@ export function expiredLinkPage(): Response {
   return page("Enlace vencido", `<h1>Enlace vencido o ya usado</h1><p>${ASK_AGAIN}</p>`, 401);
 }
 
+/** POST con cabecera Origin de otro sitio (posible CSRF de inicio de sesión). */
+export function forbiddenOriginPage(): Response {
+  return page("Solicitud no permitida", `<h1>Solicitud no permitida</h1><p>Abre el enlace directamente desde WhatsApp. ${ASK_AGAIN}</p>`, 403);
+}
+
 export function configErrorPage(message: string): Response {
   return page("Portal no configurado", `<h1>Portal no configurado</h1><p>${esc(message)}</p>`, 503);
 }

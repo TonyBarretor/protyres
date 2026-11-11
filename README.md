@@ -205,6 +205,8 @@ Variables de entorno: copiar `.env.example` a `.env`. Nada es obligatorio para e
    idempotente: correrlo después de cada actualización (la v14 crea `quote_files` —los archivos enviados de cada
    cotización— y agrega `sync_marks.provider`; la v15 crea `contract_prices` —los precios de contrato cambiados
    desde WhatsApp—; la v16 crea `messages` —el registro de mensajes de `historial`—) **antes** de desplegar.
+   > **No uses `npm run db:push`** desde que existe el portal comercial: drizzle no conoce las tablas del portal
+   > (`companies`, `fleet_vehicles`, `sales`, `users`, …) y propondría borrarlas. Usa siempre `npm run db:migrate`.
 6. **Despliegue** – Vercel (`vercel`) o Railway. Variables = las de `.env`. `curl https://<app>/api/health` debe
    mostrar `whatsapp: true`. Para refrescar Drive cada hora: cron que llame `GET /api/ingest/refresh` con
    `Authorization: Bearer $CRON_SECRET`.
@@ -293,6 +295,28 @@ prosegur ayacucho 1830
   `contract_prices`); sin ella el contrato del archivo funciona, pero los cambios por WhatsApp fallan.
 - Conversación de ejemplo con el bot real y un WhatsApp simulado (para mostrársela al vendedor):
   `npx tsx --tsconfig tsconfig.cli.json scripts/prosegur-chat.ts out/ejemplo-prosegur-chat.txt`.
+
+## Portal comercial
+
+Prospección y seguimiento sobre el padrón MTC (`/portal`; se entra con el enlace que manda el bot al escribir *portal*).
+Tablas: `npm run db:migrate` (no `db:push`). Sin `DATABASE_URL`, o con `PORTAL_STORE=json`, usa `data/portal-store.json`.
+
+| comando | qué hace |
+|---|---|
+| `npm run portal:import-mtc` | Importa el padrón (`data/mtc/*.csv`): empresas con 10+ unidades vigentes y su flota (llantas MTC + medida probable). Idempotente; deja la flota de cada empresa importada igual a la del padrón vigente. Las empresas que bajan del umbral no se borran. `-- --dry-run` solo calcula; `-- --json` fuerza el store JSON; `-- --min 20` cambia el umbral. También siembra los usuarios. |
+| `npm run portal:seed-demo` | Ventas de demostración (marcadas DEMO) para ver la participación. Repetible. |
+| `npm run portal:clear-demo` | Borra solo las ventas demo. |
+
+Variables (ver `.env.example`):
+
+- `PORTAL_SESSION_SECRET` (obligatoria): firma los enlaces de acceso y las sesiones (`openssl rand -base64 32`).
+- `PORTAL_BASE_URL`: URL pública para los enlaces; vacía = `https://$VERCEL_PROJECT_PRODUCTION_URL` o `http://localhost:3000`.
+- `PORTAL_SUPERVISOR_NUMBER`, `PORTAL_ADMIN_NUMBER`: WhatsApp (solo dígitos) del supervisor y del admin en la siembra de usuarios.
+- `PORTAL_STORE=json`: fuerza el store JSON aunque haya `DATABASE_URL`; `PORTAL_STORE_PATH` cambia su archivo.
+- `PORTAL_CONFIG`: otra ruta para `config/portal.json`.
+
+Subir ventas (supervisor/admin): .xlsx de hasta 4 MB (Vercel corta los cuerpos de más de 4,5 MB); el mismo archivo no se
+carga dos veces. `.vercelignore` evita que `vercel deploy` suba el padrón y los datos de clientes de `data/`.
 
 ## Límites conocidos del piloto
 

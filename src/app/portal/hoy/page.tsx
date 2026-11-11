@@ -1,5 +1,6 @@
 /**
- * Hoy: próximas acciones del usuario (vencidas o de hoy) y sus citas de hoy y los próximos 7 días, en hora de Lima.
+ * Hoy: próximas acciones del usuario (vencidas, de hoy, de los próximos 7 días y sin fecha) y sus citas de hoy y los
+ * próximos 7 días, en hora de Lima.
  */
 import Link from "next/link";
 import { requireUser } from "@/lib/portal/auth/session";
@@ -22,7 +23,14 @@ export default async function HoyPage({ searchParams }: { searchParams: Promise<
   const { from, to } = appointmentWindow(now);
   const [opps, appointments] = await Promise.all([store.listOpportunities({ ownerId: user.id, open: true }), store.listAppointments({ userId: user.id, from, to })]);
   const today = selectToday(opps, appointments, now);
-  const ids = [...new Set([...today.acciones.map((a) => a.opportunity.companyId), ...today.citas.flatMap((d) => d.citas.map((c) => c.companyId))])];
+  const ids = [
+    ...new Set([
+      ...today.acciones.map((a) => a.opportunity.companyId),
+      ...today.proximas.map((o) => o.companyId),
+      ...today.sinFecha.map((o) => o.companyId),
+      ...today.citas.flatMap((d) => d.citas.map((c) => c.companyId)),
+    ]),
+  ];
   const companies = new Map<number, Company>();
   for (const c of await Promise.all(ids.map((id) => store.getCompany(id)))) if (c) companies.set(c.id, c);
   const name = (id: number) => companies.get(id)?.razonSocial ?? `Empresa #${id}`;
@@ -60,6 +68,47 @@ export default async function HoyPage({ searchParams }: { searchParams: Promise<
                 </li>
               ))}
             </ul>
+          )}
+
+          <h3 id="proximas-title" style={{ marginTop: "1rem" }}>
+            Próximos 7 días
+          </h3>
+          {today.proximas.length === 0 ? (
+            <p className="pt-muted pt-small">Nada agendado para los próximos días.</p>
+          ) : (
+            <ul className="pt-list" aria-labelledby="proximas-title">
+              {today.proximas.map((o) => (
+                <li key={o.id}>
+                  <Link className="pt-company-link" href={`/portal/empresas/${o.companyId}`}>
+                    {name(o.companyId)}
+                  </Link>
+                  <div>{o.proximaAccion || "(sin descripción)"}</div>
+                  <div className="pt-small pt-muted">
+                    {formatLimaDateTime(o.proximaAccionAt!)} · {stageLabel(o.etapa)}
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
+
+          {today.sinFecha.length > 0 && (
+            <>
+              <h3 id="sinfecha-title" style={{ marginTop: "1rem" }}>
+                Sin fecha
+              </h3>
+              <p className="pt-muted pt-small">Ponles fecha en la ficha para que aparezcan a tiempo.</p>
+              <ul className="pt-list" aria-labelledby="sinfecha-title">
+                {today.sinFecha.map((o) => (
+                  <li key={o.id}>
+                    <Link className="pt-company-link" href={`/portal/empresas/${o.companyId}`}>
+                      {name(o.companyId)}
+                    </Link>
+                    <div>{o.proximaAccion}</div>
+                    <div className="pt-small pt-muted">{stageLabel(o.etapa)}</div>
+                  </li>
+                ))}
+              </ul>
+            </>
           )}
         </section>
 

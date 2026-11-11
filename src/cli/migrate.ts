@@ -6,6 +6,7 @@
  */
 import "./env";
 import postgres from "postgres";
+import { checkExistingTables, expectedSchema, type ColumnRow } from "../lib/portal/store/migrate-guard";
 
 const STATEMENTS = [
   `create table if not exists prices (
@@ -270,18 +271,36 @@ const STATEMENTS = [
   )`,
   `create index if not exists appointments_user_idx on appointments (user_id, starts_at)`,
   `create index if not exists appointments_company_idx on appointments (company_id)`,
+  `alter table sales add column if not exists source_ref text`,
+  `create index if not exists sales_source_ref_idx on sales (source_ref)`,
 ];
+
+/** Desde aquí empiezan las sentencias del portal: antes de ejecutarlas se pasa la guardia (migrate-guard.ts). */
+const PORTAL_FROM = STATEMENTS.findIndex((s) => /^create table if not exists companies\b/.test(s));
+if (PORTAL_FROM < 0) throw new Error("migrate: no se encontró el inicio de las tablas del portal (create table companies)");
 
 async function main() {
   const url = process.env.DATABASE_URL;
   if (!url) throw new Error("DATABASE_URL no está definida (ponla en .env)");
   const sql = postgres(url, { prepare: false, max: 1, connect_timeout: 20, onnotice: () => undefined }); // "already exists, skipping" notices are expected
   try {
-    for (const stmt of STATEMENTS) {
+    const run = async (stmt: string) => {
       const head = stmt.replace(/\s+/g, " ").slice(0, 70);
       await sql.unsafe(stmt);
       console.log(`ok   ${head}…`);
-    }
+    };
+    for (const stmt of STATEMENTS.slice(0, PORTAL_FROM)) await run(stmt);
+
+    // Guardia: si una tabla del portal ya existe y no tiene nuestras columnas, es de otra cosa: no se toca nada del portal.
+    const expected = expectedSchema(STATEMENTS.slice(PORTAL_FROM));
+    const cols = await sql<ColumnRow[]>`
+      select table_name, column_name from information_schema.columns
+      where table_schema = 'public' and table_name in ${sql([...expected.keys()])}`;
+    const guard = checkExistingTables(expected, [...cols]);
+    if (!guard.ok) throw new Error(guard.message);
+    if (guard.existing.length) console.log(`Portal: tablas ya creadas en una corrida anterior: ${guard.existing.join(", ")}`);
+
+    for (const stmt of STATEMENTS.slice(PORTAL_FROM)) await run(stmt);
     const [{ photos }] = await sql`select count(*)::int as photos from prices where photo_url is not null`;
     const [{ rows }] = await sql`select count(*)::int as rows from prices`;
     const [{ files }] = await sql`select count(*)::int as files from quote_files`;

@@ -77,6 +77,26 @@ describe("JsonPortalStore — empresas y flota", () => {
     expect((await store.listFleet(a)).map((v) => v.placa)).toEqual(["X2", "X4"]);
   });
 
+  it("pruneFleet borra solo lo que ya no viene de esas empresas", async () => {
+    const { store, ids } = await seeded();
+    const a = ids["20100000001"];
+    const b = ids["20100000002"];
+    await store.upsertFleet([vehicle(a, "X1"), vehicle(a, "X2"), vehicle(a, "X3", { origen: "pasajeros" }), vehicle(b, "Y1")]);
+    expect(await store.pruneFleet([a], [{ placa: "x1", origen: "carga" }, { placa: "X3", origen: "carga" }])).toBe(2); // X3 pasajeros != X3 carga
+    expect((await store.listFleet(a)).map((v) => v.placa)).toEqual(["X1"]);
+    expect((await store.listFleet(b)).map((v) => v.placa)).toEqual(["Y1"]); // otra empresa: intacta
+    expect(await store.pruneFleet([], [])).toBe(0);
+    expect(await store.pruneFleet([b], [])).toBe(1);
+    expect(await store.countFleet()).toBe(1);
+  });
+
+  it("getCompaniesByRucs trae las que existen en una sola llamada", async () => {
+    const { store } = await seeded();
+    const found = await store.getCompaniesByRucs(["20100000001", "20100000003", "20999999999", "20100000001"]);
+    expect(found.map((c) => c.ruc).sort()).toEqual(["20100000001", "20100000003"]);
+    expect(await store.getCompaniesByRucs([])).toEqual([]);
+  });
+
   it("fleetByBrand agrupa por marca y clase con años, llantas y la medida más frecuente", async () => {
     const { store, ids } = await seeded();
     const a = ids["20100000001"];
@@ -156,6 +176,20 @@ describe("JsonPortalStore — ventas y participación", () => {
     expect(await store.deleteDemoSales()).toBe(1);
     expect(await store.countSales()).toEqual({ total: before.total - 1, demo: 0 });
     expect(await store.participation(["20100000003"], "2025-11-11")).toEqual({ "20100000003": { cantidad: 4, demo: false } });
+  });
+
+  it("countSalesBySource cuenta las ventas de una carga y su fecha", async () => {
+    const store = JsonPortalStore.memory();
+    expect(await store.countSalesBySource("xlsx:abc")).toEqual({ total: 0, firstAt: null });
+    await store.insertSales([
+      { fecha: "2026-10-01", ruc: "20100000002", cantidad: 4, origen: "excel", sourceRef: "xlsx:abc" },
+      { fecha: "2026-10-02", ruc: "20100000002", cantidad: 6, origen: "excel", sourceRef: "xlsx:abc" },
+      { fecha: "2026-10-03", ruc: "20100000002", cantidad: 1, origen: "excel" },
+    ]);
+    const r = await store.countSalesBySource("xlsx:abc");
+    expect(r.total).toBe(2);
+    expect(r.firstAt).toBeInstanceOf(Date);
+    expect((await store.salesByRuc("20100000002")).map((s) => s.sourceRef)).toEqual([null, "xlsx:abc", "xlsx:abc"]);
   });
 });
 

@@ -38,17 +38,35 @@ describe("importMtc (fixtures)", () => {
     expect(await store.getCompanyByRuc("20555555555")).toBeNull(); // 1 unit: below the threshold
 
     const second = await importMtc({ files, config: config(3), rules, store });
-    expect(second.written).toEqual({ companiesInserted: 0, companiesUpdated: 3, fleetInserted: 0, fleetUpdated: fleet });
+    expect(second.written).toEqual({ companiesInserted: 0, companiesUpdated: 3, fleetInserted: 0, fleetUpdated: fleet, fleetRemoved: 0 });
     expect(await store.countCompanies()).toBe(companies);
     expect(await store.countFleet()).toBe(fleet);
   });
 
-  it("a higher threshold imports fewer companies but never deletes earlier ones", async () => {
+  it("prunes vehicles no longer in the current padrón from imported companies, keeps the other companies untouched", async () => {
     const store = JsonPortalStore.memory();
     await importMtc({ files, config: config(3), rules, store });
+    const andinos = (await store.getCompanyByRuc("20111111111"))!;
+    const fleetBefore = (await store.listFleet(andinos.id)).map((v) => v.placa);
+    // A vehicle left over from an earlier padrón (sold or retired since).
+    await store.upsertFleet([{ ...(await store.listFleet(andinos.id))[0], placa: "OLD999", origen: "carga" }]);
+    expect(await store.listFleet(andinos.id)).toHaveLength(fleetBefore.length + 1);
+
+    // With a higher threshold only ANDINOS passes: its fleet is pruned to the padrón; the others keep everything.
+    const others = (await store.searchCompanies({ pageSize: 10 })).rows.filter((c) => c.id !== andinos.id);
+    const othersFleet = await Promise.all(others.map((c) => store.listFleet(c.id)));
+    await store.setOwner(others[0].id, 7);
     const s = await importMtc({ files, config: config(4), rules, store });
     expect(s.empresas).toBe(1);
-    expect(s.written).toMatchObject({ companiesInserted: 0, companiesUpdated: 1 });
+    expect(s.written).toMatchObject({ companiesInserted: 0, companiesUpdated: 1, fleetRemoved: 1 });
+    expect((await store.listFleet(andinos.id)).map((v) => v.placa)).toEqual(fleetBefore);
     expect(await store.countCompanies()).toBe(3);
+    for (const [i, c] of others.entries()) expect(await store.listFleet(c.id)).toEqual(othersFleet[i]);
+    expect((await store.getCompany(others[0].id))?.ownerUserId).toBe(7);
+
+    // Idempotent: a second run removes nothing more.
+    const again = await importMtc({ files, config: config(4), rules, store });
+    expect(again.written?.fleetRemoved).toBe(0);
+    expect(await store.countFleet()).toBe(10);
   });
 });

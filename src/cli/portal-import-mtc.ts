@@ -1,6 +1,7 @@
 /**
  * Importa el padrón MTC (data/mtc/*.csv) al portal: empresas con 10+ unidades vigentes y su flota, con llantas
- * (dato MTC) y medida probable (inferida). Idempotente; no borra nada (ver src/lib/portal/mtc/import.ts).
+ * (dato MTC) y medida probable (inferida). Idempotente; la flota de cada empresa importada queda igual a la del padrón
+ * vigente (borra las placas que ya no figuran); las empresas que bajan del umbral no se tocan (ver src/lib/portal/mtc/import.ts).
  *
  *   npm run portal:import-mtc                    escribe en Postgres (DATABASE_URL) o en data/portal-store.json
  *   npm run portal:import-mtc -- --dry-run       solo calcula e imprime el resumen

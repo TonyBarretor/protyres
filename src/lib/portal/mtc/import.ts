@@ -9,14 +9,18 @@
  *  3. Llantas de carga desde el índice (applyTyres), medida probable (config/tyre-inference.json).
  *  4. Agrega por empresa y deja solo las que tienen `minUnits` unidades o más.
  *  5. Escribe por lotes con upsertCompanies + upsertFleet (idempotente: RUC y (placa, origen) son claves únicas).
+ *  6. Poda la flota: a cada empresa importada se le borran los vehículos que ya no figuran en su flota vigente
+ *     (pruneFleet, por lotes). Va después del upsert, que ya movió a su nueva empresa las placas que cambiaron de dueño.
  *
- * Poda: no se borra nada. Si una empresa ya no llega al umbral (o un vehículo deja de figurar en el padrón), lo que
- * quedó de importaciones anteriores se conserva tal cual, con sus cifras viejas. Así nunca se pierde trabajo del portal
- * (dueño, contactos, oportunidades) por una variación del padrón; limpiar es una decisión manual.
+ * Resultado: la flota de cada empresa importada queda exactamente igual a la del padrón vigente.
+ *
+ * Empresas que bajan del umbral (o dejan de figurar en el padrón): NO se borran ni se tocan, porque pueden tener trabajo
+ * comercial (dueño, contactos, oportunidades, actividades). Quedan con sus cifras y su flota de la última importación en
+ * que pasaron el umbral; limpiarlas es una decisión manual.
  */
 import path from "node:path";
 import type { PortalImportConfig } from "../config";
-import type { CompanyInput, FleetVehicleInput, PortalStore } from "../store/types";
+import type { CompanyInput, FleetKey, FleetVehicleInput, PortalStore } from "../store/types";
 import { aggregateCompanies, type CompanyAggregate } from "./aggregate";
 import { inferTyreSize, type Confianza, type TyreRule } from "./inference";
 import { newStats, streamMtcFile, type MtcOrigin, type MtcVehicle, type ParseStats } from "./parse";
@@ -76,7 +80,7 @@ export interface ImportMtcSummary {
   porConfianza: Record<Confianza, number>;
   /** Sobre toda la flota vigente de carga (antes del umbral). */
   cargaConLlantas: number;
-  written: { companiesInserted: number; companiesUpdated: number; fleetInserted: number; fleetUpdated: number } | null;
+  written: { companiesInserted: number; companiesUpdated: number; fleetInserted: number; fleetUpdated: number; fleetRemoved: number } | null;
   verificacion: VerifySummary | null;
 }
 
@@ -184,7 +188,7 @@ export async function importMtc(opts: ImportMtcOptions): Promise<ImportMtcSummar
 
   // 5. Escritura por lotes.
   const store = opts.store!;
-  const written = { companiesInserted: 0, companiesUpdated: 0, fleetInserted: 0, fleetUpdated: 0 };
+  const written = { companiesInserted: 0, companiesUpdated: 0, fleetInserted: 0, fleetUpdated: 0, fleetRemoved: 0 };
   const ids: Record<string, number> = {};
   for (let i = 0; i < companies.length; i += batchSize) {
     const batch: CompanyInput[] = companies.slice(i, i + batchSize).map((c) => ({
@@ -229,6 +233,32 @@ export async function importMtc(opts: ImportMtcOptions): Promise<ImportMtcSummar
     written.fleetUpdated += r.updated;
     if ((i / batchSize) % 20 === 19) log(`Vehículos escritos: ${Math.min(i + batchSize, imported.length)} / ${imported.length}`);
   }
+
+  // 6. Poda: por lotes de empresas (y de placas a conservar, para que cada llamada lleve un parámetro de tamaño acotado).
+  const keepByCompany = new Map<number, FleetKey[]>();
+  for (const v of imported) {
+    const companyId = ids[v.ruc];
+    if (companyId === undefined) continue;
+    const list = keepByCompany.get(companyId);
+    if (list) list.push({ placa: v.placa, origen: v.origen });
+    else keepByCompany.set(companyId, [{ placa: v.placa, origen: v.origen }]);
+  }
+  let pruneIds: number[] = [];
+  let pruneKeep: FleetKey[] = [];
+  const prune = async () => {
+    if (pruneIds.length) written.fleetRemoved += await store.pruneFleet(pruneIds, pruneKeep);
+    pruneIds = [];
+    pruneKeep = [];
+  };
+  for (const c of companies) {
+    const companyId = ids[c.ruc];
+    if (companyId === undefined) continue;
+    pruneIds.push(companyId);
+    for (const k of keepByCompany.get(companyId) ?? []) pruneKeep.push(k);
+    if (pruneIds.length >= batchSize || pruneKeep.length >= batchSize * 5) await prune();
+  }
+  await prune();
+  if (written.fleetRemoved) log(`Vehículos que ya no figuran en la flota vigente, borrados: ${written.fleetRemoved}`);
   summary.written = written;
   return summary;
 }
@@ -266,7 +296,7 @@ export function formatImportSummary(s: ImportMtcSummary): string {
   );
   if (s.written) {
     const w = s.written;
-    out.push(`Escrito: empresas ${fmt(w.companiesInserted)} nuevas / ${fmt(w.companiesUpdated)} actualizadas; vehículos ${fmt(w.fleetInserted)} nuevos / ${fmt(w.fleetUpdated)} actualizados`);
+    out.push(`Escrito: empresas ${fmt(w.companiesInserted)} nuevas / ${fmt(w.companiesUpdated)} actualizadas; vehículos ${fmt(w.fleetInserted)} nuevos / ${fmt(w.fleetUpdated)} actualizados / ${fmt(w.fleetRemoved)} borrados (ya no figuran)`);
   }
   out.push("");
   const v = s.verificacion;

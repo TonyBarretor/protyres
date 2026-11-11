@@ -32,12 +32,15 @@ export const ORDERS: { id: CompanyOrder; label: string }[] = [
   { id: "participacion", label: "Participación" },
 ];
 
-/** Accesos rápidos de marca: cada uno selecciona exactamente esas marcas. */
+/**
+ * Accesos rápidos de marca: cada uno selecciona exactamente esas marcas. El padrón registra algunas con el nombre del
+ * fabricante: CNHTC (China National Heavy Duty Truck) = Sinotruk/Howo/Sitrak; SHAANQI = Shacman.
+ */
 export const BRAND_SHORTCUTS: { label: string; marcas: string[] }[] = [
   { label: "Scania", marcas: ["SCANIA"] },
   { label: "Hino", marcas: ["HINO"] },
-  { label: "Shacman", marcas: ["SHACMAN"] },
-  { label: "Sinotruk/Howo/Sitrak", marcas: ["SINOTRUK", "HOWO", "SITRAK"] },
+  { label: "Shacman", marcas: ["SHACMAN", "SHAANQI"] },
+  { label: "Sinotruk/Howo/Sitrak", marcas: ["SINOTRUK", "HOWO", "SITRAK", "CNHTC"] },
 ];
 
 export interface ProspectFilters {
