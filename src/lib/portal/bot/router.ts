@@ -47,7 +47,7 @@ export interface ClassifyInput {
 
 // ── comandos explícitos del portal ──
 
-export type PortalCommandName = "portal" | "ayuda_portal" | "hoy" | "empresa" | "asignarme" | "contacto" | "cita" | "oc" | "avance" | "prepropuesta" | "aprende";
+export type PortalCommandName = "portal" | "ayuda_portal" | "hoy" | "empresa" | "asignarme" | "contacto" | "cita" | "oc" | "avance" | "prepropuesta" | "aprende" | "enlazar" | "reenviada";
 
 interface CommandSpec {
   name: PortalCommandName;
@@ -69,6 +69,8 @@ const COMMANDS: CommandSpec[] = [
   { name: "avance", re: /^avance(?:\s+\S.*)?$/ },
   { name: "prepropuesta", re: /^pre\s?propuesta(?:\s+\S|$)/ },
   { name: "aprende", re: /^aprende\s+\S/ },
+  { name: "enlazar", re: /^enlazar(?:\s+\S.*)?$/ },
+  { name: "reenviada", re: /^reenviad[ao](?:\s+\S.*)?$/ },
 ];
 
 /** La palabra del comando en el texto original ("Empresa", "asignarme", "pre-propuesta"...). */
@@ -84,6 +86,8 @@ const RAW_HEAD: Record<PortalCommandName, RegExp> = {
   avance: /^avance\b/i,
   prepropuesta: /^pre[\s-]?propuesta\b/i,
   aprende: /^aprende\b/i,
+  enlazar: /^enlazar\b/i,
+  reenviada: /^reenviad[ao]\b/i,
 };
 
 export interface ParsedPortalCommand {

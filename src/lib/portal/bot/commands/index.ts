@@ -10,6 +10,7 @@ import "./empresa";
 import "./asignarme";
 import "./contacto";
 import "./cita";
+import "./cotizacion";
 
 export const COMMAND_LABEL: Record<string, string> = {
   cita: "cita",

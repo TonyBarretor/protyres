@@ -11,7 +11,7 @@
  *     avanza, con historial), próxima acción y contacto nuevo. `no` descarta. Otro texto corrige el borrador.
  *
  * Dependencias inyectables (tests y simulador) con configureReportBot: cliente de Anthropic, fetch de Deepgram, descarga
- * de medios y registro de mensajes. Lo que llegue por el contexto del enganche (ctx.downloadMedia / ctx.logMessage) manda.
+ * de medios y registro de mensajes. La descarga inyectada con configureReportBot manda sobre ctx.downloadMedia (el simulador no tiene Graph API).
  */
 import { getStore } from "../../store";
 import type { MessageLogEntry } from "../../store/types";
@@ -57,8 +57,8 @@ export function configureReportBot(d: ReportBotDeps | null): void {
 let graph: GraphWhatsAppClient | null = null;
 
 function downloader(ctx: PortalContext): Download {
+  if (deps.downloadMedia) return deps.downloadMedia; // inyectado (simulador, tests) manda sobre el cliente del handler
   if (ctx.downloadMedia) return (id) => ctx.downloadMedia!(id);
-  if (deps.downloadMedia) return deps.downloadMedia;
   return async (id) => {
     if (!graph) {
       const cfg = graphConfigFromEnv();
