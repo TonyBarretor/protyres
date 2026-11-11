@@ -2,7 +2,7 @@
 #   npm run portal:simulate -- --as frank --script scripts/guion-frank.txt
 # Una línea por mensaje. Se ignoran las líneas vacías y las que empiezan con #.
 # Empresa real del padrón MTC: ZBUSS S.A.C. (RUC 20602221505, 85 unidades, 82 ómnibus).
-# Los pasos de los bloques siguientes están escritos y comentados con "#TODO <bloque>: "; cada bloque quita su prefijo.
+# Recorre el flujo completo de Frank con una empresa real del padrón (ZBUSS S.A.C., RUC 20602221505).
 
 # 1. Enlace al portal
 portal
@@ -39,7 +39,7 @@ cliente
 igual
 ninguna
 # 9. Avance del mes (C2) y pre-propuesta (C1)
-#TODO C2: avance
+avance
 prepropuesta zbuss
 # 10. Pendientes del día y ayuda
 hoy
