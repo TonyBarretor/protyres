@@ -9,6 +9,7 @@ import type { ComplianceFigure } from "@/lib/portal/dashboard/compliance";
 import { formatInt, formatMoney, formatPct, monthName } from "@/lib/portal/dashboard/format";
 import { loadDashboard, type DashboardScope } from "@/lib/portal/dashboard/load";
 import { getPortalStore } from "@/lib/portal/store";
+import { loadSurveySummary } from "@/lib/portal/survey/summary";
 import { DemoTag } from "../_components/bits";
 import { HBar, Legend, ProgressBar, WeekBars } from "./charts";
 import { SurveySummary } from "./SurveySummary";
@@ -85,6 +86,8 @@ export default async function TableroPage({ searchParams }: { searchParams: Prom
   const picked = all && Number.isInteger(wanted) ? ((await store.getUser(wanted)) ?? null) : null;
   const scope: DashboardScope = !all ? { kind: "usuario", userId: user.id } : picked ? { kind: "usuario", userId: picked.id } : { kind: "equipo" };
   const d = await loadDashboard(store, { scope, now: new Date() });
+  // encuestas: vendedor -> sus empresas; supervisor -> todas, o las del vendedor elegido
+  const surveys = await loadSurveySummary(store, { ownerUserId: scope.kind === "usuario" ? scope.userId : undefined });
   if (picked && !users.some((u) => u.id === picked.id)) users.push(picked);
 
   const { compliance, projection, goal } = d.figures;
@@ -351,7 +354,7 @@ export default async function TableroPage({ searchParams }: { searchParams: Prom
       </section>
 
       {/* C3: resumen de encuestas (no renderiza nada sin datos). */}
-      <SurveySummary data={null} />
+      <SurveySummary data={surveys} />
     </div>
   );
 }

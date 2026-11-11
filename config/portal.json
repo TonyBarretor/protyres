@@ -35,6 +35,13 @@
       "Frank Rodríguez": { "monthly": 50000, "yearly": 600000 }
     }
   },
+  "surveys": {
+    "_comment": "Encuesta de satisfacción. Invitación automática (cron diario, solo con SURVEY_AUTO=1): empresas cliente cuya última venta real (no demo) fue hace afterSaleDays días (hasta windowDays días de tolerancia si el cron no corrió) y sin encuesta en los últimos cooldownMonths meses. expiresDays = vigencia del enlace.",
+    "afterSaleDays": 7,
+    "windowDays": 7,
+    "cooldownMonths": 6,
+    "expiresDays": 30
+  },
   "holidays": [],
   "sales": {
     "_comment": "Subir ventas (.xlsx): para cada campo, encabezados posibles del Excel (sin importar mayúsculas, tildes ni espacios). Obligatorios: fecha, ruc, cantidad. Primer encabezado que coincide gana.",

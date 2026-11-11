@@ -58,6 +58,10 @@ import type {
   VocabularyInput,
 } from "./types";
 import type { StageId } from "../stages";
+import { surveyCounts } from "./survey-shared";
+import type { Survey, SurveyAnswer, SurveyAnswerInput, SurveyAnswerResult, SurveyCanal, SurveyFilter, SurveyInput, SurveyResponse } from "./types";
+import { resolveCreditSave } from "../credit/changes";
+import type { CompanyCredit, CreditHistoryEntry, CreditPdf, CreditSaveInput } from "./types";
 
 interface StoredLoginToken extends LoginToken {
   usedAt: Date | null;
@@ -80,10 +84,16 @@ interface FileData {
   stageHistory: StageHistoryEntry[];
   activities: Activity[];
   appointments: Appointment[];
+  /** Encuesta (C3). */
+  surveys?: Survey[];
+  surveyAnswers?: SurveyAnswer[];
   portalConversations?: PortalConversation[];
   vocabulary?: VocabularyEntry[];
   purchaseOrders?: PurchaseOrder[];
   orderProfiles?: CompanyOrderProfile[];
+  /** Crédito (C4): la fila con el PDF en base64 (`pdfData`) y su historial. */
+  credit?: (CompanyCredit & { pdfData: string | null })[];
+  creditHistory?: CreditHistoryEntry[];
 }
 
 /** Campos Date por colección (JSON los guarda como texto ISO). */
@@ -98,10 +108,14 @@ const DATE_FIELDS: Record<string, string[]> = {
   stageHistory: ["enteredAt", "leftAt"],
   activities: ["occurredAt", "createdAt"],
   appointments: ["startsAt", "createdAt"],
+  surveys: ["enviadaAt", "respondidaAt", "expiresAt", "createdAt"],
+  surveyAnswers: ["createdAt"],
   portalConversations: ["updatedAt"],
   vocabulary: ["createdAt"],
   purchaseOrders: ["createdAt"],
   orderProfiles: ["updatedAt"],
+  credit: ["consultadoAt", "updatedAt"],
+  creditHistory: ["createdAt"],
 };
 
 const DEBOUNCE_MS = 300;
@@ -128,10 +142,18 @@ export class JsonPortalStore implements PortalStore {
   private stageHistoryRows: StageHistoryEntry[] = [];
   private activities: Activity[] = [];
   private appointments = new Map<number, Appointment>();
+  /** Encuesta (C3), con contadores propios (máximo cargado + 1). */
+  private surveys = new Map<number, Survey>();
+  private surveyAnswers = new Map<number, SurveyAnswer>();
+  private surveySeq = { surveys: 0, answers: 0 };
   private portalConversations = new Map<string, PortalConversation>();
   private vocabulary: VocabularyEntry[] = [];
   private purchaseOrders = new Map<number, PurchaseOrder>();
   private orderProfiles = new Map<number, CompanyOrderProfile>();
+  /** Crédito (C4). Ids del historial con contador propio (máximo cargado + 1). */
+  private credit = new Map<number, CompanyCredit & { pdfData: string | null }>();
+  private creditHistoryRows: CreditHistoryEntry[] = [];
+  private creditHistorySeq = 0;
   /** companyId -> marcas normalizadas (se invalida al cambiar la flota). */
   private marcasCache: Map<number, Set<string>> | null = null;
   private timer: NodeJS.Timeout | null = null;
@@ -175,10 +197,17 @@ export class JsonPortalStore implements PortalStore {
     this.stageHistoryRows = revive("stageHistory", raw.stageHistory);
     this.activities = revive("activities", raw.activities);
     for (const a of revive("appointments", raw.appointments)) this.appointments.set(a.id, a);
+    for (const s of revive("surveys", raw.surveys)) this.surveys.set(s.id, s);
+    for (const a of revive("surveyAnswers", raw.surveyAnswers)) this.surveyAnswers.set(a.surveyId, a);
+    this.surveySeq.surveys = Math.max(0, ...this.surveys.keys());
+    this.surveySeq.answers = Math.max(0, ...[...this.surveyAnswers.values()].map((a) => a.id));
     for (const c of revive("portalConversations", raw.portalConversations)) this.portalConversations.set(c.phone, c);
     this.vocabulary = revive("vocabulary", raw.vocabulary);
     for (const o of revive("purchaseOrders", raw.purchaseOrders)) this.purchaseOrders.set(o.id, o);
     for (const p of revive("orderProfiles", raw.orderProfiles)) this.orderProfiles.set(p.companyId, p);
+    for (const c of revive("credit", raw.credit)) this.credit.set(c.companyId, c);
+    this.creditHistoryRows = revive("creditHistory", raw.creditHistory);
+    this.creditHistorySeq = this.creditHistoryRows.reduce((m, h) => Math.max(m, h.id), 0);
   }
 
   private snapshot(): FileData {
@@ -196,10 +225,14 @@ export class JsonPortalStore implements PortalStore {
       stageHistory: this.stageHistoryRows,
       activities: this.activities,
       appointments: [...this.appointments.values()],
+      surveys: [...this.surveys.values()],
+      surveyAnswers: [...this.surveyAnswers.values()],
       portalConversations: [...this.portalConversations.values()],
       vocabulary: this.vocabulary,
       purchaseOrders: [...this.purchaseOrders.values()],
       orderProfiles: [...this.orderProfiles.values()],
+      credit: [...this.credit.values()],
+      creditHistory: this.creditHistoryRows,
     };
   }
 
@@ -885,6 +918,103 @@ export class JsonPortalStore implements PortalStore {
       .sort((a, b) => time(a.startsAt) - time(b.startsAt) || a.id - b.id);
   }
 
+  // ── encuesta de satisfacción (C3) ──
+
+  async createSurvey(input: SurveyInput, opts: { onlyIfNoneSince?: Date } = {}): Promise<Survey | null> {
+    // sin await entre la comprobación y la inserción: atómico en el event loop
+    const since = opts.onlyIfNoneSince;
+    if (since && [...this.surveys.values()].some((s) => s.companyId === input.companyId && s.createdAt.getTime() >= since.getTime() && surveyCounts(s))) return null;
+    if ([...this.surveys.values()].some((s) => s.tokenHash === input.tokenHash)) throw new Error("createSurvey: token repetido");
+    const s: Survey = {
+      id: ++this.surveySeq.surveys,
+      companyId: input.companyId,
+      contactId: input.contactId ?? null,
+      tokenHash: input.tokenHash,
+      estado: "pendiente",
+      canal: input.canal,
+      createdBy: input.createdBy ?? null,
+      enviadaAt: null,
+      respondidaAt: null,
+      expiresAt: input.expiresAt,
+      createdAt: input.createdAt ?? new Date(),
+    };
+    this.surveys.set(s.id, s);
+    this.changed();
+    return copy(s);
+  }
+
+  async getSurvey(id: number): Promise<Survey | null> {
+    const s = this.surveys.get(id);
+    return s ? copy(s) : null;
+  }
+
+  async getSurveyByTokenHash(tokenHash: string): Promise<Survey | null> {
+    for (const s of this.surveys.values()) if (s.tokenHash === tokenHash) return copy(s);
+    return null;
+  }
+
+  private surveyMatches(s: Survey, filter: SurveyFilter): boolean {
+    if (filter.companyId !== undefined && s.companyId !== filter.companyId) return false;
+    if (filter.ownerUserId !== undefined && this.companies.get(s.companyId)?.ownerUserId !== filter.ownerUserId) return false;
+    return true;
+  }
+
+  async listSurveys(filter: SurveyFilter = {}): Promise<Survey[]> {
+    const rows = [...this.surveys.values()]
+      .filter((s) => this.surveyMatches(s, filter) && (!filter.since || s.createdAt.getTime() >= filter.since.getTime()))
+      .map(copy)
+      .sort((a, b) => time(b.createdAt) - time(a.createdAt) || b.id - a.id);
+    return filter.limit ? rows.slice(0, filter.limit) : rows;
+  }
+
+  async markSurveySent(id: number, at: Date, canal?: SurveyCanal): Promise<Survey | null> {
+    const s = this.surveys.get(id);
+    if (!s) return null;
+    if (s.estado === "pendiente") {
+      s.estado = "enviada";
+      s.enviadaAt = at;
+      if (canal) s.canal = canal;
+      this.changed();
+    }
+    return copy(s);
+  }
+
+  async expireSurvey(id: number): Promise<Survey | null> {
+    const s = this.surveys.get(id);
+    if (!s) return null;
+    if (s.estado === "pendiente" || s.estado === "enviada") {
+      s.estado = "vencida";
+      this.changed();
+    }
+    return copy(s);
+  }
+
+  async answerSurvey(surveyId: number, answer: SurveyAnswerInput, now: Date): Promise<SurveyAnswerResult> {
+    // sin await en medio: la comprobación y la escritura no se intercalan con otra respuesta
+    const s = this.surveys.get(surveyId);
+    if (!s) return { ok: false, reason: "no_existe" };
+    if (s.estado === "respondida" || this.surveyAnswers.has(surveyId)) return { ok: false, reason: "respondida" };
+    if (s.estado === "vencida" || s.expiresAt.getTime() <= now.getTime()) return { ok: false, reason: "vencida" };
+    const a: SurveyAnswer = { id: ++this.surveySeq.answers, surveyId, ...answer, valora: [...answer.valora], createdAt: now };
+    this.surveyAnswers.set(surveyId, a);
+    s.estado = "respondida";
+    s.respondidaAt = now;
+    this.changed();
+    return { ok: true, survey: copy(s), answer: { ...a, valora: [...a.valora] } };
+  }
+
+  async listSurveyResponses(filter: SurveyFilter = {}): Promise<SurveyResponse[]> {
+    const out: SurveyResponse[] = [];
+    for (const a of this.surveyAnswers.values()) {
+      const s = this.surveys.get(a.surveyId);
+      if (!s || !this.surveyMatches(s, filter)) continue;
+      if (filter.since && a.createdAt.getTime() < filter.since.getTime()) continue;
+      out.push({ ...a, valora: [...a.valora], companyId: s.companyId, contactId: s.contactId, canal: s.canal });
+    }
+    out.sort((a, b) => time(b.createdAt) - time(a.createdAt) || b.id - a.id);
+    return filter.limit ? out.slice(0, filter.limit) : out;
+  }
+
   // ── conversación del bot ──
 
   async getPortalConversation(phone: string): Promise<PortalConversation | null> {
@@ -982,5 +1112,39 @@ export class JsonPortalStore implements PortalStore {
     this.orderProfiles.set(companyId, row);
     this.changed();
     return { ...row, data: structuredClone(row.data) };
+  }
+
+  // ── crédito (C4) ──
+
+  async getCredit(companyId: number): Promise<CompanyCredit | null> {
+    const c = this.credit.get(companyId);
+    if (!c) return null;
+    const { pdfData: _pdf, ...row } = c;
+    return copy(row);
+  }
+
+  async getCreditPdf(companyId: number): Promise<CreditPdf | null> {
+    const c = this.credit.get(companyId);
+    return c?.pdfData && c.pdfName ? { name: c.pdfName, mime: c.pdfMime ?? "application/pdf", data: c.pdfData } : null;
+  }
+
+  async saveCredit(companyId: number, input: CreditSaveInput, userId: number | null, at: Date = new Date()): Promise<{ credit: CompanyCredit; entry: CreditHistoryEntry | null }> {
+    const stored = this.credit.get(companyId) ?? null;
+    const prev = await this.getCredit(companyId);
+    const { credit, pdf, cambios } = resolveCreditSave(companyId, prev, input, userId, at);
+    if (Object.keys(cambios).length === 0) return { credit: prev ?? copy(credit), entry: null };
+    const pdfData = pdf === undefined ? (stored?.pdfData ?? null) : (pdf?.data ?? null);
+    this.credit.set(companyId, { ...credit, pdfData });
+    const entry: CreditHistoryEntry = { id: ++this.creditHistorySeq, companyId, estadoAnterior: prev?.estado ?? null, estadoNuevo: credit.estado, cambios, userId, createdAt: at };
+    this.creditHistoryRows.push(entry);
+    this.changed();
+    return { credit: copy(credit), entry: structuredClone(entry) };
+  }
+
+  async creditHistory(companyId: number): Promise<CreditHistoryEntry[]> {
+    return this.creditHistoryRows
+      .filter((h) => h.companyId === companyId)
+      .map((h) => structuredClone(h))
+      .sort((a, b) => time(b.createdAt) - time(a.createdAt) || b.id - a.id);
   }
 }

@@ -624,7 +624,181 @@ export interface PurchaseOrderRepo {
   setOrderProfile(companyId: number, data: Record<string, unknown>): Promise<CompanyOrderProfile>;
 }
 
-export interface PortalStore extends CompanyRepo, FleetRepo, SalesRepo, UserRepo, ContactRepo, OpportunityRepo, ActivityRepo, AppointmentRepo, PortalConversationRepo, VocabularyRepo, PurchaseOrderRepo {
+// ── Crédito (fase C, bloque C4) ──
+
+/** Estados de la evaluación crediticia; transiciones válidas en src/lib/portal/credit/states.ts. */
+export type CreditEstado = "sin_evaluar" | "en_evaluacion" | "aprobado" | "observado" | "rechazado";
+
+/**
+ * Evaluación crediticia de una empresa (tabla company_credit, una fila por empresa). Sin fila = `sin_evaluar`.
+ * Sin el PDF del reporte (base64): ese solo lo trae getCreditPdf; aquí van su nombre y tipo.
+ */
+export interface CompanyCredit {
+  companyId: number;
+  estado: CreditEstado;
+  /** Calificación del reporte tal como la da la fuente ("A", "Normal", "CPP"...). */
+  calificacion: string | null;
+  /** Línea aprobada. */
+  linea: number | null;
+  /** "USD" | "PEN". */
+  moneda: string | null;
+  /** Plazo aprobado en días. */
+  plazoDias: number | null;
+  /** De dónde salió la evaluación ("manual", "Equifax (reporte en PDF)", ...). */
+  fuente: string | null;
+  consultadoAt: Date | null;
+  consultadoPor: number | null;
+  pdfName: string | null;
+  pdfMime: string | null;
+  notas: string | null;
+  updatedAt: Date;
+  updatedBy: number | null;
+}
+
+/** El PDF del reporte adjunto (data = bytes en base64). */
+export interface CreditPdf {
+  name: string;
+  mime: string;
+  data: string;
+}
+
+/**
+ * Lo que se guarda: la evaluación completa (los campos ausentes quedan null). `pdf`: undefined = se conserva el adjunto,
+ * null = se quita, objeto = se reemplaza.
+ */
+export interface CreditSaveInput {
+  estado: CreditEstado;
+  calificacion?: string | null;
+  linea?: number | null;
+  moneda?: string | null;
+  plazoDias?: number | null;
+  fuente?: string | null;
+  consultadoAt?: Date | null;
+  consultadoPor?: number | null;
+  notas?: string | null;
+  pdf?: CreditPdf | null;
+}
+
+/** Cambio de un campo en el historial: [antes, después] (fechas como texto ISO; el PDF por su nombre). */
+export type CreditChanges = Record<string, [unknown, unknown]>;
+
+export interface CreditHistoryEntry {
+  id: number;
+  companyId: number;
+  /** null si la empresa no tenía fila (equivale a sin_evaluar). */
+  estadoAnterior: CreditEstado | null;
+  estadoNuevo: CreditEstado;
+  cambios: CreditChanges;
+  userId: number | null;
+  createdAt: Date;
+}
+
+export interface CreditRepo {
+  /** null si la empresa nunca se evaluó (= sin_evaluar). Sin el PDF. */
+  getCredit(companyId: number): Promise<CompanyCredit | null>;
+  getCreditPdf(companyId: number): Promise<CreditPdf | null>;
+  /**
+   * Guarda la evaluación y, en la misma operación (transacción en Postgres), una fila de historial con los campos que
+   * cambiaron. Sin cambios = no escribe nada (`entry` null). No valida transiciones: eso lo hace src/lib/portal/credit.
+   */
+  saveCredit(companyId: number, input: CreditSaveInput, userId: number | null, at?: Date): Promise<{ credit: CompanyCredit; entry: CreditHistoryEntry | null }>;
+  /** Más reciente primero. */
+  creditHistory(companyId: number): Promise<CreditHistoryEntry[]>;
+}
+
+// ── Encuesta de satisfacción (fase C, bloque C3) ──
+
+/** pendiente = creada, aún no entregada; enviada = correo enviado o enlace entregado al vendedor; vencida = pasó expires_at o falló el envío. */
+export type SurveyEstado = "pendiente" | "enviada" | "respondida" | "vencida";
+/** email = correo directo al contacto; whatsapp_vendedor = el vendedor reenvía el enlace; manual = botón de la ficha (copiar enlace). */
+export type SurveyCanal = "email" | "whatsapp_vendedor" | "manual";
+
+/** Encuesta: solo se guarda el sha256 del token del enlace (/encuesta/<token>); el token no se puede recuperar. */
+export interface Survey {
+  id: number;
+  companyId: number;
+  contactId: number | null;
+  tokenHash: string;
+  estado: SurveyEstado;
+  canal: SurveyCanal;
+  createdBy: number | null;
+  enviadaAt: Date | null;
+  respondidaAt: Date | null;
+  expiresAt: Date;
+  createdAt: Date;
+}
+
+export interface SurveyInput {
+  companyId: number;
+  contactId?: number | null;
+  tokenHash: string;
+  canal: SurveyCanal;
+  createdBy?: number | null;
+  expiresAt: Date;
+  /** Por defecto ahora. */
+  createdAt?: Date;
+}
+
+export interface SurveyAnswerInput {
+  /** Recomendación 0–10. */
+  nps: number;
+  /** Ids de src/lib/portal/survey/questions.ts (hasta 3). */
+  valora: string[];
+  /** Satisfacción con la última entrega 1–5. */
+  satisfaccionEntrega: number | null;
+  mejorar: string | null;
+  /** ¿Podemos citar su experiencia como referencia? */
+  referencia: boolean | null;
+}
+
+export interface SurveyAnswer extends SurveyAnswerInput {
+  id: number;
+  surveyId: number;
+  createdAt: Date;
+}
+
+/** Respuesta con los datos de su encuesta (ficha y tablero). */
+export interface SurveyResponse extends SurveyAnswer {
+  companyId: number;
+  contactId: number | null;
+  canal: SurveyCanal;
+}
+
+export interface SurveyFilter {
+  companyId?: number;
+  /** Solo empresas cuyo dueño actual es este usuario. */
+  ownerUserId?: number;
+  /** created_at >= since (encuestas) / created_at de la respuesta >= since (respuestas). */
+  since?: Date;
+  limit?: number;
+}
+
+export type SurveyAnswerResult = { ok: true; survey: Survey; answer: SurveyAnswer } | { ok: false; reason: "no_existe" | "respondida" | "vencida" };
+
+export interface SurveyRepo {
+  /**
+   * Crea la encuesta (estado pendiente). Con `onlyIfNoneSince`, de forma atómica (bloqueo por empresa en Postgres) no crea
+   * nada y devuelve null si la empresa ya tiene una encuesta desde esa fecha que cuente (ver `surveyCounts`).
+   */
+  createSurvey(input: SurveyInput, opts?: { onlyIfNoneSince?: Date }): Promise<Survey | null>;
+  getSurvey(id: number): Promise<Survey | null>;
+  getSurveyByTokenHash(tokenHash: string): Promise<Survey | null>;
+  /** Más reciente primero. */
+  listSurveys(filter?: SurveyFilter): Promise<Survey[]>;
+  /** pendiente -> enviada (enviada_at = at, y canal si se pasa). null si no existe. */
+  markSurveySent(id: number, at: Date, canal?: SurveyCanal): Promise<Survey | null>;
+  /** pendiente/enviada -> vencida (no toca las respondidas). null si no existe. */
+  expireSurvey(id: number): Promise<Survey | null>;
+  /**
+   * Una sola respuesta, atómica: solo si la encuesta está pendiente/enviada y no venció; guarda la respuesta y la marca
+   * respondida en la misma operación (transacción en Postgres). Si no, dice por qué.
+   */
+  answerSurvey(surveyId: number, answer: SurveyAnswerInput, now: Date): Promise<SurveyAnswerResult>;
+  /** Respuestas (más reciente primero) con su empresa. */
+  listSurveyResponses(filter?: SurveyFilter): Promise<SurveyResponse[]>;
+}
+
+export interface PortalStore extends CompanyRepo, FleetRepo, SalesRepo, UserRepo, ContactRepo, OpportunityRepo, ActivityRepo, AppointmentRepo, PortalConversationRepo, VocabularyRepo, PurchaseOrderRepo, CreditRepo, SurveyRepo {
   /** Escribe lo pendiente (JSON); no-op en Postgres. Los CLI la llaman antes de salir. */
   flush(): Promise<void>;
   close(): Promise<void>;

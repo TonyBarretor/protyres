@@ -1,0 +1,148 @@
+/* Encuesta pública 360 Tyres: mismos colores que el portal (portal.css), pensada para celular. Todo cuelga de .sv-shell. */
+
+body:has(.sv-shell) {
+  margin: 0 !important;
+  background: #f4f5f7;
+}
+
+.sv-shell {
+  --bg: #f4f5f7;
+  --surface: #ffffff;
+  --ink: #16181c;
+  --muted: #5f6570;
+  --line: #e2e4e9;
+  --accent: #f5b400;
+  --accent-soft: #fff4d1;
+  --accent-ink: #3d2d00;
+  --danger: #b42318;
+  --ok: #067647;
+  --font-body: var(--font-inter), system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-title: var(--font-space-grotesk), var(--font-inter), system-ui, sans-serif;
+
+  min-height: 100vh;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--font-body);
+  font-size: 16px;
+  line-height: 1.45;
+}
+.sv-shell *,
+.sv-shell *::before,
+.sv-shell *::after { box-sizing: border-box; }
+
+.sv-top { background: var(--ink); color: #fff; }
+.sv-top-inner { max-width: 640px; margin: 0 auto; padding: 0.75rem 1rem; }
+.sv-brand { font-family: var(--font-title); font-weight: 700; font-size: 1.1rem; }
+.sv-brand span { color: var(--accent); }
+
+.sv-main { max-width: 640px; margin: 0 auto; padding: 1rem 1rem 3rem; }
+.sv-shell h1 { font-family: var(--font-title); font-size: 1.35rem; line-height: 1.2; margin: 0 0 0.35rem; letter-spacing: -0.01em; }
+.sv-shell p { margin: 0 0 0.5rem; }
+.sv-muted { color: var(--muted); }
+.sv-small { font-size: 0.85rem; }
+
+.sv-card {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 1rem;
+  margin-bottom: 0.9rem;
+}
+.sv-company { font-weight: 600; }
+
+.sv-q { border: 0; margin: 0; padding: 0; min-width: 0; }
+.sv-q legend, .sv-q .sv-label {
+  font-weight: 600;
+  padding: 0;
+  margin-bottom: 0.6rem;
+  display: block;
+}
+.sv-num {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.5rem;
+  height: 1.5rem;
+  border-radius: 50%;
+  background: var(--accent);
+  color: var(--ink);
+  font-size: 0.8rem;
+  font-weight: 700;
+  margin-right: 0.4rem;
+}
+
+/* escala 0–10 y 1–5: botones grandes para el dedo */
+.sv-scale { display: grid; grid-template-columns: repeat(6, 1fr); gap: 0.4rem; }
+.sv-scale-5 { grid-template-columns: repeat(5, 1fr); }
+@media (min-width: 520px) { .sv-scale { grid-template-columns: repeat(11, 1fr); } .sv-scale-5 { grid-template-columns: repeat(5, 1fr); } }
+.sv-opt { position: relative; }
+.sv-opt input { position: absolute; opacity: 0; inset: 0; width: 100%; height: 100%; margin: 0; cursor: pointer; }
+.sv-opt span {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 44px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  font-weight: 600;
+  text-align: center;
+  padding: 0.3rem;
+}
+.sv-opt input:checked + span { background: var(--accent); border-color: var(--accent); }
+.sv-opt input:focus-visible + span { outline: 2px solid var(--ink); outline-offset: 1px; }
+.sv-scale-ends { display: flex; justify-content: space-between; font-size: 0.8rem; color: var(--muted); margin-top: 0.35rem; }
+
+.sv-checks { display: grid; grid-template-columns: 1fr; gap: 0.4rem; }
+@media (min-width: 520px) { .sv-checks { grid-template-columns: 1fr 1fr; } }
+.sv-check {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  min-height: 44px;
+  padding: 0.4rem 0.7rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  cursor: pointer;
+}
+.sv-check input { width: 1.15rem; height: 1.15rem; accent-color: var(--ink); margin: 0; flex: none; }
+.sv-check:has(input:checked) { border-color: var(--accent); background: var(--accent-soft); }
+.sv-check:has(input:disabled) { opacity: 0.55; cursor: not-allowed; }
+
+.sv-yesno { display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; }
+
+.sv-shell textarea {
+  font: inherit;
+  width: 100%;
+  min-height: 90px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0.55rem 0.65rem;
+  color: var(--ink);
+  background: var(--surface);
+}
+.sv-shell textarea:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+.sv-submit {
+  width: 100%;
+  min-height: 50px;
+  border: 0;
+  border-radius: 10px;
+  background: var(--accent);
+  color: var(--ink);
+  font: inherit;
+  font-weight: 700;
+  font-size: 1.05rem;
+  cursor: pointer;
+}
+.sv-submit:hover { background: #e6a900; }
+.sv-submit:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+
+.sv-notice { padding: 0.7rem 0.85rem; border-radius: 8px; margin-bottom: 0.9rem; border: 1px solid #f3dc8a; background: var(--accent-soft); color: var(--accent-ink); }
+.sv-notice.sv-error { background: #fef3f2; border-color: #fecdca; color: var(--danger); }
+.sv-notice.sv-ok { background: #ecfdf3; border-color: #abefc6; color: var(--ok); }
+.sv-notice ul { margin: 0.3rem 0 0; padding-left: 1.1rem; }
+.sv-done { text-align: center; padding: 2rem 1rem; }
+.sv-done-mark { font-size: 2.4rem; line-height: 1; color: var(--ok); margin-bottom: 0.5rem; }
+.sv-foot { text-align: center; font-size: 0.8rem; color: var(--muted); margin-top: 1.5rem; }

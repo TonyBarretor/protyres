@@ -60,6 +60,7 @@ import { findCompanies, resolveCompany, shortName } from "../companies";
 import { registerCompanyAction, registerPendingDrop, registerPendingHandler, registerPortalCommand, type PortalContext } from "../registry";
 import { downloader, transcribeVoice } from "../report";
 import { clearPending, parkedOf, setParked, setPending, type PendingStep } from "../state";
+import { creditWarning } from "../../credit/warning";
 
 export const OC_STEP = "oc_pedido";
 export const ACT_OC = "oc";
@@ -340,6 +341,8 @@ async function startOrder(ctx: PortalContext, company: Company, args: OcArgs): P
   const head = [`🧾 OC${args.numero ? ` *${args.numero}*` : ""} de *${who}* registrada${file ? ` con el adjunto (${file.fileName})` : ""}.`];
   if (args.media && !file) head.push("⚠️ No pude descargar el adjunto; envíamelo de nuevo en los próximos 10 min.");
   else if (!file) head.push("📎 Si tienes el PDF o la foto de la OC, envíamelo en los próximos 10 min.");
+  const credit = await creditWarning(ctx.store, company); // aviso (C4), no bloquea la OC
+  if (credit) head.push(credit);
 
   const s: OcStep = {
     kind: OC_STEP,

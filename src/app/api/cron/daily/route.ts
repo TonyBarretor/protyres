@@ -10,7 +10,7 @@ export const maxDuration = 60;
 
 /**
  * Cron diario del portal (vercel.json: "0 13 * * *" = 8:00 de Lima; el plan Hobby permite uno al día). Corre los trabajos
- * de src/lib/portal/notify/jobs.ts (resumen diario; la fase C añade ahí las encuestas). Vercel manda
+ * de src/lib/portal/notify/jobs.ts (resumen diario e invitación a la encuesta con SURVEY_AUTO). Vercel manda
  * `Authorization: Bearer $CRON_SECRET`. Prueba sin enviar nada:
  *   curl -H "Authorization: Bearer $CRON_SECRET" "http://localhost:3000/api/cron/daily?dry=1"
  */

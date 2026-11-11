@@ -2,13 +2,12 @@
  * Trabajos del cron diario (/api/cron/daily, 8:00 de Lima). El plan Hobby de Vercel permite un cron una vez al día, así
  * que todo lo diario va en esta lista y corre en la misma llamada, en orden; si uno falla, los demás siguen.
  *
- * Punto de extensión (fase C): añadir aquí la invitación de encuestas, p. ej.
- *   { name: "encuestas", run: (deps) => runSurveyInvites(deps) }
- * Cada trabajo recibe las mismas dependencias y devuelve un informe JSON (sale tal cual en la respuesta de la ruta).
+ * Punto de extensión: cada trabajo recibe las mismas dependencias y devuelve un informe JSON (sale tal cual en la respuesta de la ruta).
  * Con `dryRun` no debe enviar ni escribir nada.
  */
 import type { PortalStore } from "../store/types";
 import type { WhatsAppClient } from "../../whatsapp/client";
+import { runSurveyInvites } from "../survey/invite";
 import { runDailyDigest } from "./send";
 
 export interface DailyJobDeps {
@@ -28,7 +27,8 @@ export interface DailyJob {
 
 export const DAILY_JOBS: DailyJob[] = [
   { name: "resumen", run: (d) => runDailyDigest({ store: d.store, client: d.client, now: d.now, dryRun: d.dryRun, env: d.env, log: d.log }) },
-  // fase C: { name: "encuestas", run: (d) => ... },
+  // invitación a la encuesta de satisfacción: solo con SURVEY_AUTO=1 (si no, informa cuántas serían sin crear ni enviar)
+  { name: "encuestas", run: (d) => runSurveyInvites({ store: d.store, client: d.client, now: d.now, dryRun: d.dryRun, env: d.env, log: d.log }) },
 ];
 
 export type DailyJobsReport = Record<string, { ok: true; report: unknown } | { ok: false; error: string }>;

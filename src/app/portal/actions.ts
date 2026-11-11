@@ -7,10 +7,12 @@
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { canEditCompany } from "@/lib/portal/auth/permissions";
+import { creditEstadoLabel, MAX_CREDIT_PDF_BYTES, parseCreditForm, planCreditUpdate, readCreditPdf } from "@/lib/portal/credit";
+import { setCompanyCreditTerms } from "@/lib/portal/quotes/link";
 import { requireUser } from "@/lib/portal/auth/session";
 import { isStageId, stageLabel } from "@/lib/portal/stages";
 import { getPortalStore } from "@/lib/portal/store";
-import type { PortalStore, PortalUser } from "@/lib/portal/store/types";
+import type { CreditPdf, PortalStore, PortalUser } from "@/lib/portal/store/types";
 import { formId, formText, isTemperatura, parseContactForm, temperaturaLabel, type FormLike } from "@/lib/portal/ui/labels";
 import { canAssignSelf, canEditOpportunity, canReassign } from "@/lib/portal/ui/permissions";
 import { parseLimaLocal } from "@/lib/portal/ui/time";
@@ -179,4 +181,41 @@ export async function setNextAction(formData: FormData): Promise<void> {
   await store.updateOpportunity(opp.id, { proximaAccion: texto || null, proximaAccionAt: at });
   revalidatePath("/portal", "layout");
   done(back, "aviso", texto ? "Próxima acción guardada." : "Próxima acción borrada.");
+}
+
+// ── crédito (C4) ──
+
+/**
+ * Guardar la evaluación crediticia (bloque Crédito de la ficha): vendedor dueño o supervisor/admin. La decisión
+ * (permiso, transición válida, validación por estado, PDF, plazo habitual) está en planCreditUpdate (credit/update.ts).
+ * Store: fila + historial en una sola operación. Si se aprueba con "actualizar plazo habitual", fija credit_terms_days.
+ */
+export async function saveCompanyCredit(formData: FormData): Promise<void> {
+  const { user, store, company } = await loadCompany(formData);
+  const back = companyPath(company.id);
+  if (!canEditCompany(user, company)) done(back, "error", "Solo el dueño de la empresa (o supervisor) puede editar el crédito.");
+  const parsed = parseCreditForm(formData);
+  if (!parsed.ok) done(back, "error", parsed.error);
+  const file = formData.get("pdf");
+  let pdf: CreditPdf | null = null;
+  if (file instanceof File && file.size > 0) {
+    if (file.size > MAX_CREDIT_PDF_BYTES) done(back, "error", "El PDF pesa más de 4 MB.");
+    const read = readCreditPdf(file, new Uint8Array(await file.arrayBuffer()));
+    if (!read.ok) done(back, "error", read.error);
+    pdf = read.data;
+  }
+  const prev = await store.getCredit(company.id);
+  const plan = planCreditUpdate({ user, company, prev, form: parsed.data, pdf, now: new Date() });
+  if (!plan.ok) done(back, "error", plan.error);
+  const { entry } = await store.saveCredit(company.id, plan.input, user.id);
+  if (plan.termsDays !== null) {
+    await setCompanyCreditTerms(store, company.id, plan.termsDays);
+    await log(store, user, company.id, `Plazo habitual: ${company.creditTermsDays ?? "—"} → ${plan.termsDays} días (crédito aprobado).`, null, "credito");
+  }
+  if (!entry && plan.termsDays === null) done(back, "aviso", "Crédito sin cambios.");
+  if (entry && entry.estadoAnterior !== entry.estadoNuevo) {
+    await log(store, user, company.id, `Crédito: ${creditEstadoLabel(entry.estadoAnterior)} → ${creditEstadoLabel(entry.estadoNuevo)}.`, null, "credito");
+  }
+  revalidatePath(back);
+  done(back, "aviso", plan.termsDays !== null ? `Crédito guardado. Plazo habitual: ${plan.termsDays} días.` : "Crédito guardado.");
 }

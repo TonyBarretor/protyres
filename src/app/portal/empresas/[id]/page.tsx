@@ -17,6 +17,7 @@ import { formatLimaDateTime, toLimaLocalInput } from "@/lib/portal/ui/time";
 import { addContact, assignCompany, deleteContact, moveOpportunityStage, releaseCompany, setNextAction, setTemperatura, updateContact } from "../../actions";
 import { DemoTag, Flash, InferidaTag, MTC_LEGEND, MtcTag, TempChip } from "../../_components/bits";
 import { CreditBlock } from "../../_components/CreditBlock";
+import { SurveyBlock } from "./SurveyBlock";
 
 type Props = { params: Promise<{ id: string }>; searchParams: Promise<Record<string, string | string[] | undefined>> };
 
@@ -256,6 +257,8 @@ export default async function EmpresaPage({ params, searchParams }: Props) {
             )}
           </section>
 
+          <SurveyBlock company={company} user={user} searchParams={sp} />
+
           <section className="pt-card" aria-labelledby="actividad-title">
             <h2 id="actividad-title">Actividad</h2>
             {activities.length === 0 ? (
@@ -422,7 +425,7 @@ export default async function EmpresaPage({ params, searchParams }: Props) {
             )}
           </section>
 
-          <CreditBlock company={company} />
+          <CreditBlock company={company} user={user} />
         </div>
       </div>
     </div>

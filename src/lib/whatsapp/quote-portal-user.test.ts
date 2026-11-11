@@ -33,7 +33,11 @@ const RUC = "20999000011";
 const RAZON = "TRANSPORTES ANDES DEL PERU S.A.C.";
 
 const PLAZO_NOTE = `📒 plazo 45 días (condiciones de *${RAZON}* en el portal)`;
-const LINK_MSG = `🔗 Cotización *0001* enlazada a *${RAZON}* en el portal (Prospecto).`;
+/**
+ * Mensaje del portal tras enlazar (no es del cotizador). Desde C4 lleva en una segunda línea el aviso de crédito: la
+ * empresa no tiene fila de crédito, así que cuenta como "sin evaluar". Los mensajes del cotizador no cambian.
+ */
+const LINK_MSG = `🔗 Cotización *0001* enlazada a *${RAZON}* en el portal (Prospecto).\n⚠️ Crédito de *TRANSPORTES ANDES DEL PERU*: sin evaluar. Antes de dar plazo, evalúalo en la ficha del portal.`;
 
 interface Recorded {
   kind: string;

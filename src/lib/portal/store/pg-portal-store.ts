@@ -60,6 +60,12 @@ import type {
   VocabularyInput,
 } from "./types";
 
+import { resolveCreditSave } from "../credit/changes";
+import type { CompanyCredit, CreditChanges, CreditEstado, CreditHistoryEntry, CreditPdf, CreditSaveInput } from "./types";
+
+import { valoraList } from "./survey-shared";
+import type { Survey, SurveyAnswer, SurveyAnswerInput, SurveyAnswerResult, SurveyCanal, SurveyEstado, SurveyFilter, SurveyInput, SurveyResponse } from "./types";
+
 type Sql = ReturnType<typeof postgres>;
 type Row = Record<string, unknown>;
 type Fragment = postgres.PendingQuery<postgres.Row[]>;
@@ -839,6 +845,94 @@ export class PgPortalStore implements PortalStore {
       on conflict (phone) do update set state = excluded.state, updated_at = now()`;
   }
 
+  // ── encuesta de satisfacción (C3) ──
+
+  async createSurvey(input: SurveyInput, opts: { onlyIfNoneSince?: Date } = {}): Promise<Survey | null> {
+    const since = opts.onlyIfNoneSince;
+    return this.sql.begin(async (tx) => {
+      if (since) {
+        // dos crons a la vez no crean dos encuestas para la misma empresa: bloqueo por empresa hasta el commit
+        await tx`select pg_advisory_xact_lock(hashtext(${`surveys:${input.companyId}`}))`;
+        const [dup] = await tx`
+          select id from surveys where company_id = ${input.companyId} and created_at >= ${since}
+            and (estado <> 'vencida' or enviada_at is not null) limit 1`;
+        if (dup) return null;
+      }
+      const [r] = await tx`
+        insert into surveys (company_id, contact_id, token_hash, estado, canal, created_by, expires_at, created_at)
+        values (${input.companyId}, ${input.contactId ?? null}, ${input.tokenHash}, 'pendiente', ${input.canal}, ${input.createdBy ?? null},
+          ${input.expiresAt}, ${input.createdAt ?? new Date()})
+        returning *`;
+      return toSurvey(r);
+    }) as Promise<Survey | null>;
+  }
+
+  async getSurvey(id: number): Promise<Survey | null> {
+    const [r] = await this.sql`select * from surveys where id = ${id}`;
+    return r ? toSurvey(r) : null;
+  }
+
+  async getSurveyByTokenHash(tokenHash: string): Promise<Survey | null> {
+    const [r] = await this.sql`select * from surveys where token_hash = ${tokenHash}`;
+    return r ? toSurvey(r) : null;
+  }
+
+  private surveyConds(filter: SurveyFilter, dateCol: Fragment): Fragment[] {
+    const sql = this.sql;
+    const conds: Fragment[] = [];
+    if (filter.companyId !== undefined) conds.push(sql`s.company_id = ${filter.companyId}`);
+    if (filter.ownerUserId !== undefined) conds.push(sql`s.company_id in (select id from companies where owner_user_id = ${filter.ownerUserId})`);
+    if (filter.since) conds.push(sql`${dateCol} >= ${filter.since}`);
+    return conds;
+  }
+
+  async listSurveys(filter: SurveyFilter = {}): Promise<Survey[]> {
+    const sql = this.sql;
+    const conds = this.surveyConds(filter, sql`s.created_at`);
+    const rows = await sql`
+      select s.* from surveys s where ${where(sql, conds)} order by s.created_at desc, s.id desc
+      ${filter.limit ? sql`limit ${filter.limit}` : sql``}`;
+    return rows.map(toSurvey);
+  }
+
+  async markSurveySent(id: number, at: Date, canal?: SurveyCanal): Promise<Survey | null> {
+    const [r] = await this.sql`
+      update surveys set estado = 'enviada', enviada_at = ${at}, canal = coalesce(${canal ?? null}, canal)
+      where id = ${id} and estado = 'pendiente' returning *`;
+    return r ? toSurvey(r) : this.getSurvey(id);
+  }
+
+  async expireSurvey(id: number): Promise<Survey | null> {
+    const [r] = await this.sql`update surveys set estado = 'vencida' where id = ${id} and estado in ('pendiente', 'enviada') returning *`;
+    return r ? toSurvey(r) : this.getSurvey(id);
+  }
+
+  async answerSurvey(surveyId: number, answer: SurveyAnswerInput, now: Date): Promise<SurveyAnswerResult> {
+    return this.sql.begin(async (tx) => {
+      const [s] = await tx`select * from surveys where id = ${surveyId} for update`;
+      if (!s) return { ok: false, reason: "no_existe" };
+      if (s.estado === "respondida") return { ok: false, reason: "respondida" };
+      if (s.estado === "vencida" || date(s.expires_at)!.getTime() <= now.getTime()) return { ok: false, reason: "vencida" };
+      const [a] = await tx`
+        insert into survey_answers (survey_id, nps, valora, satisfaccion_entrega, mejorar, referencia, created_at)
+        values (${surveyId}, ${answer.nps}, ${tx.json(answer.valora)}::jsonb, ${answer.satisfaccionEntrega}, ${answer.mejorar}, ${answer.referencia}, ${now})
+        on conflict (survey_id) do nothing returning *`;
+      if (!a) return { ok: false, reason: "respondida" };
+      const [u] = await tx`update surveys set estado = 'respondida', respondida_at = ${now} where id = ${surveyId} returning *`;
+      return { ok: true, survey: toSurvey(u), answer: toSurveyAnswer(a) };
+    }) as Promise<SurveyAnswerResult>;
+  }
+
+  async listSurveyResponses(filter: SurveyFilter = {}): Promise<SurveyResponse[]> {
+    const sql = this.sql;
+    const conds = this.surveyConds(filter, sql`a.created_at`);
+    const rows = await sql`
+      select a.*, s.company_id, s.contact_id, s.canal from survey_answers a join surveys s on s.id = a.survey_id
+      where ${where(sql, conds)} order by a.created_at desc, a.id desc
+      ${filter.limit ? sql`limit ${filter.limit}` : sql``}`;
+    return rows.map((r) => ({ ...toSurveyAnswer(r), companyId: Number(r.company_id), contactId: num(r.contact_id), canal: r.canal as SurveyCanal }));
+  }
+
   // ── vocabulario aprendido ──
 
   async listVocabulary(): Promise<VocabularyEntry[]> {
@@ -908,6 +1002,115 @@ export class PgPortalStore implements PortalStore {
       returning *`;
     return toOrderProfile(r);
   }
+
+  // ── crédito (C4) ──
+
+  async getCredit(companyId: number): Promise<CompanyCredit | null> {
+    const [r] = await this.sql`select ${this.sql(CREDIT_COLS)} from company_credit where company_id = ${companyId}`;
+    return r ? toCredit(r) : null;
+  }
+
+  async getCreditPdf(companyId: number): Promise<CreditPdf | null> {
+    const [r] = await this.sql`select pdf_name, pdf_mime, pdf_data from company_credit where company_id = ${companyId}`;
+    return r?.pdf_data && r.pdf_name ? { name: String(r.pdf_name), mime: str(r.pdf_mime) ?? "application/pdf", data: String(r.pdf_data) } : null;
+  }
+
+  async saveCredit(companyId: number, input: CreditSaveInput, userId: number | null, at: Date = new Date()): Promise<{ credit: CompanyCredit; entry: CreditHistoryEntry | null }> {
+    return this.sql.begin(async (tx) => {
+      // la fila de la empresa queda bloqueada hasta el commit: dos guardados a la vez no pisan el historial
+      const [p] = await tx`select ${tx(CREDIT_COLS)} from company_credit where company_id = ${companyId} for update`;
+      const prev = p ? toCredit(p) : null;
+      const { credit: c, pdf, cambios } = resolveCreditSave(companyId, prev, input, userId, at);
+      if (Object.keys(cambios).length === 0) return { credit: prev ?? c, entry: null };
+      const keepPdf = pdf === undefined;
+      const pdfData = pdf?.data ?? null;
+      const [r] = await tx`
+        insert into company_credit (company_id, estado, calificacion, linea, moneda, plazo_dias, fuente, consultado_at, consultado_por, pdf_name, pdf_mime, pdf_data, notas, updated_at, updated_by)
+        values (${companyId}, ${c.estado}, ${c.calificacion}, ${c.linea}, ${c.moneda}, ${c.plazoDias}, ${c.fuente}, ${c.consultadoAt}, ${c.consultadoPor},
+          ${c.pdfName}, ${c.pdfMime}, ${pdfData}, ${c.notas}, ${at}, ${userId})
+        on conflict (company_id) do update set
+          estado = excluded.estado, calificacion = excluded.calificacion, linea = excluded.linea, moneda = excluded.moneda,
+          plazo_dias = excluded.plazo_dias, fuente = excluded.fuente, consultado_at = excluded.consultado_at, consultado_por = excluded.consultado_por,
+          pdf_name = excluded.pdf_name, pdf_mime = excluded.pdf_mime,
+          pdf_data = ${keepPdf ? tx`company_credit.pdf_data` : tx`excluded.pdf_data`},
+          notas = excluded.notas, updated_at = excluded.updated_at, updated_by = excluded.updated_by
+        returning ${tx(CREDIT_COLS)}`;
+      const [h] = await tx`
+        insert into company_credit_history (company_id, estado_anterior, estado_nuevo, cambios, user_id, created_at)
+        values (${companyId}, ${prev?.estado ?? null}, ${c.estado}, ${tx.json(cambios as postgres.JSONValue)}::jsonb, ${userId}, ${at})
+        returning *`;
+      return { credit: toCredit(r), entry: toCreditHistory(h) };
+    });
+  }
+
+  async creditHistory(companyId: number): Promise<CreditHistoryEntry[]> {
+    const rows = await this.sql`select * from company_credit_history where company_id = ${companyId} order by created_at desc, id desc`;
+    return rows.map(toCreditHistory);
+  }
+}
+
+/** Columnas de company_credit sin pdf_data (el PDF en base64 solo lo lee getCreditPdf). */
+const CREDIT_COLS = ["company_id", "estado", "calificacion", "linea", "moneda", "plazo_dias", "fuente", "consultado_at", "consultado_por", "pdf_name", "pdf_mime", "notas", "updated_at", "updated_by"];
+
+function toCredit(r: Row): CompanyCredit {
+  return {
+    companyId: Number(r.company_id),
+    estado: String(r.estado ?? "sin_evaluar") as CreditEstado,
+    calificacion: str(r.calificacion),
+    linea: num(r.linea),
+    moneda: str(r.moneda),
+    plazoDias: num(r.plazo_dias),
+    fuente: str(r.fuente),
+    consultadoAt: date(r.consultado_at),
+    consultadoPor: num(r.consultado_por),
+    pdfName: str(r.pdf_name),
+    pdfMime: str(r.pdf_mime),
+    notas: str(r.notas),
+    updatedAt: date(r.updated_at)!,
+    updatedBy: num(r.updated_by),
+  };
+}
+
+function toCreditHistory(r: Row): CreditHistoryEntry {
+  const cambios = typeof r.cambios === "string" ? (JSON.parse(r.cambios) as CreditChanges) : ((r.cambios as CreditChanges | null) ?? {});
+  return {
+    id: Number(r.id),
+    companyId: Number(r.company_id),
+    estadoAnterior: (str(r.estado_anterior) as CreditEstado | null) ?? null,
+    estadoNuevo: String(r.estado_nuevo) as CreditEstado,
+    cambios,
+    userId: num(r.user_id),
+    createdAt: date(r.created_at)!,
+  };
+}
+
+function toSurvey(r: Row): Survey {
+  return {
+    id: Number(r.id),
+    companyId: Number(r.company_id),
+    contactId: num(r.contact_id),
+    tokenHash: String(r.token_hash),
+    estado: r.estado as SurveyEstado,
+    canal: r.canal as SurveyCanal,
+    createdBy: num(r.created_by),
+    enviadaAt: date(r.enviada_at),
+    respondidaAt: date(r.respondida_at),
+    expiresAt: date(r.expires_at)!,
+    createdAt: date(r.created_at)!,
+  };
+}
+
+function toSurveyAnswer(r: Row): SurveyAnswer {
+  return {
+    id: Number(r.id),
+    surveyId: Number(r.survey_id),
+    nps: Number(r.nps),
+    valora: valoraList(r.valora),
+    satisfaccionEntrega: num(r.satisfaccion_entrega),
+    mejorar: str(r.mejorar),
+    referencia: r.referencia === null || r.referencia === undefined ? null : Boolean(r.referencia),
+    createdAt: date(r.created_at)!,
+  };
 }
 
 function toPurchaseOrder(r: Row): PurchaseOrder {

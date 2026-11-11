@@ -353,3 +353,12 @@ body:has(.pt-shell) {
   .pt-board { grid-auto-flow: row; grid-auto-columns: auto; grid-template-columns: minmax(0, 1fr); overflow-x: visible; }
   .pt-kpi-value { font-size: 1.35rem; }
 }
+
+/* ── Crédito (C4) ── */
+.pt-credit-dl { display: grid; grid-template-columns: auto 1fr; gap: 0.25rem 0.8rem; margin: 0; }
+.pt-credit-dl dt { color: var(--muted); }
+.pt-credit-dl dd { margin: 0; overflow-wrap: anywhere; }
+.pt-credit-en_evaluacion { background: #eef4ff; color: #1d4ed8; }
+.pt-credit-aprobado { background: #ecfdf3; color: var(--ok); }
+.pt-credit-observado { background: #fff6e5; color: #9a5b00; }
+.pt-credit-rechazado { background: #fef3f2; color: var(--danger); }

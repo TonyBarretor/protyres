@@ -322,7 +322,7 @@ carga dos veces. `.vercelignore` evita que `vercel deploy` suba el padrón y los
 
 `vercel.json` programa `GET /api/cron/daily` a las **8:00 de Lima** (`0 13 * * *`: los crons de Vercel van en UTC; Lima es
 UTC−5 todo el año). El plan Hobby solo permite crons **una vez al día** (y la hora exacta puede variar dentro de esa hora),
-así que todo lo diario corre en esa llamada (`src/lib/portal/notify/jobs.ts`; la fase C añade ahí las encuestas).
+así que todo lo diario corre en esa llamada (`src/lib/portal/notify/jobs.ts`: resumen diario y encuestas).
 
 - Exige `CRON_SECRET` (Vercel lo manda como `Authorization: Bearer …`): sin la variable responde 500, con otro valor 401.
 - A cada vendedor y supervisor activo le manda por WhatsApp sus citas de hoy, acciones vencidas y de hoy, y las
@@ -334,6 +334,44 @@ así que todo lo diario corre en esa llamada (`src/lib/portal/notify/jobs.ts`; l
   después (llega como estado al webhook), no se detecta.
 - Probar sin enviar nada (devuelve los textos): `curl -H "Authorization: Bearer $CRON_SECRET" "http://localhost:3000/api/cron/daily?dry=1"`.
 - En el simulador: línea `@cron` en el guion (o `@cron ventana` para simular el rechazo por la ventana de 24 h).
+
+### Crédito
+
+Bloque "Crédito" de la ficha: estado (`sin evaluar` → `en evaluación` → `aprobado` / `observado` / `rechazado`; la
+máquina de transiciones está documentada en `src/lib/portal/credit/states.ts`), calificación, línea y plazo, fuente,
+fecha y autor de la consulta, PDF del reporte (hasta 4 MB; lo descarga solo el dueño o supervisor) y notas, con
+historial (`company_credit`, `company_credit_history`; `npm run db:migrate`). Al cotizar a una empresa sin evaluar o
+rechazada, el mensaje de enlace del portal y el comando `oc` suman un aviso (los mensajes del cotizador no cambian).
+
+La consulta al buró es hoy **manual** (`CREDIT_BUREAU_PROVIDER=manual`, por defecto): alguien consulta la central de
+riesgo y adjunta el PDF. `equifax` es solo un esqueleto (`src/lib/portal/credit/provider.ts`) que responde
+"Equifax/Infocorp no configurado" y no hace llamadas. Para implementarlo hará falta, y no está en el repo:
+
+- el contrato con Equifax/Infocorp y sus credenciales (para el ambiente de pruebas y el de producción);
+- la documentación oficial de su API o servicio (cómo se autentica, qué se consulta por RUC, qué devuelve): no se
+  asumió ningún endpoint ni formato;
+- acceso a un ambiente de pruebas para validar antes de consultar empresas reales;
+- los términos de uso de los datos (Ley 29733 de protección de datos personales y lo que diga el contrato: finalidad,
+  conservación del reporte, consentimiento cuando aplique);
+- quién está autorizado a consultar (roles del portal) y si cada consulta tiene costo.
+
+### Encuesta de satisfacción
+
+Página pública `/encuesta/<token>` (sin sesión, fuera de `/portal`, `noindex`, sirve sin JavaScript): 5 preguntas
+(recomendación 0–10, qué valora más —hasta 3—, satisfacción con la última entrega 1–5, qué mejorar, si autoriza citarla
+como referencia). El token es aleatorio de 32 bytes y en la base solo va su sha256 (`surveys`, `survey_answers`;
+`npm run db:migrate`); se responde una sola vez y el enlace vence a los `surveys.expiresDays` días (`config/portal.json`).
+Resultados en la ficha (sección "Encuestas", con NPS = % promotores 9–10 − % detractores 0–6) y en el tablero.
+
+- **Manual**: botón "Enviar encuesta" en la ficha (dueño o supervisor), con vista previa antes de confirmar. Con contacto
+  con correo y Resend configurado se envía el correo; si no, muestra el enlace y el texto para reenviarlo por WhatsApp.
+- **Automática** (trabajo `encuestas` del cron diario), solo con `SURVEY_AUTO=1` (apagada por defecto: sin ella, o con
+  `?dry=1`, solo informa qué empresas serían). Elige empresas cliente cuya última venta real (las demo no cuentan) fue
+  hace `surveys.afterSaleDays` días (con `windowDays` de tolerancia) y sin encuesta en los últimos `cooldownMonths` meses;
+  correr el cron dos veces no crea dos encuestas. Envía el correo si hay contacto con correo y Resend tiene remitente
+  verificado (`RESEND_API_KEY` + `EMAIL_FROM` propio, no `@example.com` ni `@resend.dev`; respeta `EMAIL_REDIRECT_TO`).
+  Si no, deja una tarea al vendedor dueño (actividad y próxima acción de su oportunidad si no tenía una) y le manda el
+  enlace por WhatsApp para que lo reenvíe.
 
 ## Límites conocidos del piloto
 

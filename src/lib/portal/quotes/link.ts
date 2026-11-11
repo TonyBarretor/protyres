@@ -7,6 +7,8 @@
  *    estado del portal (clave `linkQuote`, no `pending`: no pisa otra pregunta del bot y sobrevive al comando).
  *  - `enlazar` -> confirmQuoteLink. `reenviada 032` -> markQuoteForwarded. `enviar` (correo) -> onQuoteSentToPortal.
  *    Enviada = oportunidad en "Cotización enviada" (solo hacia adelante) + actividad `cotizacion_enviada`.
+ *  - Al enlazar (directo o con *enlazar*), si el crédito de la empresa está sin evaluar (o no tiene fila) o rechazado, el
+ *    mismo mensaje del portal suma la línea "⚠️ Crédito de … sin evaluar" / "⛔ Crédito RECHAZADO …" (credit/warning.ts).
  *  - startRequest -> portalCreditTerm: plazo de crédito de la empresa (companies.credit_terms_days) cuando el pedido no
  *    trae plazo y la memoria del cliente no dio otro, en lugar del plazo de config/pilot.json.
  *
@@ -14,6 +16,7 @@
  * registra en el log) y el cotizador sigue igual.
  */
 import { companyKey, findCompanies, shortName } from "../bot/companies";
+import { creditWarning } from "../credit/warning";
 import type { PortalContext } from "../bot/registry";
 import { isExpired, type PendingStep } from "../bot/state";
 import { stageIndex, stageLabel } from "../stages";
@@ -191,6 +194,11 @@ async function companyByName(store: PortalStore, name: string | undefined): Prom
 
 // ── enlazar ──
 
+/** Mensaje de enlace del portal + aviso de crédito (empresa sin evaluar o rechazada) en una línea aparte del mismo mensaje. */
+function withCredit(msg: string, warning: string | null): string {
+  return warning ? `${msg}\n${warning}` : msg;
+}
+
 interface LinkInput {
   quoteNumber: string;
   total: number;
@@ -249,7 +257,7 @@ export async function linkQuoteToPortal(input: LinkQuoteInput): Promise<LinkOutc
     const direct = byRuc ?? before;
     if (direct) {
       const opp = await performLink(store, user, direct, { ...base, via: byRuc ? "ruc" : "cliente" }, now);
-      await input.reply(`🔗 Cotización *${short}* enlazada a *${direct.razonSocial}* en el portal (${stageLabel(opp.etapa)}).`);
+      await input.reply(withCredit(`🔗 Cotización *${short}* enlazada a *${direct.razonSocial}* en el portal (${stageLabel(opp.etapa)}).`, await creditWarning(store, direct)));
       return "linked" as const;
     }
 
@@ -287,7 +295,7 @@ export async function confirmQuoteLink(ctx: Ctx, args = ""): Promise<boolean> {
     return true;
   }
   const opp = await performLink(ctx.store, ctx.user, company, { ...step, via: "nombre" }, ctx.now);
-  await ctx.reply(`🔗 Listo: cotización *${shortQuoteNumber(step.quoteNumber)}* enlazada a *${company.razonSocial}* (${stageLabel(opp.etapa)}).`);
+  await ctx.reply(withCredit(`🔗 Listo: cotización *${shortQuoteNumber(step.quoteNumber)}* enlazada a *${company.razonSocial}* (${stageLabel(opp.etapa)}).`, await creditWarning(ctx.store, company)));
   return true;
 }
 

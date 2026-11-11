@@ -53,12 +53,25 @@ const GoalsSchema = z.looseObject({
   _ejemplo: z.boolean().default(false),
 });
 
+/** Encuesta de satisfacción (bloque C3). */
+const SurveysSchema = z.looseObject({
+  /** Invitación automática: días después de la última venta real (no demo) a la empresa. */
+  afterSaleDays: z.number().int().min(0).max(365).default(7),
+  /** Tolerancia si el cron no corrió algún día: la última venta puede haber sido hasta afterSaleDays + windowDays - 1 días atrás. */
+  windowDays: z.number().int().min(1).max(60).default(7),
+  /** No se vuelve a encuestar a una empresa con una encuesta en estos últimos meses. */
+  cooldownMonths: z.number().int().min(0).max(36).default(6),
+  /** Vigencia del enlace. */
+  expiresDays: z.number().int().min(1).max(365).default(30),
+});
+
 export const PortalConfigSchema = z.looseObject({
   import: ImportSchema.prefault({}),
   appointments: AppointmentsSchema.prefault({}),
   techLead: TechLeadSchema.prefault({}),
   quotes: QuotesSchema.prefault({}),
   goals: GoalsSchema.prefault({}),
+  surveys: SurveysSchema.prefault({}),
   /** Feriados ("AAAA-MM-DD") que no cuentan como días hábiles. */
   holidays: z.array(z.string().regex(/^\d{4}-\d{2}-\d{2}$/)).default([]),
 });
@@ -69,6 +82,7 @@ export type PortalAppointmentsConfig = PortalConfig["appointments"];
 export type PortalTechLeadConfig = PortalConfig["techLead"];
 export type PortalQuotesConfig = PortalConfig["quotes"];
 export type PortalGoalsConfig = PortalConfig["goals"];
+export type PortalSurveysConfig = PortalConfig["surveys"];
 
 export function portalConfigPath(): string {
   return process.env.PORTAL_CONFIG || path.join(process.cwd(), "config", "portal.json");

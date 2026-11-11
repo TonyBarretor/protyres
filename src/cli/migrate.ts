@@ -309,6 +309,59 @@ const STATEMENTS = [
     data jsonb not null default '{}'::jsonb,
     updated_at timestamptz not null default now()
   )`,
+  // Crédito (C4): evaluación por empresa (sin fila = sin_evaluar), con el PDF del reporte en base64, y su historial.
+  `create table if not exists company_credit (
+    company_id integer primary key,
+    estado text not null default 'sin_evaluar',
+    calificacion text,
+    linea numeric(14,2),
+    moneda text,
+    plazo_dias integer,
+    fuente text,
+    consultado_at timestamptz,
+    consultado_por integer,
+    pdf_name text,
+    pdf_mime text,
+    pdf_data text,
+    notas text,
+    updated_at timestamptz not null default now(),
+    updated_by integer
+  )`,
+  `create table if not exists company_credit_history (
+    id serial primary key,
+    company_id integer not null,
+    estado_anterior text,
+    estado_nuevo text not null,
+    cambios jsonb not null default '{}'::jsonb,
+    user_id integer,
+    created_at timestamptz not null default now()
+  )`,
+  `create index if not exists company_credit_history_company_idx on company_credit_history (company_id, created_at)`,
+  // Encuesta de satisfacción (C3): solo el sha256 del token del enlace; una respuesta por encuesta (survey_id único).
+  `create table if not exists surveys (
+    id serial primary key,
+    company_id integer not null,
+    contact_id integer,
+    token_hash text not null unique,
+    estado text not null default 'pendiente',
+    canal text not null,
+    created_by integer,
+    enviada_at timestamptz,
+    respondida_at timestamptz,
+    expires_at timestamptz not null,
+    created_at timestamptz not null default now()
+  )`,
+  `create index if not exists surveys_company_idx on surveys (company_id, created_at)`,
+  `create table if not exists survey_answers (
+    id serial primary key,
+    survey_id integer not null unique,
+    nps integer not null,
+    valora jsonb not null default '[]'::jsonb,
+    satisfaccion_entrega integer,
+    mejorar text,
+    referencia boolean,
+    created_at timestamptz not null default now()
+  )`,
 ];
 
 /** Desde aquí empiezan las sentencias del portal: antes de ejecutarlas se pasa la guardia (migrate-guard.ts). */

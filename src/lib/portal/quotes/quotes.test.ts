@@ -91,6 +91,7 @@ async function seedPortal(opts: { user?: boolean } = {}): Promise<void> {
 }
 
 const REQ_RUC = `Michelin 11R22.5 XZE2+ x4 para Transportes Andes del Peru SAC, juan@andes.com\nRUC ${RUC_ANDES}`;
+const WARN_SIN_EVALUAR = "⚠️ Crédito de *TRANSPORTES ANDES DEL PERU*: sin evaluar. Antes de dar plazo, evalúalo en la ficha del portal.";
 const REQ_NAME = "Michelin 11R22.5 XZE2+ x4 para Transportes Andes del Peru SAC, juan@andes.com";
 
 function ctxFor(store: PortalStore, user: PortalUser, now = new Date()) {
@@ -111,7 +112,8 @@ describe("cotización enlazada", () => {
     const h = await harness(portal);
     await h.say(REQ_RUC);
     const out = await h.say("ok");
-    expect(out.at(-1)).toBe("🔗 Cotización *0001* enlazada a *TRANSPORTES ANDES DEL PERU S.A.C.* en el portal (Prospecto).");
+    // sin fila de crédito = sin evaluar: el mismo mensaje del portal suma el aviso (C4)
+    expect(out.at(-1)).toBe(`🔗 Cotización *0001* enlazada a *TRANSPORTES ANDES DEL PERU S.A.C.* en el portal (Prospecto).\n${WARN_SIN_EVALUAR}`);
     expect(out.slice(0, -1).some((m) => m.startsWith("[document]"))).toBe(true);
     const opp = (await portal.getOpenOpportunity(andesId, frank.id))!;
     expect(opp).toMatchObject({ ownerUserId: frank.id, quoteNumber: "COT-0001", etapa: "prospecto" });
@@ -124,6 +126,25 @@ describe("cotización enlazada", () => {
     const again = await h.say("precio 480");
     expect(again.some((m) => m.includes("🔗"))).toBe(false);
     expect(await quoteActs(portal, "cotizacion")).toHaveLength(1);
+  });
+
+  it("aviso de crédito en el mensaje de enlace: rechazado -> ⛔; aprobado o en evaluación -> sin aviso", async () => {
+    await portal.saveCredit(andesId, { estado: "rechazado", notas: "deuda vencida" }, null);
+    let h = await harness(portal);
+    await h.say(REQ_RUC);
+    let out = await h.say("ok");
+    expect(out.at(-1)).toBe(
+      "🔗 Cotización *0001* enlazada a *TRANSPORTES ANDES DEL PERU S.A.C.* en el portal (Prospecto).\n⛔ Crédito RECHAZADO para *TRANSPORTES ANDES DEL PERU*: no ofrezcas plazo sin revisar la ficha del portal.",
+    );
+
+    for (const estado of ["aprobado", "en_evaluacion"] as const) {
+      await seedPortal();
+      await portal.saveCredit(andesId, { estado, linea: 50000, moneda: "USD", plazoDias: 45 }, null);
+      h = await harness(portal);
+      await h.say(REQ_RUC);
+      out = await h.say("ok");
+      expect(out.at(-1)).toBe("🔗 Cotización *0001* enlazada a *TRANSPORTES ANDES DEL PERU S.A.C.* en el portal (Prospecto).");
+    }
   });
 
   it("enviar (correo) mueve a Cotización enviada y registra cotizacion_enviada una sola vez", async () => {
@@ -172,7 +193,7 @@ describe("cotización enlazada", () => {
 
     const { ctx, replies } = ctxFor(portal, frank);
     expect(await confirmQuoteLink(ctx, "")).toBe(true);
-    expect(replies).toEqual(["🔗 Listo: cotización *0001* enlazada a *TRANSPORTES ANDES DEL PERU S.A.C.* (Prospecto)."]);
+    expect(replies).toEqual([`🔗 Listo: cotización *0001* enlazada a *TRANSPORTES ANDES DEL PERU S.A.C.* (Prospecto).\n${WARN_SIN_EVALUAR}`]);
     expect((await portal.getOpenOpportunity(andesId, frank.id))?.quoteNumber).toBe("COT-0001");
     expect((await portal.getPortalConversation(FRANK))?.state?.[LINK_STATE_KEY]).toBeUndefined();
     expect(await confirmQuoteLink(ctx, "")).toBe(false); // ya no hay propuesta
