@@ -61,6 +61,8 @@ export interface IntentChoiceStep extends PendingStep {
   text: string;
   /** ISO: cuándo llegó el mensaje original. */
   occurredAt: string;
+  /** Nota de voz: `text` es su transcripción (*cotización* -> cotización por voz; *reporte* -> reporte con canal voz). */
+  voice?: boolean;
 }
 
 /**

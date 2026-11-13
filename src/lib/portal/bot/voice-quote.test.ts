@@ -88,6 +88,7 @@ const say = async (m: InboundMessage | string): Promise<OutboundMessage[]> => {
   return client.sent.slice(before);
 };
 const bodies = (out: OutboundMessage[]) => out.filter((m) => m.kind === "text" || m.kind === "interactive").map((m) => m.body ?? "");
+const titlesOf = (m: { type: string } & Partial<{ buttons: { title: string }[] }>) => (m.type === "button" ? (m.buttons ?? []).map((b) => b.title) : []);
 const docs = (out: OutboundMessage[]) => out.filter((m) => m.kind === "document");
 const step = async (phone = FRANK) => (await prices.getConversation(phone))?.step ?? "idle";
 
@@ -283,6 +284,28 @@ describe("precedencia del punto 7 sobre la transcripción", () => {
     expect(b).toContain("⏸ Dejaste pendiente");
     expect(docs(quoted)).toHaveLength(0);
     expect(await step()).toBe("choose");
+  });
+
+    it("ambigua sin nada pendiente: pregunta ¿cotización o reporte? con botones, igual que escrita", async () => {
+    const said = "visité Transportes Gamma, necesitan ocho 295/80R22.5";
+    const typed = await say(said);
+    expect(bodies(typed).at(-1)).toContain("¿Es una *cotización* o un *reporte*");
+    expect(titlesOf(client.interactives().at(-1)!)).toEqual(["Cotización", "Reporte"]);
+    await say("cancelar");
+
+    const out = await say(voice(said));
+    expect(bodies(out)[0]).toBe(`🎙 Escuché: ${said}`);
+    expect(bodies(out).at(-1)).toContain("¿Es una *cotización* o un *reporte*");
+    expect(titlesOf(client.interactives().at(-1)!)).toEqual(["Cotización", "Reporte"]);
+    expect((await getPending(portal, FRANK, new Date()))?.kind).toBe("intent_choice");
+
+    // *Cotización*: cotización por voz (mismo flujo; sin PDF hasta el ok escrito)
+    const quoted = await say(press("Cotización"));
+    expect(bodies(quoted).join("\n")).toContain("Entendí:");
+    expect(docs(quoted)).toHaveLength(0);
+    expect(await step()).toBe("choose");
+    const picked = await say("1b");
+    expect(docs(picked)).toHaveLength(0);
   });
 
     it("una nota de voz de reporte sigue siendo reporte", async () => {

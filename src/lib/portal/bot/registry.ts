@@ -79,6 +79,8 @@ export type CompanyActionHandler = (ctx: PortalContext, company: Company, args: 
 export interface ReportOptions {
   occurredAt: Date;
   audio?: { id: string; mimeType: string } | null;
+  /** `text` ya es la transcripción de una nota de voz (no se vuelve a Deepgram; la actividad queda con canal voz). */
+  voice?: boolean;
 }
 export type ReportHandler = (ctx: PortalContext, text: string, opts: ReportOptions) => Promise<void>;
 

@@ -44,7 +44,7 @@ import { isCancel, isQuoterCommand, mediaAccepted, parsePortalCommand, routeInte
 import { withTimeout } from "../quotes/link";
 import type { VoiceCatalog } from "../voice/catalog";
 import { deepgramKeyFromEnv } from "../voice/deepgram";
-import { fetchVoice } from "./report";
+import { fetchVoice, logTranscript } from "./report";
 import { heardLine, spokenForRouting, startVoiceQuote, VOICE_QUOTE_FAILED, voiceCorrection } from "./voice-quote";
 import { clearNotices, clearPending, noticesOf, pausedOf, pendingOf, rawPendingOf, setPending, type IntentChoiceStep, type PendingStep } from "./state";
 import { fold } from "../../tyre/brands";
@@ -114,6 +114,11 @@ const routeTimeout = (input: PortalRouteInput) => input.timeoutMs ?? PORTAL_ROUT
 export const STALE_BUTTON = "Ese botón ya no está vigente (la pregunta venció o ya se respondió). Escríbeme lo que necesitas.";
 
 export const AMBIGUOUS_QUESTION = "¿Es una *cotización* o un *reporte* de visita/llamada? Responde *cotización* o *reporte*.";
+/** Botones de "¿cotización o reporte?" (sin canal interactivo, AMBIGUOUS_QUESTION tal cual). */
+export const INTENT_CHOICE_BUTTONS = [
+  { id: "cotizacion", title: "Cotización" },
+  { id: "reporte", title: "Reporte" },
+];
 
 /** Mensajes que el portal devuelve al cotizador (requote): el router no los vuelve a mirar. */
 const PASS = new WeakSet<InboundMessage>();
@@ -135,12 +140,13 @@ registerPendingHandler("intent_choice", async (ctx, step, text) => {
   const t = fold(text).replace(/^(?:es\s+)?(?:una?\s+)?/, "");
   if (/^(?:1|c|cot|cotizacion|cotizar|cotiza|pedido)$/.test(t)) {
     await clearPending(ctx.store, ctx.from);
-    await ctx.requote(s.text);
+    if (s.voice) await startVoiceQuote(ctx, s.text);
+    else await ctx.requote(s.text);
     return true;
   }
   if (/^(?:2|r|reporte|report|visita|llamada|nota)$/.test(t)) {
     await clearPending(ctx.store, ctx.from);
-    await handleReport(ctx, s.text, { occurredAt: new Date(s.occurredAt) });
+    await handleReport(ctx, s.text, { occurredAt: new Date(s.occurredAt), ...(s.voice ? { voice: true } : {}) });
     return true;
   }
   return false;
@@ -193,7 +199,7 @@ registerPausable("intent_choice", {
     return { companyId: null, label: `tu mensaje «${t.length > 40 ? `${t.slice(0, 39).trimEnd()}…` : t}»`, missing: "falta decir si es cotización o reporte" };
   },
   async resume(ctx, step, prefix) {
-    await askAgain(ctx, step, prefix, AMBIGUOUS_QUESTION);
+    await askAgain(ctx, step, prefix, AMBIGUOUS_QUESTION, INTENT_CHOICE_BUTTONS);
   },
 });
 
@@ -586,7 +592,20 @@ export async function routePortal(input: PortalRouteInput): Promise<boolean> {
         await ctx.reply(heardLine(heard.text));
         return askRoute(live, vd.rule, false, spoken, heard.text);
       }
+      if (vd.intent === "ambiguous" && !live) {
+        // ambiguo sin nada pendiente: igual que escrito, "¿cotización o reporte?" con botones (sobre lo que se escuchó)
+        await logTranscript(ctx, heard.text);
+        await ctx.reply(heardLine(heard.text));
+        return askIntent(heard.text, vd.rule, true);
+      }
     }
+  }
+
+  async function askIntent(t: string, rule: RouteRule, voice: boolean): Promise<boolean> {
+    const step: Omit<IntentChoiceStep, "createdAt"> = { kind: "intent_choice", text: t, occurredAt: occurredAt(msg, now).toISOString(), ...(voice ? { voice: true } : {}) };
+    await setPending(store, from, step, now);
+    await replyButtons(ctx, AMBIGUOUS_QUESTION, INTENT_CHOICE_BUTTONS, { fallback: AMBIGUOUS_QUESTION });
+    return finish(true, rule, "¿cotización o reporte?");
   }
 
   let dropped = false;
@@ -612,12 +631,7 @@ export async function routePortal(input: PortalRouteInput): Promise<boolean> {
     await handleReport(ctx, text, { occurredAt: occurredAt(msg, now), audio: isAudio && msg.media ? { id: msg.media.id, mimeType: msg.media.mimeType } : null });
     return finish(true, decision.rule, "reporte");
   }
-  if (intent === "ambiguous") {
-    const step: Omit<IntentChoiceStep, "createdAt"> = { kind: "intent_choice", text, occurredAt: occurredAt(msg, now).toISOString() };
-    await setPending(store, from, step, now);
-    await input.reply(AMBIGUOUS_QUESTION);
-    return finish(true, decision.rule, "¿cotización o reporte?");
-  }
+  if (intent === "ambiguous") return askIntent(text, decision.rule, false);
   // quote / passthrough: el cotizador. El paso pendiente pasa a pausa (el usuario pasó a otra cosa) y se recuerda después.
   if (pending && !dropped) await leave(pending, "quoter");
   return finish(false, decision.rule, intent === "quote" ? "cotizador (cotización)" : "cotizador");

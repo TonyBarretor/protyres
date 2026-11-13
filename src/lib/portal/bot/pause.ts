@@ -176,8 +176,10 @@ export async function resumePaused(ctx: PortalContext, verb: ResumeVerb, p: Paus
 }
 
 /** Deja `step` pendiente otra vez (con hora nueva: vuelve a tener sus 2 h) y repite la pregunta. Para los `resume` simples. */
-export async function askAgain(ctx: PortalContext, step: PendingStep, prefix: string, question: string): Promise<void> {
+export async function askAgain(ctx: PortalContext, step: PendingStep, prefix: string, question: string, buttons?: ReplyButton[]): Promise<void> {
   const { createdAt: _c, ...rest } = step;
   await setPending(ctx.store, ctx.from, rest, ctx.now);
-  await ctx.reply(prefix ? `${prefix}\n\n${question}` : question);
+  const body = prefix ? `${prefix}\n\n${question}` : question;
+  if (buttons?.length) await replyButtons(ctx, body, buttons, { fallback: body });
+  else await ctx.reply(body);
 }

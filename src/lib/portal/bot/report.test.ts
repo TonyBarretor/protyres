@@ -33,6 +33,7 @@ let seq = 0;
 const ts = (iso: string) => String(Math.floor(Date.parse(iso) / 1000));
 const text = (body: string, at?: string): InboundMessage => ({ id: `wamid.r${++seq}`, from: FRANK, timestamp: at ? ts(at) : "1", type: "text", text: body, forwarded: false });
 const audio = (mediaId: string, at: string): InboundMessage => ({ id: `wamid.r${++seq}`, from: FRANK, timestamp: ts(at), type: "audio", forwarded: false, media: { id: mediaId, mimeType: "audio/ogg; codecs=opus" } });
+const button = (id: string, title: string): InboundMessage => ({ id: `wamid.r${++seq}`, from: FRANK, timestamp: "1", type: "interactive", text: id.replace(/^pt:/, ""), interactiveId: id, interactiveType: "button_reply", interactiveTitle: title, forwarded: false });
 
 let client: FakeWhatsAppClient;
 let prices: JsonStore;
@@ -125,9 +126,22 @@ describe("reporte por voz con confirmación", () => {
     configureReportBot({ llm, deepgramFetch: dg.fetchImpl, downloadMedia: (id) => client.downloadMedia(id), logMessage: (e) => prices.logMessage(e) });
     client.media.set("aud-1", { data: Buffer.from("OggS-fake-audio"), mimeType: "audio/ogg; codecs=opus" });
 
+    // "visité … usan 295/80R22.5 … cotización": ambiguo, por voz igual que escrito -> pregunta con botones
     await bot.handle(audio("aud-1", "2026-11-10T23:00:00Z"));
-    const [heard, summary] = texts();
-    expect(heard).toBe(`🎙️ Entendí: «${said}»`);
+    const [heard, question] = texts();
+    expect(heard).toBe(`🎙 Escuché: ${said}`);
+    expect(question).toContain("¿Es una *cotización* o un *reporte*");
+    const asked = client.sent.at(-1)!;
+    expect(asked.kind).toBe("interactive");
+    expect(JSON.stringify(asked)).toContain("Cotización");
+    expect(JSON.stringify(asked)).toContain("Reporte");
+    expect((await getPending(portal, FRANK, new Date()))?.kind).toBe("intent_choice");
+    expect(dg.urls).toHaveLength(1);
+
+    // *Reporte*: el borrador sale de la misma transcripción (sin volver a Deepgram) y queda como reporte por voz
+    await bot.handle(button("pt:reporte", "Reporte"));
+    expect(dg.urls).toHaveLength(1);
+    const summary = last();
     expect(summary).toContain("*Reporte de visita* — TRANSPORTES ZETA BUS (RUC 20999000055)");
     expect(summary).toContain("• Contacto: Carlos Quispe — Jefe de flota");
     expect(summary).toContain("• Próxima acción: Enviar cotización");

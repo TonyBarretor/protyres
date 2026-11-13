@@ -233,8 +233,8 @@ async function showDraft(ctx: PortalContext, draft: ReportDraft, base: { text: s
 /** Reporte nuevo (texto o voz). */
 export async function interpretReport(ctx: PortalContext, rawText: string, opts: ReportOptions): Promise<void> {
   let text = rawText.trim();
-  let canal: "whatsapp" | "voz" = "whatsapp";
-  if (opts.audio) {
+  let canal: "whatsapp" | "voz" = opts.voice ? "voz" : "whatsapp";
+  if (opts.audio && !opts.voice) {
     const t = await transcribeVoice(ctx, opts.audio);
     if (t === null) return;
     // una nota de voz que empieza con un comando del portal ("asígname ZBUSS", "empresa zbuss") es ese comando
