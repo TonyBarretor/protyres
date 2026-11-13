@@ -9,7 +9,8 @@ import type { Company, Confianza, FleetGroup, PortalStore } from "../store/types
 import { groupByBrand } from "../ui/fleet";
 import { fold } from "../../tyre/brands";
 import { fmtInt, sectorLabel } from "../ui/labels";
-import { getCompanyAction, registerPendingHandler, type PortalContext } from "./registry";
+import { LIST_ROWS_MAX } from "../../whatsapp/interactive";
+import { getCompanyAction, registerPausable, registerPendingHandler, replyList, type PortalContext } from "./registry";
 import { clearPending, setPending, type ChooseCompanyStep } from "./state";
 
 export const MAX_OPTIONS = 5;
@@ -102,30 +103,112 @@ export async function mentionsKnownCompany(store: PortalStore, text: string, max
   return (await mentionedCompanies(store, text, maxQueries, true)).length > 0;
 }
 
+// ── texto de más (corrida D, punto 3) ──
+
+/** Relleno antes de la empresa: "a la empresa ZBUSS", "el cliente ZBUSS", "a ZBUSS" (no "la"/"el" solos: "La Roca" es una empresa). */
+const LEAD_FILLER = /^(?:(?:a|al|de|del|para|con)\s+)?(?:(?:la\s+)?empresa|el\s+cliente|cliente|el\s+ruc|ruc)\s+|^(?:a|al|de|del|para|con)\s+(?=\S)/i;
+/** Cortesía que no cuenta como texto sin usar. */
+const COURTESY = /^(?:(?:y\s+)?(?:por\s+favor|porfa(?:vor)?|pls|please|plis|gracias|muchas\s+gracias|mil\s+gracias|xfa|x\s+fa)[\s.,;!]*)+$/i;
+const TRAILING_CONNECTOR = new Set(["y", "e", "o", "u", "a", "al", "de", "del", "la", "el", "los", "las", "para", "con", "que", "en", "por", "su", "sus"]);
+/** Como máximo se prueban los primeros N palabras como nombre de empresa. */
+const SPLIT_MAX_WORDS = 6;
+
+/** Lo que sobra, limpio de separadores en los extremos; "" si solo era cortesía o signos. */
+export function leftover(text: string): string {
+  const t = text.replace(/^[\s,;:.\-–]+|[\s,;:\-–]+$/g, "").replace(/\s+/g, " ").trim();
+  return !t || COURTESY.test(t) || !/[a-z0-9ñáéíóú]/i.test(t) ? "" : t;
+}
+
+/** "No usé: «y responde las preguntas del pedido»." (una línea) o "" si no sobró nada. */
+export function unusedNote(rest: string): string {
+  const t = leftover(rest);
+  return t ? `No usé: «${t.length > 120 ? `${t.slice(0, 119).trimEnd()}…` : t}».` : "";
+}
+
+export interface CompanySplit {
+  /** Lo que se busca en el padrón (nombre o RUC, tal como se escribió). */
+  query: string;
+  /** El texto que sobra (sin cortesías), "" si nada. */
+  rest: string;
+}
+
 /**
- * Busca la empresa y, si hay una sola, la devuelve. Si hay varias, responde la lista numerada y guarda el paso
- * choose_company (al elegir se ejecuta la acción registrada `action` con `args`). Si no hay, lo dice. null = ya respondió.
+ * La empresa al inicio del texto y lo que sobra, para tolerar texto de más ("zbuss y responde las preguntas del pedido").
+ * Quita relleno inicial ("a la empresa", "el cliente"); un RUC de 11 dígitos en cualquier parte manda; si no, el prefijo
+ * más largo (hasta 6 palabras) que encuentra empresas en el padrón: el texto entero con cualquier número de resultados,
+ * un prefijo más corto solo si encuentra pocas (≤ 10; "transportes" sola no vale). Con `strict`, un prefijo con texto
+ * detrás vale solo si alguna razón social empieza así. null = no hay empresa reconocible.
  */
-export async function resolveCompany(ctx: PortalContext, query: string, action: string, args: Record<string, unknown> = {}): Promise<Company | null> {
+export async function splitCompany(store: PortalStore, text: string, opts: { strict?: boolean } = {}): Promise<CompanySplit | null> {
+  let t = text.trim().replace(/\s+/g, " ");
+  for (let i = 0; i < 2; i++) t = t.replace(LEAD_FILLER, "");
+  if (!t) return null;
+  const ruc = /(?:^|[^\d])(\d{11})(?!\d)/.exec(t);
+  if (ruc) {
+    const at = t.indexOf(ruc[1]);
+    const before = leftover(t.slice(0, at).replace(/\b(?:ruc|empresa|el|la|de|del|a|al)\s*$/i, ""));
+    return { query: ruc[1], rest: leftover([before, t.slice(at + 11)].filter(Boolean).join(" ")) };
+  }
+  const words = t.split(" ");
+  for (let n = Math.min(words.length, SPLIT_MAX_WORDS); n >= 1; n--) {
+    const prefix = words
+      .slice(0, n)
+      .join(" ")
+      .replace(/[\s,;:.!?]+$/, "");
+    // "zbuss y" / "zbuss para": un conector al final no es parte del nombre (findCompanies ignora palabras de 1 letra)
+    if (!companyKey(prefix) || (n === 1 && prefix.length < 3) || (n > 1 && TRAILING_CONNECTOR.has(fold(words[n - 1])))) continue;
+    const { rows, total } = await findCompanies(store, prefix, opts.strict ? LIST_ROWS_MAX : 1);
+    if (total === 0) continue;
+    const rest = leftover(words.slice(n).join(" "));
+    // strict (el resto puede ser un nombre de persona: `contacto`): un prefijo parcial vale solo si alguna razón social
+    // empieza así ("zbuss" sí; "carlos" no por TRANSPORTES SAN CARLOS)
+    if (rest && opts.strict && !rows.some((c) => companyKey(c.razonSocial).startsWith(companyKey(prefix)))) continue;
+    if (n === words.length || !rest || total <= LIST_ROWS_MAX) return { query: prefix, rest };
+  }
+  return null;
+}
+
+export interface ResolveOptions {
+  /** Línea para el usuario antes de la lista / del "no encontré" (p. ej. "No usé: «…»."). */
+  note?: string;
+}
+
+/**
+ * Busca la empresa y, si hay una sola, la devuelve. Si hay varias, responde la lista y guarda el paso choose_company
+ * (al elegir se ejecuta la acción registrada `action` con `args`): con 10 o menos, como lista interactiva de WhatsApp
+ * (cada fila con el número de la opción como id) y en texto la lista numerada; con más, las 5 primeras en texto como
+ * siempre. Si no hay, lo dice. null = ya respondió.
+ */
+export async function resolveCompany(ctx: PortalContext, query: string, action: string, args: Record<string, unknown> = {}, opts: ResolveOptions = {}): Promise<Company | null> {
   const q = query.trim();
+  const note = opts.note ? `${opts.note}\n` : "";
   if (!q) {
-    await ctx.reply("¿Qué empresa? Escribe el nombre o el RUC.");
+    await ctx.reply(`${note}¿Qué empresa? Escribe el nombre o el RUC.`);
     return null;
   }
-  const { rows, total } = await findCompanies(ctx.store, q);
+  const { rows, total } = await findCompanies(ctx.store, q, LIST_ROWS_MAX);
   if (rows.length === 0) {
-    await ctx.reply(`No encontré «${q}» en el padrón. Prueba con el RUC o con otra parte del nombre.`);
+    await ctx.reply(`${note}No encontré «${q}» en el padrón. Prueba con el RUC o con otra parte del nombre.`);
     return null;
   }
   if (rows.length === 1 && total === 1) {
     await clearPending(ctx.store, ctx.from);
     return rows[0];
   }
-  const options = rows.slice(0, MAX_OPTIONS).map((c) => ({ id: c.id, label: `${c.razonSocial} · RUC ${c.ruc} · ${fmtInt(c.unidades)} unid.` }));
+  const asList = total <= LIST_ROWS_MAX;
+  const shown = asList ? rows : rows.slice(0, MAX_OPTIONS);
+  const options = shown.map((c) => ({ id: c.id, label: `${c.razonSocial} · RUC ${c.ruc} · ${fmtInt(c.unidades)} unid.` }));
   const step: Omit<ChooseCompanyStep, "createdAt"> = { kind: "choose_company", action, options, args };
   await setPending(ctx.store, ctx.from, step, ctx.now);
   const more = total > options.length ? `\n_…y ${total - options.length} más: escribe más del nombre o el RUC._` : "";
-  await ctx.reply(`Encontré ${total} empresas con «${q}». ¿Cuál? Responde con el número:\n${options.map((o, i) => `*${i + 1}.* ${o.label}`).join("\n")}${more}`);
+  const body = `${note}Encontré ${total} empresas con «${q}». ¿Cuál? Responde con el número:\n${options.map((o, i) => `*${i + 1}.* ${o.label}`).join("\n")}${more}`;
+  if (!asList) {
+    await ctx.reply(body);
+    return null;
+  }
+  // lista: id de cada fila = el número de la opción (lo mismo que escribirlo)
+  const listRows = shown.map((c, i) => ({ id: String(i + 1), title: shortName(c.razonSocial), description: `RUC ${c.ruc} · ${fmtInt(c.unidades)} unid.` }));
+  await replyList(ctx, body, "Elegir empresa", listRows, { fallback: body });
   return null;
 }
 
@@ -152,6 +235,25 @@ registerPendingHandler("choose_company", async (ctx, step, text) => {
   }
   await handler(ctx, company, s.args ?? {});
   return true;
+});
+
+/** Para qué se elegía la empresa (recordatorio de la pausa). */
+const ACTION_LABEL: Record<string, string> = { empresa: "ver su ficha", asignarme: "asignártela", contacto: "el contacto", contacto_sin_nombre: "el contacto", cita: "la cita", cita_sin_fecha: "la cita", oc: "la orden de compra", prepropuesta: "la pre-propuesta", estado: "ver su estado" };
+
+/** En pausa (corrida D, punto 7): "elegir la empresa para la cita (falta elegir…)"; *Continuar* repite la lista. */
+registerPausable("choose_company", {
+  async describe(_ctx, step) {
+    const s = step as ChooseCompanyStep;
+    return { companyId: null, label: `elegir la empresa para ${ACTION_LABEL[s.action] ?? s.action}`, missing: `falta elegir entre ${s.options.length}` };
+  },
+  async resume(ctx, step, prefix) {
+    const s = step as ChooseCompanyStep;
+    const { createdAt: _c, ...rest } = s;
+    await setPending(ctx.store, ctx.from, rest, ctx.now);
+    const body = `${prefix ? `${prefix}\n\n` : ""}¿Cuál? Responde con el número:\n${s.options.map((o, i) => `*${i + 1}.* ${o.label}`).join("\n")}`;
+    const rows = s.options.map((o, i) => ({ id: String(i + 1), title: shortName(o.label.split(" · ")[0]), description: o.label.split(" · ").slice(1).join(" · ") }));
+    await replyList(ctx, body, "Elegir empresa", rows, { fallback: body });
+  },
 });
 
 // ── ficha ──

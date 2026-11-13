@@ -133,7 +133,8 @@ describe("comando cita", () => {
     expect(ev("DESCRIPTION").value).toContain("Contacto: Carlos Quispe (jefe de flota) · 987654321");
     expect(ev("DESCRIPTION").value).toContain(`Ficha: https://portal.example.pe/portal/empresas/${andes}`);
     expect(lastText()).toBe(
-      "📅 Cita con *TRANSPORTES ANDES DEL PERU S.A.C.* el *martes 17/11 10:00* en su base de Ate · Agrégala a tu calendario de Outlook abriendo el archivo.\nOportunidad: Prospecto → *Cita agendada* · próxima acción: Visita",
+      // corrida D: termina con la línea de avance
+      "📅 Cita con *TRANSPORTES ANDES DEL PERU S.A.C.* el *martes 17/11 10:00* en su base de Ate · Agrégala a tu calendario de Outlook abriendo el archivo.\nOportunidad: Prospecto → *Cita agendada* · próxima acción: Visita\n✅ Paso 3 de 7 con TRANSPORTES ANDES DEL PERU: cita agendada. Sigue: reportar la visita.",
     );
   });
 

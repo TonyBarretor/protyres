@@ -310,10 +310,11 @@ describe("reportes, ambigüedad y pasos pendientes", () => {
     expect(last()).not.toContain("ANDES");
   });
 
-  it("con una lista pendiente, un pedido va al cotizador y descarta la lista", async () => {
+  it("con una lista pendiente, un pedido va al cotizador y la lista pasa a pausa (corrida D: ya no se descarta en silencio)", async () => {
     await bot.handle(text(FRANK, "empresa andes"));
     await bot.handle(text(FRANK, "Michelin 11R22.5 XZE2+ x4 para Transportes ABC, juan@abc.com"));
-    expect(last()).toContain("Cotización nueva");
+    expect(client.texts().at(-2)).toContain("Cotización nueva");
+    expect(last()).toBe("⏸ Dejaste pendiente: elegir la empresa para ver su ficha (falta elegir entre 2).");
     expect(await getPending(portal, FRANK, new Date())).toBeNull();
   });
 

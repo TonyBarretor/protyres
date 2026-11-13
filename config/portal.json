@@ -3,7 +3,9 @@
     "minUnits": 10,
     "currentCut": "20251231",
     "tyreCuts": ["20241231", "20231231", "20221231"],
-    "dir": "data/mtc"
+    "dir": "data/mtc",
+    "_comment": "sectorMajority: si esa porción de las unidades (o más) es de carga o de pasajeros, la empresa es de ese sector; por debajo, mixto. Tras cambiarlo: npm run portal:recalc-sector.",
+    "sectorMajority": 0.9
   },
   "users": [
     { "nombre": "Frank Rodríguez", "rol": "vendedor", "whatsappSalesperson": "Frank" },

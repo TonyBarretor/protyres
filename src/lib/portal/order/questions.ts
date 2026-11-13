@@ -165,6 +165,44 @@ export function nextOrderQuestion(a: OrderAnswers, q: QuestionContext): Question
   return null;
 }
 
+/** Botón de respuesta rápida: `id` = lo que se escribiría (el bot lo entiende igual), `title` = lo que se ve. */
+export interface QuickAnswer {
+  id: string;
+  title: string;
+}
+
+const IGUAL: QuickAnswer = { id: "igual", title: "Igual" };
+const NINGUNA: QuickAnswer = { id: "ninguna", title: "Ninguna" };
+
+/**
+ * Botones para la pregunta (corrida D): las que tienen valor por defecto ("Igual"), sí/no, "La misma" o "Ninguna".
+ * Cada id es una respuesta que applyOrderAnswer ya entiende escrita; [] = sin botones (respuesta libre).
+ */
+export function questionButtons(q: Question): QuickAnswer[] {
+  const hasDef = q.def !== undefined && q.def !== "";
+  switch (q.field) {
+    case "cliente":
+    case "direccionFiscal":
+    case "contacto":
+    case "fechaEntrega":
+    case "proveedor":
+      return hasDef ? [IGUAL] : [];
+    case "direccionEntrega":
+      return hasDef ? [{ id: "la misma", title: "La misma" }] : [];
+    case "agencia":
+      return [NINGUNA];
+    case "enllante":
+    case "marcado":
+      return [{ id: "sí", title: "Sí" }, { id: "no", title: "No" }, ...(hasDef ? [IGUAL] : [])];
+    case "flete":
+      return hasDef ? [IGUAL, { id: "cliente", title: "Cliente" }, { id: "360", title: "360" }] : [{ id: "cliente", title: "Cliente" }, { id: "360", title: "360" }, { id: "agencia", title: "Agencia" }];
+    case "plazoCredito":
+      return hasDef ? [IGUAL, { id: "contado", title: "Contado" }] : [{ id: "contado", title: "Contado" }];
+    case "observaciones":
+      return hasDef ? [IGUAL, NINGUNA] : [NINGUNA];
+  }
+}
+
 function siNoQuestion(field: "enllante" | "marcado", label: string, last: string | undefined): Question {
   return { field, text: `${label} (*sí* / *no*${last ? `; la última vez: ${last.toLowerCase()} — *igual*` : ""})`, def: last };
 }

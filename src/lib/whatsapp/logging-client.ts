@@ -5,6 +5,7 @@
  */
 import type { MessageLogEntry, PriceStore } from "../store/types";
 import type { WhatsAppClient } from "./client";
+import { optionsLine, type InteractiveMessage } from "./interactive";
 import type { InboundMessage } from "./webhook";
 
 /** Sends through the wrapped client, then logs what was sent (with the quote the conversation is on, when known). */
@@ -44,6 +45,12 @@ export class LoggingWhatsAppClient implements WhatsAppClient {
     await this.inner.sendImage(to, image, caption);
     const fileName = image.link ? image.link.split("?")[0].split("/").pop() || image.link : undefined;
     await this.log({ phone: to, direction: "out", kind: "image", body: caption ?? "", fileName, quoteNumber: this.quoteOf.get(to) });
+  }
+
+  /** Se registra con kind "interactive": el body y, en otra línea, las opciones ("[Sí, guardar] [Corregir]"). */
+  async sendInteractive(to: string, message: InteractiveMessage): Promise<void> {
+    await this.inner.sendInteractive(to, message);
+    await this.log({ phone: to, direction: "out", kind: "interactive", body: `${message.body}\n${optionsLine(message)}`, quoteNumber: this.quoteOf.get(to) });
   }
 
   downloadMedia(mediaId: string) {

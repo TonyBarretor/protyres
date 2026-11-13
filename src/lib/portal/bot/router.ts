@@ -30,12 +30,54 @@
  *
  * Un comando del portal es de UNA sola línea, sin medida de llanta y sin forma de campo del cotizador (`empresa: X`,
  * `contacto de: Juan`): "Empresa Transportes ABC\n295/80R22.5 x4" es un pedido.
+ *
+ * Precedencia con un proceso en curso (corrida D, punto 7; usuario del portal, cotizador en idle, paso pendiente vigente).
+ * Lo que no es respuesta NO descarta el proceso: pasa a pausa (bot/pause.ts) y se recuerda al final de la respuesta.
+ * Antes de todo siguen valiendo las reglas 1-4 y 6 de arriba (reenviado, comando del portal, cancelar, cotizador a mitad
+ * de flujo, audio/adjuntos) y los comandos del cotizador (`ayuda`, `proveedores`...), que van al cotizador. Luego:
+ *  P1. Palabra explícita al inicio (`cotizar`, `cotiza`, `cotízame`, `cotización`, `me cotizas` seguidos de algo; también
+ *      la transcripción de una nota de voz "cotízame…") -> quote, siempre (incluso en la fase de ítems de `oc`).
+ *  P2. Señal fuerte: medida de llanta (295/80R22.5, 11R22.5, 215/75R17.5) junto con cantidad, marca o precio -> quote.
+ *      Excepción: la fase de ítems de `oc` (captureText): ahí los ítems tienen justo esa forma y son la respuesta.
+ *  P3. El paso acaba de preguntar y el mensaje encaja como respuesta (fecha, sí/no, nombre, dirección...) -> portal_flow,
+ *      aunque tenga números. Encajar lo decide el manejador del paso: si devuelve false, ver P5.
+ *  P4. Encaja en ambas o la señal es débil: una medida sola ("295/80R22.5", "11R22.5") o señales de pedido sin medida en
+ *      más de 3 palabras (salvo en las preguntas del pedido, keepText, donde "entrega: …" es respuesta) -> route_choice:
+ *      se pregunta con dos botones, *Cotización nueva* y *Es mi respuesta* (títulos ≤ 20 caracteres de WhatsApp).
+ *  P5. El manejador no lo entendió como respuesta: se clasifica sin el paso; si es reporte, cotización o ambiguo, el
+ *      proceso pasa a pausa y sigue eso; si no, se dice que no se entendió y se ofrecen las mismas dos opciones. Nunca se
+ *      descarta el mensaje.
+ * routeIntent() devuelve también la regla (`rule`) que decidió; routePortal la registra en `messages` (route_rule).
  */
 import { looksLikePriceMessage } from "../../ingest/whatsapp-text";
 import { findBrandInText, fold } from "../../tyre/brands";
 import { findTyreSizes } from "../../tyre/spec";
 
-export type Intent = "portal_command" | "portal_flow" | "quote" | "report" | "ambiguous" | "passthrough";
+export type Intent = "portal_command" | "portal_flow" | "quote" | "report" | "ambiguous" | "passthrough" | "route_choice";
+
+/**
+ * Regla que decidió el enrutamiento (columna messages.route_rule): las P1-P5 de la cabecera y las de siempre.
+ * "reanudar" (continuar/descartar/guardar un proceso en pausa) y "5_no_entendido" los pone routePortal.
+ */
+export type RouteRule =
+  | "reenviado"
+  | "comando"
+  | "cancelar"
+  | "cotizador_en_flujo"
+  | "adjunto"
+  | "audio"
+  | "cotizador_comando"
+  | "1_palabra"
+  | "2_medida"
+  | "3_respuesta"
+  | "4_ambiguo"
+  | "5_no_entendido"
+  | "reanudar"
+  | "boton"
+  | "cotizacion"
+  | "reporte"
+  | "ambiguo"
+  | "cotizador";
 
 /** Paso del cotizador (ConversationState.step) o "profile": perfil elegido esperando el pedido (prosegur…). */
 export type QuoteStep = string;
@@ -59,7 +101,7 @@ export interface ClassifyInput {
 
 // ── comandos explícitos del portal ──
 
-export type PortalCommandName = "portal" | "ayuda_portal" | "hoy" | "empresa" | "asignarme" | "contacto" | "cita" | "oc" | "avance" | "prepropuesta" | "aprende" | "enlazar" | "reenviada";
+export type PortalCommandName = "portal" | "ayuda_portal" | "hoy" | "empresa" | "asignarme" | "contacto" | "cita" | "oc" | "avance" | "prepropuesta" | "aprende" | "enlazar" | "reenviada" | "estado";
 
 interface CommandSpec {
   name: PortalCommandName;
@@ -83,6 +125,7 @@ const COMMANDS: CommandSpec[] = [
   { name: "aprende", re: /^aprende\s+\S/ },
   { name: "enlazar", re: /^enlazar(?:\s+\S.*)?$/ },
   { name: "reenviada", re: /^reenviad[ao](?:\s+\S.*)?$/ },
+  { name: "estado", re: /^estado\s+\S/ },
 ];
 
 /** La palabra del comando en el texto original ("Empresa", "asignarme", "pre-propuesta"...). */
@@ -100,6 +143,7 @@ const RAW_HEAD: Record<PortalCommandName, RegExp> = {
   aprende: /^aprende\b/i,
   enlazar: /^enlazar\b/i,
   reenviada: /^reenviad[ao]\b/i,
+  estado: /^estado\b/i,
 };
 
 /** Lo que sigue a la palabra del comando cuando la línea es un campo del cotizador: ": …" o " de: …" (a/al/de/del). */
@@ -218,55 +262,90 @@ export function mediaAccepted(p: ClassifyInput["pendingPortalStep"], caption: st
   return OC_CAPTION_RE.test(fold(caption ?? ""));
 }
 
+/** P1: palabra explícita de cotización al inicio, seguida de algo ("cotízame 4 llantas…", "cotización para ZBUSS"). */
+const EXPLICIT_QUOTE_START = /^(?:cotizar|cotiza|cotizame|cotizacion|me\s+cotizas?)\s+\S/;
+
+export function explicitQuoteStart(text: string): boolean {
+  return EXPLICIT_QUOTE_START.test(fold((text ?? "").replace(/^[\s¿¡]+/, "")));
+}
+
+/** Cantidad o precio junto a la medida (P2): "x4", "8 llantas", "4 x", "a 254", "precio 254", "S/ 900", "US$ 300". */
+const QTY_RE = /\bx\s*\d{1,3}\b|\b\d{1,3}\s*(?:x|unidades|und|unds|unid|llantas|neumaticos|neumáticos)\b/i;
+const PRICE_RE = /\bprecio\s*:?\s*\d|\b(?:a|en)\s+(?:us\$|s\/\.?|\$)?\s*\d{2,6}(?:[.,]\d+)?\b|us\$\s*\d|s\/\.?\s*\d|\$\s*\d/i;
+
+/** P2: medida de llanta junto con cantidad, marca o precio. */
+export function strongTyreQuote(text: string): boolean {
+  const t = text ?? "";
+  const sizes = findTyreSizes(t);
+  if (!sizes.length) return false;
+  return QTY_RE.test(t) || PRICE_RE.test(t) || !!findBrandInText(t);
+}
+
+export interface RouteDecision {
+  intent: Intent;
+  rule: RouteRule;
+}
+
 export function classifyIntent(input: ClassifyInput): Intent {
+  return routeIntent(input).intent;
+}
+
+/** classifyIntent con la regla que decidió (ver la cabecera). */
+export function routeIntent(input: ClassifyInput): RouteDecision {
   const text = (input.text ?? "").trim();
   const step = stepOf(input.state);
   const pending = input.isPortalUser ? pendingOf(input.pendingPortalStep) : null;
   const isAudio = input.mediaType === "audio" || input.mediaType === "voice";
 
-  if (input.forwarded) return "passthrough";
+  const r = (intent: Intent, rule: RouteRule): RouteDecision => ({ intent, rule });
+  if (input.forwarded) return r("passthrough", "reenviado");
 
   // comandos explícitos (con adjunto, solo los que lo aceptan)
   const cmd = parsePortalCommand(text, { withMedia: !!input.hasMedia && !isAudio });
   if (cmd && !isAudio) {
-    if (!input.isPortalUser && cmd.name !== "portal") return "passthrough";
-    return "portal_command";
+    if (!input.isPortalUser && cmd.name !== "portal") return r("passthrough", "cotizador");
+    return r("portal_command", "comando");
   }
 
   if (isAudio) {
     // con el cotizador a mitad de un flujo (revisando una cotización) la nota de voz es suya: el "sí" siguiente también
-    if (!input.isPortalUser || step !== "idle") return "passthrough";
-    return pending ? "portal_flow" : "report";
+    if (!input.isPortalUser || step !== "idle") return r("passthrough", step !== "idle" ? "cotizador_en_flujo" : "cotizador");
+    return r(pending ? "portal_flow" : "report", "audio");
   }
-  if (input.hasMedia) return pending && step === "idle" && mediaAccepted(input.pendingPortalStep, text, input.now) ? "portal_flow" : "passthrough";
-  if (!text) return "passthrough";
-  if (isCancel(text)) return "passthrough";
-  if (step !== "idle") return "passthrough";
+  if (input.hasMedia) return pending && step === "idle" && mediaAccepted(input.pendingPortalStep, text, input.now) ? r("portal_flow", "adjunto") : r("passthrough", "adjunto");
+  if (!text) return r("passthrough", "cotizador");
+  if (isCancel(text)) return r("passthrough", "cancelar");
+  if (step !== "idle") return r("passthrough", "cotizador_en_flujo");
 
   const sig = textSignals(text, input.isPortalUser && !!input.mentionsKnownCompany);
+  const toQuoter = () => r(sig.strongQuote ? "quote" : "passthrough", "cotizador_comando");
   if (pending && pendingFlag(input.pendingPortalStep, "captureText")) {
-    // los ítems de una OC tienen forma de pedido; los comandos del cotizador (ayuda, proveedores...) no son ítems
-    return isQuoterCommand(text) ? (sig.strongQuote ? "quote" : "passthrough") : "portal_flow";
-  }
-  if (pending && pendingFlag(input.pendingPortalStep, "keepText")) {
-    // una respuesta del pedido se queda aunque tenga "entrega: …" o "x llanta"; una medida de llanta es un pedido nuevo
-    if (isQuoterCommand(text) || findTyreSizes(text).length > 0) return sig.strongQuote ? "quote" : "passthrough";
-    return "portal_flow";
+    // los ítems de una OC tienen forma de pedido (P2 no aplica); los comandos del cotizador (ayuda, proveedores...) no son ítems
+    if (isQuoterCommand(text)) return toQuoter();
+    if (explicitQuoteStart(text)) return r("quote", "1_palabra");
+    return r("portal_flow", "3_respuesta");
   }
   if (pending) {
-    // respuestas cortas ("2", "sí", "cotización", "reporte") son del portal; un pedido de verdad o un comando del cotizador no
-    const quoteShaped = findTyreSizes(text).length > 0 || (sig.strongQuote && fold(text).split(" ").length > 3);
-    if (isQuoterCommand(text) || quoteShaped) return sig.strongQuote ? "quote" : "passthrough";
-    return "portal_flow";
+    if (isQuoterCommand(text)) return toQuoter();
+    if (explicitQuoteStart(text)) return r("quote", "1_palabra");
+    if (strongTyreQuote(text)) return r("quote", "2_medida");
+    // una medida sola: puede ser la respuesta (la pregunta era del producto) o un pedido nuevo -> se pregunta
+    if (findTyreSizes(text).length > 0) return r("route_choice", "4_ambiguo");
+    // una respuesta del pedido (keepText) se queda aunque tenga "entrega: …" o "x llanta"
+    if (pendingFlag(input.pendingPortalStep, "keepText")) return r("portal_flow", "3_respuesta");
+    // respuestas cortas ("2", "sí", "cotización", "reporte") son del portal; señales de pedido en un texto largo, se pregunta
+    if (sig.strongQuote && fold(text).split(" ").length > 3) return r("route_choice", "4_ambiguo");
+    return r("portal_flow", "3_respuesta");
   }
-  if (!input.isPortalUser) return sig.strongQuote ? "quote" : "passthrough";
-  if (isQuoterCommand(text)) return "passthrough";
+  if (!input.isPortalUser) return r(sig.strongQuote ? "quote" : "passthrough", "cotizador");
+  if (isQuoterCommand(text)) return r("passthrough", "cotizador_comando");
+  if (explicitQuoteStart(text)) return r("quote", "1_palabra");
 
   // "visité X, quedamos en mandarle la cotización": la palabra sola (sin medida, cantidad, correo ni precio) con un verbo
   // de reporte es un reporte, no un pedido
-  if (sig.strongQuote && sig.strongReport && quoteWordOnly(text)) return "report";
-  if (sig.strongQuote) return sig.strongReport ? "ambiguous" : "quote";
-  if (sig.strongReport) return "report";
-  if (sig.weakReport) return sig.weakQuote ? "ambiguous" : "report";
-  return "passthrough";
+  if (sig.strongQuote && sig.strongReport && quoteWordOnly(text)) return r("report", "reporte");
+  if (sig.strongQuote) return sig.strongReport ? r("ambiguous", "ambiguo") : r("quote", strongTyreQuote(text) ? "2_medida" : "cotizacion");
+  if (sig.strongReport) return r("report", "reporte");
+  if (sig.weakReport) return sig.weakQuote ? r("ambiguous", "ambiguo") : r("report", "reporte");
+  return r("passthrough", "cotizador");
 }

@@ -4,7 +4,9 @@
  *  - Próximas: las de mañana hasta hoy+7.
  *  - Sin fecha: oportunidades abiertas con próxima acción escrita pero sin fecha.
  *  - Citas de hoy y los próximos 7 días.
+ *  - En pausa: los procesos del bot que el vendedor dejó a medias (corrida D), con su vencimiento (48 h).
  */
+import { pausedExpired, pausedUntil, type PausedProcess } from "../bot/state";
 import type { Appointment, Opportunity } from "../store/types";
 import { addDays, limaDateKey, limaStartOfDay } from "./time";
 
@@ -80,4 +82,20 @@ export function selectToday(opps: Opportunity[], appointments: Appointment[], no
   }
   const citas = [...byDay.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([day, list]) => ({ day, esHoy: day === todayKey, citas: list }));
   return { from, to, acciones, proximas, sinFecha, citas };
+}
+
+export interface PausedItem {
+  ref: string;
+  label: string;
+  missing: string;
+  companyId: number | null;
+  pausedAt: Date;
+  /** Hasta cuándo se puede retomar. */
+  until: Date;
+  vencido: boolean;
+}
+
+/** Procesos en pausa para la pantalla Hoy: el más antiguo primero (el que hay que resolver antes). */
+export function pausedForToday(list: PausedProcess[], now: Date): PausedItem[] {
+  return list.map((p) => ({ ref: p.ref, label: p.label, missing: p.missing, companyId: p.companyId, pausedAt: new Date(p.pausedAt), until: pausedUntil(p), vencido: pausedExpired(p, now) }));
 }

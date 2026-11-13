@@ -176,6 +176,11 @@ export interface MessageLogEntry {
   fileName?: string;
   /** The quote the message belongs to, when known. */
   quoteNumber?: string;
+  /**
+   * Portal (corrida D): which router rule decided this message (kind "route" rows, one per message of a portal user):
+   * "1_palabra", "2_medida", "3_respuesta", "4_ambiguo", "5_no_entendido", "comando", "reanudar"… (bot/router.ts).
+   */
+  routeRule?: string;
 }
 
 export interface LoggedMessage extends MessageLogEntry {

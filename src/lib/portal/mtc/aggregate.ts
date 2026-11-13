@@ -45,7 +45,24 @@ function bump(m: Map<string, number>, k: string | null): void {
   if (k) m.set(k, (m.get(k) ?? 0) + 1);
 }
 
-export function aggregateCompanies(vehicles: Iterable<AggInput>, opts: { minUnits?: number } = {}): CompanyAggregate[] {
+/** Umbral por defecto (config/portal.json → import.sectorMajority). */
+export const DEFAULT_SECTOR_MAJORITY = 0.9;
+
+/**
+ * Sector por mayoría: si la porción de unidades de un origen es al menos `majority` (0.5 < majority ≤ 1), ese sector;
+ * si no, "mixto". Sin unidades → null. Misma función en el import del padrón y en `portal:recalc-sector`.
+ */
+export function classifySector(carga: number, pasajeros: number, majority: number = DEFAULT_SECTOR_MAJORITY): Sector | null {
+  const total = carga + pasajeros;
+  if (total <= 0) return null;
+  // tolerancia de coma flotante para el borde exacto (p. ej. 9/10 frente a 0.9)
+  const reaches = (n: number) => n / total + 1e-9 >= majority;
+  if (reaches(carga)) return "carga";
+  if (reaches(pasajeros)) return "pasajeros";
+  return "mixto";
+}
+
+export function aggregateCompanies(vehicles: Iterable<AggInput>, opts: { minUnits?: number; sectorMajority?: number } = {}): CompanyAggregate[] {
   const accs = new Map<string, Acc>();
   for (const v of vehicles) {
     let a = accs.get(v.ruc);
@@ -74,7 +91,7 @@ export function aggregateCompanies(vehicles: Iterable<AggInput>, opts: { minUnit
     out.push({
       ruc: a.ruc,
       razonSocial: mode(a.names) ?? "",
-      sector: a.byOrigin.carga && a.byOrigin.pasajeros ? "mixto" : a.byOrigin.pasajeros ? "pasajeros" : "carga",
+      sector: classifySector(a.byOrigin.carga, a.byOrigin.pasajeros, opts.sectorMajority) ?? "carga",
       departamento: mode(a.deps),
       unidades,
       unidadesCarga: a.byOrigin.carga,

@@ -17,6 +17,7 @@
  */
 import { companyKey, findCompanies, shortName } from "../bot/companies";
 import { creditWarning } from "../credit/warning";
+import { companyProgressLine } from "../bot/progress";
 import type { PortalContext } from "../bot/registry";
 import { isExpired, type PendingStep } from "../bot/state";
 import { stageIndex, stageLabel } from "../stages";
@@ -25,6 +26,7 @@ import { foldText } from "../store/shared";
 import type { Activity, Company, Opportunity, PortalStore, PortalUser } from "../store/types";
 import { fmtMoney } from "../../quote/pricing";
 import type { Quote, QuoteRequest } from "../../quote/types";
+import { deliverInteractive, portalButtons, type InteractiveMessage } from "../../whatsapp/interactive";
 
 /** Clave del estado del portal (portal_conversations) con la propuesta de enlace pendiente. */
 export const LINK_STATE_KEY = "linkQuote";
@@ -236,6 +238,8 @@ export interface LinkQuoteInput extends HookOptions {
   quote: Pick<Quote, "number" | "total" | "currency" | "items" | "customer" | "requestText">;
   /** Mensaje al vendedor (va después de los mensajes del cotizador). */
   reply: (body: string) => Promise<void>;
+  /** Interactivo (botón *Enlazar*); sin él, o si falla, la pregunta va como texto con `reply`. */
+  replyInteractive?: (message: InteractiveMessage) => Promise<void>;
 }
 
 /**
@@ -267,7 +271,9 @@ export async function linkQuoteToPortal(input: LinkQuoteInput): Promise<LinkOutc
     if (asked?.quoteNumber === q.number && asked.companyId === candidate.id) return "asked" as const;
     const step: LinkQuoteStep = { kind: "link_quote", createdAt: now.toISOString(), ...base, via: "nombre", companyId: candidate.id, razonSocial: candidate.razonSocial, ruc: candidate.ruc };
     await setLinkStep(store, input.from, step);
-    await input.reply(`¿La cotización *${short}* es para *${candidate.razonSocial}* (RUC ${candidate.ruc}) del portal? Responde *enlazar* o ignóralo.`);
+    const ask = `¿La cotización *${short}* es para *${candidate.razonSocial}* (RUC ${candidate.ruc}) del portal? Responde *enlazar* o ignóralo.`;
+    // botón *Enlazar* (id = el comando `enlazar`): pulsarlo o escribirlo es lo mismo
+    await deliverInteractive({ type: "button", body: ask, buttons: portalButtons([{ id: "enlazar", title: "Enlazar" }]) }, { send: input.replyInteractive, sendText: input.reply, log: input.log }, ask);
     return "asked" as const;
   });
   return res ?? "none";
@@ -295,7 +301,8 @@ export async function confirmQuoteLink(ctx: Ctx, args = ""): Promise<boolean> {
     return true;
   }
   const opp = await performLink(ctx.store, ctx.user, company, { ...step, via: "nombre" }, ctx.now);
-  await ctx.reply(withCredit(`🔗 Listo: cotización *${shortQuoteNumber(step.quoteNumber)}* enlazada a *${company.razonSocial}* (${stageLabel(opp.etapa)}).`, await creditWarning(ctx.store, company)));
+  const progress = await companyProgressLine(ctx.store, company, 5); // línea de avance (corrida D): paso 5
+  await ctx.reply(withCredit(`🔗 Listo: cotización *${shortQuoteNumber(step.quoteNumber)}* enlazada a *${company.razonSocial}* (${stageLabel(opp.etapa)}).`, await creditWarning(ctx.store, company)) + (progress ? `\n${progress}` : ""));
   return true;
 }
 
@@ -352,7 +359,10 @@ export async function markQuoteForwarded(ctx: Ctx, args = ""): Promise<boolean> 
   const who = company ? shortName(company.razonSocial) : "la empresa";
   const stage = opp ? ` (${stageLabel(opp.etapa)})` : "";
   if (outcome === "already") await ctx.reply(`La cotización *${shortQuoteNumber(quoteNumber)}* de *${who}* ya estaba registrada como enviada${stage}.`);
-  else await ctx.reply(`📤 Cotización *${shortQuoteNumber(quoteNumber)}* de *${who}* registrada como enviada${stage}.`);
+  else {
+    const progress = company ? await companyProgressLine(ctx.store, company, 5, "cotización enviada") : ""; // línea de avance (corrida D): paso 5
+    await ctx.reply(`📤 Cotización *${shortQuoteNumber(quoteNumber)}* de *${who}* registrada como enviada${stage}.${progress ? `\n${progress}` : ""}`);
+  }
   return true;
 }
 

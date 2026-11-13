@@ -1,15 +1,20 @@
 # Guion de prueba de Frank para el simulador del bot (portal + cotizador):
 #   npm run portal:simulate -- --as frank --script scripts/guion-frank.txt
 # Una línea por mensaje. Se ignoran las líneas vacías y las que empiezan con #.
+# @btn <título> pulsa un botón (o una fila de lista) del último mensaje del bot, como en WhatsApp (corrida D);
+# @btn <título> || <texto> lo pulsa si el bot lo ofreció y si no escribe el equivalente (los datos copiados de data/
+# pueden traer la empresa ya asignada o la cotización ya enlazada de una prueba anterior con --persist).
 # Empresa real del padrón MTC: ZBUSS S.A.C. (RUC 20602221505, 85 unidades, 82 ómnibus).
 # Recorre el flujo completo de Frank con una empresa real del padrón (ZBUSS S.A.C., RUC 20602221505).
 
+# 0. Empezar limpio (cierra una cotización o pregunta abierta de una prueba anterior)
+cancelar
 # 1. Enlace al portal
 portal
-# 2. Buscar la empresa (ficha corta)
+# 2. Buscar la empresa (ficha corta) con el botón *Asignarme*
 empresa zbuss
-# 3. Tomarla: dueño, oportunidad en Prospecto y ficha completa
-asignarme 20602221505
+# 3. Tomarla con el botón (equivale a *asignarme 20602221505*): dueño, oportunidad en Prospecto y ficha completa
+@btn Asignarme || asignarme zbuss
 # 4. Primer contacto
 contacto zbuss: Carlos Quispe, jefe de flota, 987 654 321
 # 5. Cita con el jefe del Dpto. Técnico: .ics sin leyenda + resumen + aviso a Danyer (sin PORTAL_TECH_LEAD_NUMBER, el bot lo dice)
@@ -17,27 +22,37 @@ cita zbuss martes 10am en su base de Ate con danyer
 # 6. Reporte de visita en texto y confirmación (B3)
 #    (sin ANTHROPIC_API_KEY lo interpreta por reglas; con la clave, el modelo. Una nota de voz: @audio <archivo.ogg>)
 Visité ZBUSS, hablé con Carlos Quispe, jefe de flota. Tienen 82 ómnibus y quieren probar Fenixway en direccional. Quedamos en mandarle la cotización el jueves.
-sí
+@btn Sí, guardar
 # 7. Cotización con el formato actual para ZBUSS, enlazada a la oportunidad (B4): el cotizador pregunta si es para la
-#    empresa del portal y *enlazar* la une (si ya la enlazó por RUC, *enlazar* solo dice que no hay nada pendiente)
+#    empresa del portal y el botón *Enlazar* la une (equivale a escribir *enlazar*)
 Fenixway Flama 77 295/80R22.5 x8 precio 254 para ZBUSS S.A.C.
 ok
-enlazar
+@btn Enlazar || enlazar
 # 8. Orden de compra y pedido para Patricia (B5): usa la cotización enlazada y pregunta una cosa a la vez
 #    (con un PDF: @doc ruta/oc.pdf oc zbuss 4500123). Respuestas: cotización, dirección fiscal, entrega, contacto,
 #    agencia, fecha, enllante, marcado, flete, plazo, observaciones. Excel sin leyenda en out/simulacion/ + resumen.
-oc zbuss 4500123
-sí
+#    Con texto de más (corrida D): reconoce empresa y n° de OC y dice en una línea lo que no usó. Las preguntas con
+#    valor por defecto o sí/no se responden con botones; las demás, escritas.
+oc zbuss 4500123 y responde las preguntas del pedido
+@btn Sí
 Av. Nicolás Ayllón 2480, Ate, Lima
-la misma
-igual
-ninguna
+@btn La misma
+@btn Igual
+@btn Ninguna
+# 8b. Interrupción (corrida D, punto 7): con la pregunta de la fecha de entrega en curso llega una cotización urgente.
+#     El cotizador responde normal y al final: "⏸ Dejaste pendiente: pedido de la OC 4500123 de ZBUSS (falta fecha de
+#     entrega)." con *Continuar* / *Descartar*. *ok* guarda esa cotización y *Continuar* repite la pregunta de la fecha.
+Fenixway Valor 87 295/80R22.5 x4 para Transportes Beta
+ok
+@btn Continuar || continuar
 20/11
-sí
-no
-cliente
-igual
-ninguna
+@btn Sí
+@btn No
+@btn Cliente
+@btn Igual
+@btn Ninguna
+# 8c. En qué paso vas con ZBUSS (1 Asignada … 7 Pedido a Patricia) y la próxima acción
+estado zbuss
 # 9. Avance del mes (C2) y pre-propuesta (C1)
 avance
 prepropuesta zbuss

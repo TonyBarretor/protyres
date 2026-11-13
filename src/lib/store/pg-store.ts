@@ -413,7 +413,18 @@ export class PgStore implements PriceStore {
   }
 
   async logMessage(entry: MessageLogEntry): Promise<void> {
-    await this.db.insert(schema.messages).values({ phone: entry.phone.replace(/\D/g, ""), direction: entry.direction, kind: entry.kind, body: entry.body, fileName: entry.fileName ?? null, quoteNumber: entry.quoteNumber ?? null });
+    const values = { phone: entry.phone.replace(/\D/g, ""), direction: entry.direction, kind: entry.kind, body: entry.body, fileName: entry.fileName ?? null, quoteNumber: entry.quoteNumber ?? null };
+    if (entry.routeRule) {
+      // route_rule (corrida D) no está en el esquema de Drizzle: así select/insert de siempre no dependen de la migración.
+      // Sin la columna todavía (migración pendiente), la fila se guarda igual sin ella (la regla también va en body).
+      try {
+        await this.db.execute(sql`insert into messages (phone, direction, kind, body, file_name, quote_number, route_rule) values (${values.phone}, ${values.direction}, ${values.kind}, ${values.body}, ${values.fileName}, ${values.quoteNumber}, ${entry.routeRule})`);
+        return;
+      } catch (err) {
+        if (!isMissingColumn(err)) throw err;
+      }
+    }
+    await this.db.insert(schema.messages).values(values);
   }
 
   async listMessages(phone: string, limit = 30): Promise<LoggedMessage[]> {

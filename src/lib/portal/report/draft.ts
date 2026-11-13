@@ -98,7 +98,7 @@ export function nextQuestion(draft: ReportDraft): DraftQuestion | null {
 
 // ── confirmación ──
 
-const YES = ["si", "ok", "okey", "okay", "oki", "correcto", "dale", "esta bien", "confirmo", "confirmado", "perfecto", "listo", "de acuerdo", "asi es", "exacto", "claro", "va", "yes", "todo bien", "bien"];
+const YES = ["si", "ok", "okey", "okay", "oki", "correcto", "dale", "esta bien", "confirmo", "confirmado", "perfecto", "listo", "de acuerdo", "asi es", "exacto", "claro", "va", "yes", "todo bien", "bien", "guardar", "guardalo", "guarda"];
 const NO = ["no", "cancelar", "cancela", "cancelalo", "anular", "anula", "descartar", "descartalo", "olvidalo", "no gracias", "no guardes", "no lo guardes"];
 
 function phraseOnly(text: string, phrases: string[]): boolean {
@@ -119,7 +119,7 @@ function phraseOnly(text: string, phrases: string[]): boolean {
   return !t.trim();
 }
 
-/** "sí", "si", "ok", "correcto", "dale", "está bien", "confirmo", "sí, está bien", 👍. */
+/** "sí", "si", "ok", "correcto", "dale", "está bien", "confirmo", "sí, está bien", "sí, guardar" (título del botón), 👍. */
 export function isConfirmation(text: string): boolean {
   if (/^\s*(?:👍|👌|✅)+\s*$/u.test(text)) return true;
   return phraseOnly(text.replace(/[👍👌✅]/gu, " "), YES);

@@ -1,12 +1,14 @@
 /**
  * Reportes de visita / llamada / nota por WhatsApp (texto o nota de voz) y `aprende X = Y` (bloque B3).
  *
+ *  0. Una nota de voz cuya transcripción empieza con un comando del portal ("asígname ZBUSS") corre ese comando.
  *  1. Voz: descarga el audio (Graph API, o lo que se inyecte), lo transcribe con Deepgram Nova-3 con las empresas del
  *     vendedor y el vocabulario aprendido como keyterms, guarda la transcripción en `messages` (kind "transcript") y
  *     responde "🎙️ Entendí: «…»". Sin DEEPGRAM_API_KEY: la voz aún no está activa, pide texto.
  *  2. Interpreta el texto (Anthropic, o reglas sin clave) y arma un borrador. Si falta algo (empresa, tipo con confianza
  *     baja, fecha de la próxima acción) pregunta UNA cosa a la vez; si no, muestra el resumen y espera confirmación.
  *     El borrador vive en el paso pendiente `report_draft` (vence a las 2 h; `cancelar` lo borra).
+ *     El resumen lleva los botones *Sí, guardar* (id `sí`) y *Corregir* (id `corregir`: pide el cambio y sigue esperando).
  *  3. `sí` guarda: actividad (occurred_at = lo dicho o la hora del mensaje), oportunidad (la crea si no hay; la etapa solo
  *     avanza, con historial), próxima acción y contacto nuevo. `no` descarta. Otro texto corrige el borrador.
  *     La oportunidad solo se toca si el vendedor puede editar la empresa (canEditCompany, como `cita`/`contacto`); si no,
@@ -27,8 +29,11 @@ import type { Company, PortalStore } from "../store/types";
 import { formatLimaDateTime } from "../ui/time";
 import { deepgramKeyFromEnv, transcribe, TranscriptionError, VoiceNotConfigured } from "../voice/deepgram";
 import { buildKeyterms, parseLearnCommand } from "../voice/vocabulary";
-import { findCompanies, mentionedCompanies } from "./companies";
-import { registerPendingHandler, registerPortalCommand, setDefaultReportHandler, type PortalContext, type ReportOptions } from "./registry";
+import { findCompanies, mentionedCompanies, shortName } from "./companies";
+import { askAgain } from "./pause";
+import { companyProgressLine } from "./progress";
+import { getPortalCommand, registerPausable, registerPendingHandler, registerPortalCommand, replyButtons, setDefaultReportHandler, type PortalContext, type ReportOptions } from "./registry";
+import { parsePortalCommand } from "./router";
 import { clearPending, setPending, type ReportDraftStep } from "./state";
 
 export const VOICE_OFF = "La voz aún no está activa. Escríbeme el reporte en texto, por favor.";
@@ -36,6 +41,14 @@ export const VOICE_FAILED = "No pude transcribir tu nota de voz. Escríbeme el r
 export const VOICE_EMPTY = "No entendí nada en la nota de voz (¿salió en silencio?). Escríbeme el reporte en texto, por favor.";
 export const VOICE_DOWNLOAD_FAILED = "No pude descargar tu nota de voz de WhatsApp. Escríbeme el reporte en texto, por favor.";
 export const REPORT_DISCARDED = "Listo, descarté el reporte. No guardé nada.";
+/** Respuesta al botón *Corregir* (o a escribir `corregir`): el borrador sigue esperando. */
+export const REPORT_CORRECT_PROMPT = "¿Qué corrijo? Escríbeme el cambio (p. ej. *fue con el gerente de flota* o *la próxima visita es el viernes 10am*), o *no* para descartar.";
+/** Botones del resumen: id = el texto equivalente (`sí` guarda, `corregir` pide la corrección). */
+export const REPORT_CONFIRM_BUTTONS = [
+  { id: "sí", title: "Sí, guardar" },
+  { id: "corregir", title: "Corregir" },
+];
+const CORRECT_WORD = /^(?:corregir|corrige|corrijo|corregirlo|quiero corregir)[.!]*$/i;
 
 type Download = (mediaId: string) => Promise<{ data: Buffer; mimeType: string; fileName?: string }>;
 
@@ -172,16 +185,18 @@ export async function transcribeVoice(ctx: PortalContext, audio: { id: string; m
 // ── borrador ──
 
 /** Guarda el borrador como paso pendiente y responde la siguiente pregunta o el resumen. */
-async function showDraft(ctx: PortalContext, draft: ReportDraft, base: { text: string; occurredAt: string }): Promise<void> {
+async function showDraft(ctx: PortalContext, draft: ReportDraft, base: { text: string; occurredAt: string }, prefix = ""): Promise<void> {
   const q = nextQuestion(draft);
   const step: Omit<ReportDraftStep, "createdAt"> = { kind: "report_draft", text: base.text, occurredAt: base.occurredAt, audio: null, draft, field: q?.field ?? null };
   await setPending(ctx.store, ctx.from, step, ctx.now);
+  const head = prefix ? `${prefix}\n\n` : "";
   if (q) {
-    await ctx.reply(q.text);
+    await ctx.reply(`${head}${q.text}`);
     return;
   }
   const company = draft.companyId !== null ? await ctx.store.getCompany(draft.companyId) : null;
-  await ctx.reply(formatDraftSummary(draft, company));
+  const summary = `${head}${formatDraftSummary(draft, company)}`;
+  await replyButtons(ctx, summary, REPORT_CONFIRM_BUTTONS, { fallback: summary });
 }
 
 /** Reporte nuevo (texto o voz). */
@@ -191,6 +206,13 @@ export async function interpretReport(ctx: PortalContext, rawText: string, opts:
   if (opts.audio) {
     const t = await transcribeVoice(ctx, opts.audio);
     if (t === null) return;
+    // una nota de voz que empieza con un comando del portal ("asígname ZBUSS", "empresa zbuss") es ese comando
+    const cmd = text ? null : parsePortalCommand(t.replace(/^[\s¿¡]+|[\s.!?¡¿]+$/g, ""));
+    const handler = cmd ? getPortalCommand(cmd.name) : undefined;
+    if (cmd && handler) {
+      await handler(ctx, cmd.args);
+      return;
+    }
     text = text ? `${text}\n${t}` : t;
     canal = "voz";
   }
@@ -261,7 +283,9 @@ async function saveDraft(ctx: PortalContext, draft: ReportDraft): Promise<void> 
   }
   await clearPending(store, ctx.from);
   const tipo = draft.tipo === "visita" ? "visita" : draft.tipo === "llamada" ? "llamada" : "nota";
-  await ctx.reply(`✔ Guardado: ${tipo} — *${displayName(company.razonSocial)}* (${formatLimaDateTime(activity.occurredAt)}).${lines.length ? `\n${lines.join("\n")}` : ""}`);
+  // una visita completa el paso 4 del proceso (línea de avance); una llamada o nota no completa ningún paso
+  const progress = draft.tipo === "visita" ? await companyProgressLine(store, company, 4) : "";
+  await ctx.reply(`✔ Guardado: ${tipo} — *${displayName(company.razonSocial)}* (${formatLimaDateTime(activity.occurredAt)}).${lines.length ? `\n${lines.join("\n")}` : ""}${progress ? `\n${progress}` : ""}`);
 }
 
 /** "La empresa es de Juan: …" / "La empresa no tiene dueño: …". */
@@ -306,6 +330,10 @@ registerPendingHandler("report_draft", async (ctx, step, rawText) => {
     await ctx.reply(REPORT_DISCARDED);
     return true;
   }
+  if (CORRECT_WORD.test(text.trim())) {
+    await ctx.reply(field ? `${nextQuestion(draft)?.text ?? REPORT_CORRECT_PROMPT}` : REPORT_CORRECT_PROMPT);
+    return true;
+  }
   if (isConfirmation(text)) {
     if (field) {
       await ctx.reply(`${nextQuestion(draft)?.text ?? "Falta un dato."}\n_(o *cancelar* para descartar el reporte)_`);
@@ -324,6 +352,31 @@ registerPendingHandler("report_draft", async (ctx, step, rawText) => {
   }
   await showDraft(ctx, next, { text: s.text, occurredAt: s.occurredAt });
   return true;
+});
+
+/** Qué le falta al borrador, para el recordatorio de la pausa. */
+const FIELD_MISSING: Record<DraftField, string> = { empresa: "falta la empresa", tipo: "falta si fue visita, llamada o nota", "proximaAccion.fecha": "falta la fecha de la próxima acción" };
+
+/** En pausa (corrida D, puntos 4 y 7): "reporte de visita de ZBUSS (falta confirmar)"; con el resumen mostrado, *Sí, guardar*. */
+registerPausable("report_draft", {
+  async describe(ctx, step) {
+    const s = step as ReportDraftStep;
+    if (!s.draft) return { companyId: null, label: `reporte «${clip(s.text || "nota de voz", 40)}»`, missing: "falta interpretarlo" };
+    const d = s.draft;
+    const company = d.companyId !== null ? await ctx.store.getCompany(d.companyId).catch(() => null) : null;
+    const tipo = d.tipo === "visita" ? "de visita" : d.tipo === "llamada" ? "de llamada" : d.tipo === "nota" ? "(nota)" : "";
+    const label = `reporte ${tipo}${company ? ` de ${shortName(company.razonSocial)}` : ""}`.replace(/\s+/g, " ").trim();
+    const field = s.field ?? null;
+    return { companyId: company?.id ?? null, label, missing: field ? FIELD_MISSING[field] : "falta confirmar", ...(field ? {} : { confirm: true }) };
+  },
+  async resume(ctx, step, prefix) {
+    const s = step as ReportDraftStep;
+    if (!s.draft) {
+      await askAgain(ctx, step, prefix, "Respóndeme *sí* para interpretarlo, o *cancelar*.");
+      return;
+    }
+    await showDraft(ctx, s.draft, { text: s.text, occurredAt: s.occurredAt }, prefix);
+  },
 });
 
 setDefaultReportHandler(interpretReport);

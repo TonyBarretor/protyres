@@ -1,4 +1,5 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
+import { isPortalId, stripPortalPrefix } from "./interactive";
 
 export interface InboundMessage {
   id: string;
@@ -13,6 +14,12 @@ export interface InboundMessage {
   replyTo?: string;
   /** Display name from the contacts array. */
   profileName?: string;
+  /** Respuesta a un botón o lista (type "interactive"): el id tal como llegó (con prefijo `pt:` si es del portal). */
+  interactiveId?: string;
+  /** "button_reply" o "list_reply". */
+  interactiveType?: string;
+  /** Título del botón / fila pulsado. */
+  interactiveTitle?: string;
 }
 
 interface WebhookPayload {
@@ -62,8 +69,13 @@ export function parseWebhook(payload: unknown): { messages: InboundMessage[]; ph
           msg.text = med?.caption;
         } else if (type === "button") msg.text = String((m.button as { text?: string })?.text ?? "");
         else if (type === "interactive") {
-          const i = m.interactive as { button_reply?: { title?: string }; list_reply?: { title?: string } };
-          msg.text = i?.button_reply?.title ?? i?.list_reply?.title;
+          const i = m.interactive as { type?: string; button_reply?: { id?: string; title?: string }; list_reply?: { id?: string; title?: string } };
+          const reply = i?.button_reply ?? i?.list_reply;
+          msg.interactiveType = i?.type ?? (i?.button_reply ? "button_reply" : i?.list_reply ? "list_reply" : undefined);
+          msg.interactiveId = reply?.id;
+          msg.interactiveTitle = reply?.title;
+          // id del portal (`pt:<texto equivalente>`): el bot procesa ese texto, igual que si se hubiera escrito; si no, el título
+          msg.text = isPortalId(reply?.id) ? stripPortalPrefix(reply!.id!) : reply?.title;
         }
         out.push(msg);
       }

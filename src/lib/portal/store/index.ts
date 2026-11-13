@@ -16,6 +16,9 @@ export function portalStorePath(): string {
  * si no, JSON local en PORTAL_STORE_PATH o data/portal-store.json.
  */
 export async function getPortalStore(): Promise<PortalStore> {
+  // store JSON: si otro proceso (el simulador con --persist, un CLI) escribió el archivo, se vuelve a cargar; si no, el
+  // servidor no vería sus cambios (enlaces nuevos) y su siguiente escritura los pisaría
+  if (shared instanceof JsonPortalStore && shared.isStaleOnDisk()) shared = null;
   if (shared) return shared;
   // En vitest nunca se lee data/ ni la base: sin store inyectado ni PORTAL_STORE_PATH explícito, uno vacío en memoria
   // (los tests del cotizador usan el número real de Frank y no deben depender de los datos locales).

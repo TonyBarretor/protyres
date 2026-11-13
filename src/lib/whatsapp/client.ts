@@ -1,11 +1,17 @@
 /**
  * WhatsApp Cloud API (Meta Graph API) client + a fake for tests / local simulation.
  */
+import { graphInteractive, type InteractiveMessage } from "./interactive";
+
+export type { InteractiveMessage } from "./interactive";
 
 export interface OutboundMessage {
   to: string;
-  kind: "text" | "document" | "image";
+  kind: "text" | "document" | "image" | "interactive";
+  /** Texto (kind "text") o body del interactivo. */
   body?: string;
+  /** Botones / lista (kind "interactive"). */
+  interactive?: InteractiveMessage;
   /** image by public URL (no upload) */
   link?: string;
   fileName?: string;
@@ -20,6 +26,11 @@ export interface WhatsAppClient {
   /** Send a picture: a public URL, or bytes (uploaded first). */
   sendImage(to: string, image: { link?: string; data?: Buffer; mimeType?: string }, caption?: string): Promise<void>;
   downloadMedia(mediaId: string): Promise<{ data: Buffer; mimeType: string; fileName?: string }>;
+  /**
+   * Botones de respuesta o lista (ya validados con prepareInteractive). Lanza si WhatsApp lo rechaza: quien llama cae a
+   * texto (deliverInteractive en interactive.ts).
+   */
+  sendInteractive(to: string, message: InteractiveMessage): Promise<void>;
 }
 
 export interface GraphConfig {
@@ -63,6 +74,16 @@ export class GraphWhatsAppClient implements WhatsAppClient {
         text: { preview_url: false, body: chunk },
       });
     }
+  }
+
+  async sendInteractive(to: string, message: InteractiveMessage): Promise<void> {
+    await this.post(`${this.cfg.phoneNumberId}/messages`, {
+      messaging_product: "whatsapp",
+      recipient_type: "individual",
+      to,
+      type: "interactive",
+      interactive: graphInteractive(message),
+    });
   }
 
   async uploadMedia(file: Buffer, fileName: string, mimeType: string): Promise<string> {
@@ -147,13 +168,26 @@ export class FakeWhatsAppClient implements WhatsAppClient {
     this.sent.push(m);
     this.onSend?.(m);
   }
+  /** Tests: si se define, sendInteractive lanza este error (para probar la caída a texto). */
+  failInteractive?: Error;
+  async sendInteractive(to: string, message: InteractiveMessage): Promise<void> {
+    if (this.failInteractive) throw this.failInteractive;
+    const m: OutboundMessage = { to, kind: "interactive", body: message.body, interactive: message };
+    this.sent.push(m);
+    this.onSend?.(m);
+  }
   async downloadMedia(mediaId: string) {
     const m = this.media.get(mediaId);
     if (!m) throw new Error(`fake media not found: ${mediaId}`);
     return m;
   }
+  /** Lo que el usuario lee: textos y el body de los interactivos (los botones, en `interactive`). */
   texts(): string[] {
-    return this.sent.filter((m) => m.kind === "text").map((m) => m.body ?? "");
+    return this.sent.filter((m) => m.kind === "text" || m.kind === "interactive").map((m) => m.body ?? "");
+  }
+  /** Los interactivos enviados. */
+  interactives(): InteractiveMessage[] {
+    return this.sent.filter((m) => m.kind === "interactive" && m.interactive).map((m) => m.interactive!);
   }
   last(): OutboundMessage | undefined {
     return this.sent[this.sent.length - 1];

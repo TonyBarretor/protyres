@@ -1,15 +1,16 @@
 /**
  * Layout de la encuesta pública (/encuesta/[token]): sin sesión (está fuera de /portal, el proxy no la toca), sin índice
- * de buscadores y sin Referer (el token va en la URL). Misma identidad visual del portal.
+ * de buscadores y Referer solo al mismo origen (el token va en la URL; no-referrer rompería la server action: Origin null). Misma identidad visual del portal.
  */
 import type { ReactNode } from "react";
 import { Inter, Space_Grotesk } from "next/font/google";
+import { TOKEN_PAGE_REFERRER_POLICY } from "@/lib/portal/auth/constants";
 import "./encuesta.css";
 
 const inter = Inter({ subsets: ["latin"], display: "swap", variable: "--font-inter" });
 const spaceGrotesk = Space_Grotesk({ subsets: ["latin"], display: "swap", variable: "--font-space-grotesk", weight: ["500", "600", "700"] });
 
-export const metadata = { title: "Encuesta de satisfacción · 360 Tyres", robots: { index: false, follow: false }, referrer: "no-referrer" as const };
+export const metadata = { title: "Encuesta de satisfacción · 360 Tyres", robots: { index: false, follow: false }, referrer: TOKEN_PAGE_REFERRER_POLICY };
 export const viewport = { width: "device-width", initialScale: 1, themeColor: "#16181c" };
 
 export default function EncuestaLayout({ children }: { children: ReactNode }) {

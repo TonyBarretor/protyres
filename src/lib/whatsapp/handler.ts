@@ -144,6 +144,24 @@ function fmtDate(iso: string): string {
   return iso.split("-").reverse().join("/");
 }
 
+/** The option is not the model asked for: neither the same name nor one containing the other ("FLAMA 89" for "FLAMA 77"). */
+function modelDiffers(wantedModel: string | undefined, c: Candidate): boolean {
+  return !!wantedModel && c.modelScore < 0.9;
+}
+
+/**
+ * The model to check the options against, only when the line names a brand and its model looks like one: it has a digit
+ * ("FLAMA 77") or shares a word with a model of that brand in the lists ("X MULTI"). Free text the parser took for a model
+ * ("VISITE TRANSPORTES ABC NECESITAN") is not checked.
+ */
+function wantedModelOf(line: RequestLine, candidates: Candidate[]): string | undefined {
+  if (!line.brand || !line.model) return undefined;
+  if (/\d/.test(line.model)) return line.model;
+  const words = fold(line.model).split(" ").filter((w) => w.length >= 3);
+  const known = candidates.some((c) => fold(c.row.brand) === fold(line.brand!) && fold(c.row.model).split(" ").some((w) => words.includes(w)));
+  return known ? line.model : undefined;
+}
+
 /** A line that sets one of the quote's boxes: "unidad: Ayacucho", "ub 1830", "solicitante: …", "pago: letras", "validez 5 días". */
 const TERM_LINE = /^(atenci[oó]n|atn|att|direcci[oó]n|dir|tipo de pago|pago|plazo de entrega|plazo de pago|plazo|entrega|validez|tipo de cambio|tc|unidad atendida|unidad|sede|ub|u\.b\.|solicitante)(?:\s+(?:a|al|de|del)(?=\s*:))?\s*(?::\s*|\s+)(\S.*)$/i;
 
@@ -379,7 +397,17 @@ export class BotHandler {
     this.deps.log?.(msg);
   }
 
+  /**
+   * Atiende un mensaje y, al terminar, lo que el portal dejó para después (`defer`: el recordatorio de un proceso que pasó
+   * a pausa va DESPUÉS de la respuesta del cotizador). Sin nada diferido (siempre fuera del portal) es igual que antes.
+   */
   async handle(msg: InboundMessage): Promise<void> {
+    const after: Array<() => Promise<void>> = [];
+    await this.handleMessage(msg, after);
+    for (const fn of after) await fn();
+  }
+
+  private async handleMessage(msg: InboundMessage, after: Array<() => Promise<void>>): Promise<void> {
     const from = msg.from;
     const text = (msg.text ?? "").trim();
     const cmd = norm(text);
@@ -391,7 +419,7 @@ export class BotHandler {
       // Va primero para que `cancelar` limpie también el paso del portal y una nota de voz de un usuario del portal no
       // reciba "no leo audios"; con el cotizador a mitad de un flujo solo entran comandos explícitos del portal.
       const quoteStep = pendingProfile(state) ? "profile" : state.step;
-      if (await routePortal({ from, text, msg, quoteStep, reply: (body) => this.reply(from, body), sendDocument: (file, name, caption, mime) => this.client.sendDocument(from, file, name, caption, mime), sendTextTo: (to, body) => this.client.sendText(to, body), downloadMedia: (id) => this.client.downloadMedia(id), logMessage: (e) => this.store.logMessage(e), requote: (m) => this.handle(m), store: this.deps.portalStore, log: (m) => this.log(m) })) return;
+      if (await routePortal({ from, text, msg, quoteStep, reply: (body) => this.reply(from, body), replyInteractive: (m) => this.client.sendInteractive(from, m), sendDocument: (file, name, caption, mime) => this.client.sendDocument(from, file, name, caption, mime), sendTextTo: (to, body) => this.client.sendText(to, body), downloadMedia: (id) => this.client.downloadMedia(id), logMessage: (e) => this.store.logMessage(e), requote: (m) => this.handle(m), defer: (fn) => after.push(fn), store: this.deps.portalStore, log: (m) => this.log(m) })) return;
       if (["ayuda", "help", "?", "hola", "menu", "inicio"].includes(cmd)) return this.reply(from, HELP);
       if (["cancelar", "cancel", "salir", "reset"].includes(cmd)) {
         await this.store.setConversation(from, null);
@@ -661,7 +689,7 @@ export class BotHandler {
 
   // ---------- quote flow ----------
 
-  private optionLine(letter: string, c: Candidate): string {
+  private optionLine(letter: string, c: Candidate, wantedModel?: string): string {
     const r = c.row;
     const name = [r.brand, r.model].filter(Boolean).join(" ") || r.description.slice(0, 40);
     const size = r.sizeDisplay ? ` ${r.sizeDisplay}${r.ply ? ` ${r.ply}PR` : ""}` : "";
@@ -674,7 +702,13 @@ export class BotHandler {
       price = `*${fmtMoney(c.unitNet, this.cur)}* (costo ${fmtMoney(c.costNet!, this.cur)} ${r.provider}, ${fmtDateShort(r.priceDate)})`;
     }
     const tag = `${r.kind === "own" ? "🏭 STOCK" : `🚚 ${r.provider}`}${r.photoUrl ? " 📷" : ""}`;
-    const notes = c.reasons.filter((x) => !/^(sin stock|solo \d+ en stock)$/.test(x)).join(", ");
+    const reasons = c.reasons.filter((x) => !/^(sin stock|solo \d+ en stock)$/.test(x));
+    // a model other than the one asked for is always flagged (match.ts only flags clearly different names: FLAMA 89 for FLAMA 77 passed)
+    if (modelDiffers(wantedModel, c) && !reasons.some((x) => x.startsWith("modelo "))) {
+      const at = reasons.filter((x) => x.startsWith("descuento máximo") || x.startsWith("marca ")).length;
+      reasons.splice(at, 0, `modelo ${r.model || "distinto"}`);
+    }
+    const notes = reasons.join(", ");
     return `  *${letter})* ${tag}${stock} · ${name}${size}\n      ${price}${notes ? `\n      ⚠️ ${notes}` : ""}`;
   }
 
@@ -693,9 +727,13 @@ export class BotHandler {
         if (p.unitPriceOverride !== undefined) return `${head}\n  ✍️ precio manual ${fmtMoney(p.unitPriceOverride, this.cur)}`;
         return `${head}\n  ❌ sin precio en las listas → escribe *precio ${i + 1} 123.45* o *quitar ${i + 1}*`;
       }
-      const opts = lc.candidates.map((c, j) => this.optionLine(LETTERS[j], c)).join("\n");
+      const wanted = wantedModelOf(lc.line, lc.candidates);
+      const opts = lc.candidates.map((c, j) => this.optionLine(LETTERS[j], c, wanted)).join("\n");
+      const missing = wanted && lc.candidates.every((c) => modelDiffers(wanted, c))
+        ? `\n⚠️ No hay *${wanted}*${lc.line.size ? ` en ${lc.line.size.display}` : ""}; estas son las opciones más cercanas:`
+        : "";
       const chosen = p.chosen !== null ? ` → elegido *${LETTERS[p.chosen]}*${p.extra?.length ? ` ×${p.quantity}, ${p.extra.map((x) => `*${LETTERS[x.chosen]}* ×${x.quantity}`).join(", ")}` : ""}${p.unitPriceOverride !== undefined ? ` · precio manual ${fmtMoney(p.unitPriceOverride, this.cur)}` : ""}` : "";
-      return `${head}${chosen}\n${opts}`;
+      return `${head}${chosen}${missing}\n${opts}`;
     });
     const extras = [req.customerCompany ?? req.customerName ?? "", req.customerEmail ?? "", req.discountPct !== undefined ? `dscto ${req.discountPct}%` : "", req.marginPct !== undefined ? `margen ${req.marginPct}%` : "", req.showPricesWithTax === true ? "con IGV" : req.showPricesWithTax === false ? "sin IGV" : ""].filter(Boolean);
     const unparsed = this.unparsedOf(req);
@@ -1274,7 +1312,7 @@ export class BotHandler {
   private async presentQuote(from: string, quote: Quote, opts: { lead?: string; summary?: boolean } = {}): Promise<void> {
     await this.presentQuoteMessages(from, quote, opts);
     // portal: enlace a la oportunidad, después de todos los mensajes del cotizador; nunca lanza (fuera del portal no hace nada)
-    await linkQuoteToPortal({ from, quote, reply: (body) => this.reply(from, body), store: this.deps.portalStore, log: (m) => this.log(m) });
+    await linkQuoteToPortal({ from, quote, reply: (body) => this.reply(from, body), replyInteractive: (m) => this.client.sendInteractive(from, m), store: this.deps.portalStore, log: (m) => this.log(m) });
   }
 
   private async presentQuoteMessages(from: string, quote: Quote, opts: { lead?: string; summary?: boolean } = {}): Promise<void> {
@@ -1995,7 +2033,8 @@ export class BotHandler {
       if (d.length >= 7) phone = d.length === 9 && d.startsWith("9") ? `51${d}` : d; // a Peruvian mobile without the country code
       else limit = Math.min(100, Math.max(1, parseInt(d, 10)));
     }
-    const msgs = await this.store.listMessages(phone, limit);
+    // las filas `route` (qué regla del portal decidió cada mensaje, para revisar el piloto) no son conversación
+    const msgs = (await this.store.listMessages(phone, limit * 2)).filter((m) => m.kind !== "route").slice(-limit);
     if (!msgs.length) return this.reply(from, `No hay mensajes registrados de ${phone}.`);
     await this.reply(from, [`*Historial ${phone}* (${msgs.length})`, ...msgs.map((m) => historyLine(m))].join("\n"));
   }

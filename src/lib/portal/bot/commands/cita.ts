@@ -6,16 +6,20 @@
  *   -> "con danyer" / "con el ing. danyer" / "con técnico": aviso por WhatsApp al jefe del Dpto. Técnico (config/portal.json
  *      `techLead`); sin número configurado, se le dice al vendedor que avise él.
  * La empresa es lo que va antes de la fecha (varias coincidencias -> lista y la cita sigue al elegir). Sin hora -> la pide.
+ * Texto de más tras el nombre ("cita zbuss para revisar llantas el viernes 10am") se ignora y se dice en una línea; sin
+ * día -> lo pregunta (paso cita_fecha); sin empresa -> la pregunta (paso cita_empresa).
  */
 import { canEditCompany } from "../../auth/permissions";
 import { loadPortalConfig, type PortalTechLeadConfig } from "../../config";
 import { stageIndex, stageLabel } from "../../stages";
 import { digits, foldText } from "../../store/shared";
 import type { Appointment, Company, Contact } from "../../store/types";
-import { companyUrl, resolveCompany, shortName } from "../companies";
+import { companyUrl, leftover, resolveCompany, shortName, splitCompany, unusedNote } from "../companies";
 import { atLimaTime, formatCitaDate, parseSpanishDateTime, parseTimeOfDay } from "../dates";
 import { buildIcs, ICS_MIME } from "../ics";
-import { registerCompanyAction, registerPendingHandler, registerPortalCommand, type PortalContext } from "../registry";
+import { askAgain } from "../pause";
+import { companyProgressLine } from "../progress";
+import { registerCompanyAction, registerPausable, registerPendingHandler, registerPortalCommand, type PortalContext } from "../registry";
 import { clearPending, setPending, type PendingStep } from "../state";
 import { limaDateKey, limaStartOfDay } from "../../ui/time";
 
@@ -34,14 +38,22 @@ export interface ParsedCita {
   conTecnico: boolean;
 }
 
+/** Lo que falta en el comando: "fecha" (sin día; `text` = el resto sin "con danyer") o "empresa" (`partial` = lo demás). */
+export interface CitaParseError {
+  error: string;
+  missing: "fecha" | "empresa";
+  text?: string;
+  partial?: Omit<ParsedCita, "empresa">;
+}
+
 /** Separa empresa, fecha, lugar y "con danyer". */
-export function parseCitaArgs(args: string, now: Date): ParsedCita | { error: string } {
+export function parseCitaArgs(args: string, now: Date): ParsedCita | CitaParseError {
   let text = args.trim();
   const tech = TECH_RE.exec(text);
   const conTecnico = !!tech;
   if (tech) text = `${text.slice(0, tech.index)} ${text.slice(tech.index + tech[0].length)}`.trim();
   const dm = parseSpanishDateTime(text, now);
-  if (!dm) return { error: `No entendí el día y la hora. ${CITA_USAGE}` };
+  if (!dm) return { error: `No entendí el día y la hora. ${CITA_USAGE}`, missing: "fecha", text };
   let empresa = dm.before.replace(/^(?:con|a|para)\s+/i, "").replace(/[\s,;:-]+(?:para|el)?$/i, "").trim();
   let lugar: string | null = dm.after.replace(/^[\s,;:.-]+/, "").replace(/^(?:en|lugar:?)\s+/i, "").replace(/[\s,;.]+$/, "").trim() || null;
   if (!lugar) {
@@ -52,7 +64,7 @@ export function parseCitaArgs(args: string, now: Date): ParsedCita | { error: st
       lugar = m[2].trim();
     }
   }
-  if (!empresa) return { error: `Falta la empresa. ${CITA_USAGE}` };
+  if (!empresa) return { error: `Falta la empresa. ${CITA_USAGE}`, missing: "empresa", partial: { date: dm.date, allDay: !!dm.allDay, lugar: lugar ? lugar.slice(0, 200) : null, conTecnico } };
   return { empresa, date: dm.date, allDay: !!dm.allDay, lugar: lugar ? lugar.slice(0, 200) : null, conTecnico };
 }
 
@@ -136,6 +148,8 @@ export interface CitaInput {
   date: Date;
   lugar: string | null;
   conTecnico: boolean;
+  /** "No usé: «…»." (texto de más en el comando). */
+  note?: string;
 }
 
 /** Crea la cita y responde (.ics sin leyenda + resumen). La fecha ya viene con hora. */
@@ -198,9 +212,12 @@ export async function createCita(ctx: PortalContext, company: Company, input: Ci
   }
 
   const lines = [`📅 Cita con *${company.razonSocial}* el *${when}*${input.lugar ? ` en ${input.lugar}` : ""} · Agrégala a tu calendario de Outlook abriendo el archivo.`];
+  if (input.note) lines.push(input.note);
   lines.push(moved ? `Oportunidad: ${stageLabel(fromStage)} → *${stageLabel("cita_agendada")}* · próxima acción: Visita` : `Oportunidad: sigue en *${stageLabel(opp.etapa)}* · próxima acción: Visita`);
   const tl = techLine(notice, techName);
   if (tl) lines.push(tl);
+  const progress = await companyProgressLine(store, company, 3);
+  if (progress) lines.push(progress);
   await ctx.reply(lines.join("\n"));
   return appt;
 }
@@ -212,6 +229,7 @@ interface CitaArgs {
   allDay: boolean;
   lugar: string | null;
   conTecnico: boolean;
+  note?: string;
 }
 
 /** Paso pendiente: la cita tiene día pero falta la hora. */
@@ -224,41 +242,140 @@ export interface CitaHoraStep extends PendingStep {
   conTecnico: boolean;
 }
 
+/** Paso pendiente: la cita tiene empresa pero falta el día (y la hora). */
+export interface CitaFechaStep extends PendingStep {
+  kind: "cita_fecha";
+  companyId: number;
+  lugar: string | null;
+  conTecnico: boolean;
+}
+
+/** Paso pendiente: la cita tiene día pero falta la empresa. */
+export interface CitaEmpresaStep extends PendingStep {
+  kind: "cita_empresa";
+  args: CitaArgs;
+}
+
+const notYours = (company: Company) => `*${company.razonSocial}* no es tuya. Primero: *asignarme ${company.ruc}* (o pide al supervisor).`;
+
+const hourQuestion = (company: Company, day: Date) => `¿A qué hora es la cita con *${company.razonSocial}* el ${formatCitaDate(day, true)}? Responde la hora (p. ej. *10am* o *15:30*).`;
+const dateQuestion = (company: Company) => `¿Qué día y a qué hora es la cita con *${company.razonSocial}*? (p. ej. *martes 10am* o *15/11 9:00*)`;
+const companyQuestion = (a: Pick<CitaArgs, "fecha" | "allDay">) => `¿Con qué empresa es la cita del ${formatCitaDate(new Date(a.fecha), a.allDay)}? Escribe el nombre o el RUC.`;
+
+async function askHour(ctx: PortalContext, company: Company, day: Date, lugar: string | null, conTecnico: boolean, note = ""): Promise<void> {
+  const step: Omit<CitaHoraStep, "createdAt"> = { kind: "cita_hora", companyId: company.id, day: day.toISOString(), lugar, conTecnico };
+  await setPending(ctx.store, ctx.from, step, ctx.now);
+  await ctx.reply(`${note ? `${note}\n` : ""}${hourQuestion(company, day)}`);
+}
+
 async function continueCita(ctx: PortalContext, company: Company, a: CitaArgs): Promise<void> {
   if (!canEditCompany(ctx.user, company)) {
-    await ctx.reply(`*${company.razonSocial}* no es tuya. Primero: *asignarme ${company.ruc}* (o pide al supervisor).`);
+    await ctx.reply(notYours(company));
     return;
   }
   const date = new Date(a.fecha);
   if (a.allDay) {
-    const step: Omit<CitaHoraStep, "createdAt"> = { kind: "cita_hora", companyId: company.id, day: date.toISOString(), lugar: a.lugar, conTecnico: a.conTecnico };
-    await setPending(ctx.store, ctx.from, step, ctx.now);
-    await ctx.reply(`¿A qué hora es la cita con *${company.razonSocial}* el ${formatCitaDate(date, true)}? Responde la hora (p. ej. *10am* o *15:30*).`);
+    await askHour(ctx, company, date, a.lugar, a.conTecnico, a.note);
     return;
   }
-  await createCita(ctx, company, { date, lugar: a.lugar, conTecnico: a.conTecnico });
+  await createCita(ctx, company, { date, lugar: a.lugar, conTecnico: a.conTecnico, note: a.note });
+}
+
+/** Empresa sin día: pregunta el día y la hora (paso cita_fecha). */
+async function askCitaDate(ctx: PortalContext, company: Company, a: { lugar: string | null; conTecnico: boolean; note?: string }): Promise<void> {
+  if (!canEditCompany(ctx.user, company)) {
+    await ctx.reply(notYours(company));
+    return;
+  }
+  const step: Omit<CitaFechaStep, "createdAt"> = { kind: "cita_fecha", companyId: company.id, lugar: a.lugar, conTecnico: a.conTecnico };
+  await setPending(ctx.store, ctx.from, step, ctx.now);
+  await ctx.reply(`${a.note ? `${a.note}\n` : ""}${dateQuestion(company)}`);
 }
 
 function pastReply(date: Date, allDay: boolean): string {
   return `Esa fecha ya pasó (${formatCitaDate(date, allDay)}). Escribe otro día y hora.`;
 }
 
+const isPast = (date: Date, allDay: boolean, now: Date) => (allDay ? date.getTime() < limaStartOfDay(now).getTime() : date.getTime() <= now.getTime());
+
 registerCompanyAction("cita", (ctx, company, args) => continueCita(ctx, company, args as unknown as CitaArgs));
+registerCompanyAction("cita_sin_fecha", (ctx, company, args) => askCitaDate(ctx, company, args as unknown as { lugar: string | null; conTecnico: boolean }));
 
 registerPortalCommand("cita", async (ctx, args) => {
   const p = parseCitaArgs(args, ctx.now);
   if ("error" in p) {
+    if (p.missing === "fecha" && p.text) {
+      // "cita zbuss": la empresa sí está, falta el día -> se pregunta
+      const split = await splitCompany(ctx.store, p.text);
+      if (split) {
+        const tech = TECH_RE.test(args);
+        // lo que sobra suele ser una fecha que no se entendió ("la próxima semana"): se dice así
+        const rest = leftover(split.rest);
+        const a = { lugar: null, conTecnico: tech, note: rest ? `No entendí el día y la hora («${rest}»).` : undefined };
+        const company = await resolveCompany(ctx, split.query, "cita_sin_fecha", a, { note: a.note });
+        if (company) await askCitaDate(ctx, company, a);
+        return;
+      }
+    }
+    if (p.missing === "empresa" && p.partial) {
+      // "cita el viernes 10am": falta la empresa -> se pregunta (paso cita_empresa)
+      const d = p.partial;
+      if (isPast(d.date, d.allDay, ctx.now)) {
+        await ctx.reply(pastReply(d.date, d.allDay));
+        return;
+      }
+      const citaArgs: CitaArgs = { fecha: d.date.toISOString(), allDay: d.allDay, lugar: d.lugar, conTecnico: d.conTecnico };
+      const step: Omit<CitaEmpresaStep, "createdAt"> = { kind: "cita_empresa", args: citaArgs };
+      await setPending(ctx.store, ctx.from, step, ctx.now);
+      await ctx.reply(companyQuestion(citaArgs));
+      return;
+    }
     await ctx.reply(p.error);
     return;
   }
-  const past = p.allDay ? p.date.getTime() < limaStartOfDay(ctx.now).getTime() : p.date.getTime() <= ctx.now.getTime();
-  if (past) {
+  if (isPast(p.date, p.allDay, ctx.now)) {
     await ctx.reply(pastReply(p.date, p.allDay));
     return;
   }
-  const a: CitaArgs = { fecha: p.date.toISOString(), allDay: p.allDay, lugar: p.lugar, conTecnico: p.conTecnico };
-  const company = await resolveCompany(ctx, p.empresa, "cita", a as unknown as Record<string, unknown>);
+  // texto de más entre la empresa y la fecha ("zbuss para revisar llantas"): se usa la empresa y se dice lo demás
+  const split = await splitCompany(ctx.store, p.empresa);
+  const note = split ? unusedNote(split.rest) : "";
+  const a: CitaArgs = { fecha: p.date.toISOString(), allDay: p.allDay, lugar: p.lugar, conTecnico: p.conTecnico, ...(note ? { note } : {}) };
+  const company = await resolveCompany(ctx, split?.query ?? p.empresa, "cita", a as unknown as Record<string, unknown>, { note });
   if (company) await continueCita(ctx, company, a);
+});
+
+/** Respuesta a "¿qué día y a qué hora?": un día (con o sin hora). Otro texto no es respuesta. */
+registerPendingHandler("cita_fecha", async (ctx, step, text) => {
+  const s = step as CitaFechaStep;
+  const dm = parseSpanishDateTime(text, ctx.now);
+  if (!dm) return false;
+  const allDay = !!dm.allDay;
+  if (isPast(dm.date, allDay, ctx.now)) {
+    await ctx.reply(`${pastReply(dm.date, allDay)} (o *cancelar*)`);
+    return true;
+  }
+  await clearPending(ctx.store, ctx.from);
+  const company = await ctx.store.getCompany(s.companyId);
+  if (!company) {
+    await ctx.reply("Esa empresa ya no está en el padrón.");
+    return true;
+  }
+  if (allDay) await askHour(ctx, company, dm.date, s.lugar, s.conTecnico);
+  else await createCita(ctx, company, { date: dm.date, lugar: s.lugar, conTecnico: s.conTecnico });
+  return true;
+});
+
+/** Respuesta a "¿con qué empresa?": nombre o RUC (con texto de más). Si no nombra una empresa, no es respuesta. */
+registerPendingHandler("cita_empresa", async (ctx, step, text) => {
+  const s = step as CitaEmpresaStep;
+  const split = await splitCompany(ctx.store, text);
+  if (!split) return false;
+  const note = unusedNote(split.rest);
+  const a: CitaArgs = { ...s.args, ...(note ? { note } : {}) };
+  const company = await resolveCompany(ctx, split.query, "cita", a as unknown as Record<string, unknown>, { note });
+  if (company) await continueCita(ctx, company, a);
+  return true;
 });
 
 /** Respuesta a "¿a qué hora?": "10", "10am", "a las 3 y media", "15:30". Otro texto no es respuesta. */
@@ -279,4 +396,47 @@ registerPendingHandler("cita_hora", async (ctx, step, text) => {
   }
   await createCita(ctx, company, { date, lugar: s.lugar, conTecnico: s.conTecnico });
   return true;
+});
+
+// ── en pausa (corrida D, punto 7): "cita con ZBUSS (falta día y hora)"; *Continuar* repite la pregunta ──
+
+async function citaCompany(ctx: { store: PortalContext["store"] }, id: number): Promise<Company | null> {
+  return ctx.store.getCompany(id).catch(() => null);
+}
+
+registerPausable("cita_fecha", {
+  async describe(ctx, step) {
+    const s = step as CitaFechaStep;
+    const c = await citaCompany(ctx, s.companyId);
+    return { companyId: s.companyId, label: `cita con ${c ? shortName(c.razonSocial) : "la empresa"}`, missing: "falta día y hora" };
+  },
+  async resume(ctx, step, prefix) {
+    const c = await citaCompany(ctx, (step as CitaFechaStep).companyId);
+    if (!c) return void (await ctx.reply("Esa empresa ya no está en el padrón."));
+    await askAgain(ctx, step, prefix, dateQuestion(c));
+  },
+});
+
+registerPausable("cita_hora", {
+  async describe(ctx, step) {
+    const s = step as CitaHoraStep;
+    const c = await citaCompany(ctx, s.companyId);
+    return { companyId: s.companyId, label: `cita con ${c ? shortName(c.razonSocial) : "la empresa"} el ${formatCitaDate(new Date(s.day), true)}`, missing: "falta la hora" };
+  },
+  async resume(ctx, step, prefix) {
+    const s = step as CitaHoraStep;
+    const c = await citaCompany(ctx, s.companyId);
+    if (!c) return void (await ctx.reply("Esa empresa ya no está en el padrón."));
+    await askAgain(ctx, step, prefix, hourQuestion(c, new Date(s.day)));
+  },
+});
+
+registerPausable("cita_empresa", {
+  async describe(_ctx, step) {
+    const s = step as CitaEmpresaStep;
+    return { companyId: null, label: `cita del ${formatCitaDate(new Date(s.args.fecha), s.args.allDay)}`, missing: "falta la empresa" };
+  },
+  async resume(ctx, step, prefix) {
+    await askAgain(ctx, step, prefix, companyQuestion((step as CitaEmpresaStep).args));
+  },
 });

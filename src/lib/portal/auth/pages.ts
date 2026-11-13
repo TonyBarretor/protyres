@@ -1,6 +1,7 @@
 /**
  * Páginas HTML mínimas de /portal/login (route handler: no pasa por el layout protegido de /portal).
  */
+import { TOKEN_PAGE_REFERRER_POLICY } from "./constants";
 
 function esc(s: string): string {
   return s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c] as string);
@@ -11,7 +12,7 @@ function page(title: string, body: string, status = 200): Response {
 <html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="robots" content="noindex">
 <title>${esc(title)}</title></head>
 <body style="font-family: system-ui, sans-serif; margin: 2rem; max-width: 32rem">${body}</body></html>`;
-  return new Response(html, { status, headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "referrer-policy": "no-referrer" } });
+  return new Response(html, { status, headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "referrer-policy": TOKEN_PAGE_REFERRER_POLICY } });
 }
 
 const ASK_AGAIN = "Escribe <b>portal</b> al bot de WhatsApp para pedir otro.";

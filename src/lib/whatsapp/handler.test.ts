@@ -364,6 +364,37 @@ describe("bot conversation (synthetic lists)", () => {
     expect(q?.items[0].unitPrice).toBe(300);
   });
 
+  it("the requested model is not in that size: every other model is flagged, the default one too, and the header says so", async () => {
+    const fenix = (model: string, cost: number): PriceRow => ({ id: `fenix-29580r225-${model}`, provider: "Llantas del Sur", kind: "provider", description: `295/80R22.5 FENIXWAY ${model}`, brand: "Fenixway", model, size: "295/80R22.5", sizeDisplay: "295/80R22.5", sizeRaw: "295/80R22.5", isTyre: true, cost, priceIncludesTax: false, currency: "USD", stock: 10, priceDate: "2026-11-01", source: "excel", sourceRef: "a.xlsx" });
+    await store.upsertRows([fenix("FLAMA 89", 220), fenix("VALOR 99", 210), fenix("VALOR 87", 215)]);
+    await bot.handle(text("Fenixway Flama 77 295/80R22.5 x8 precio 254 para ZBUSS S.A.C."));
+    const options = client.last()?.body ?? "";
+    // order and default as before: a) Flama 89 (the closest name), chosen at the salesman's price
+    expect(options).toContain("*1.* Fenixway 295/80R22.5 FLAMA 77 x8 precio 254 → elegido *a* · precio manual US$ 254.00\n⚠️ No hay *FLAMA 77* en 295/80R22.5; estas son las opciones más cercanas:\n  *a)* ");
+    expect(options).toMatch(/\*a\)\*[^\n]*FLAMA 89 295\/80R22\.5\n[^\n]*\n {6}⚠️ modelo FLAMA 89[,\n]/);
+    expect(options).toMatch(/\*b\)\*[^\n]*VALOR 99[^\n]*\n[^\n]*\n {6}⚠️ modelo VALOR 99[,\n]/);
+    expect(options).toMatch(/\*c\)\*[^\n]*VALOR 87[^\n]*\n[^\n]*\n {6}⚠️ modelo VALOR 87[,\n]/);
+    await bot.handle(text("cancelar"));
+
+    // the requested model in that size: no header, and the exact match carries no model warning
+    await store.upsertRows([fenix("FLAMA 77", 230)]);
+    await bot.handle(text("Fenixway Flama 77 295/80R22.5 x8 para ZBUSS S.A.C."));
+    const exact = client.last()?.body ?? "";
+    expect(exact).not.toContain("No hay *FLAMA 77*");
+    expect(exact).toMatch(/\*a\)\*[^\n]*FLAMA 77 295\/80R22\.5\n/);
+    expect(exact.slice(exact.indexOf("*a)*"), exact.indexOf("*b)*"))).not.toContain("modelo");
+    expect(exact).toContain("⚠️ modelo FLAMA 89");
+    await bot.handle(text("cancelar"));
+
+    // free text the parser took for a model, with no brand: no header, the options' notes exactly as before
+    // (the golden's free-text step: it reaches the quoter only from a number outside the portal, so it stays out of router.test.ts's list)
+    const visit = "Visité Transportes ABC, necesitan 295/80R22.5 x4";
+    await bot.handle(text(visit));
+    const free = client.last()?.body ?? "";
+    expect(free).toContain("*a)*");
+    expect(free).not.toContain("No hay *");
+  });
+
   it("'precio N' on a line no list has: a manual item with the salesman's description", async () => {
     await bot.handle(text("Fenixway Flama 77 315/80R22.5 x4 precio 259; Michelin 11R22.5 XZE2+ x2 para Transportes ABC, c@abc.pe"));
     const options = client.last()?.body ?? "";

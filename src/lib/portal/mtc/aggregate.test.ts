@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { loadPortalConfig } from "../config";
-import { aggregateCompanies } from "./aggregate";
+import { aggregateCompanies, classifySector } from "./aggregate";
 import { parseMtcBuffer } from "./parse";
 import { applyTyresAll, buildTyreIndex } from "./tyres";
 
@@ -46,14 +46,70 @@ describe("aggregateCompanies", () => {
 describe("loadPortalConfig", () => {
   it("reads config/portal.json", () => {
     const cfg = loadPortalConfig({ file: path.join(__dirname, "..", "..", "..", "..", "config", "portal.json") });
-    expect(cfg.import).toEqual({ minUnits: 10, currentCut: "20251231", tyreCuts: ["20241231", "20231231", "20221231"], dir: "data/mtc" });
+    expect(cfg.import).toEqual({ minUnits: 10, currentCut: "20251231", tyreCuts: ["20241231", "20231231", "20221231"], dir: "data/mtc", sectorMajority: 0.9 });
   });
   it("fills defaults and keeps other keys", () => {
     const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "portal-")), "portal.json");
     fs.writeFileSync(file, JSON.stringify({ import: { minUnits: 5 }, otra: { x: 1 } }));
     const cfg = loadPortalConfig({ file });
-    expect(cfg.import).toEqual({ minUnits: 5, currentCut: "20251231", tyreCuts: ["20241231", "20231231", "20221231"], dir: "data/mtc" });
+    expect(cfg.import).toEqual({ minUnits: 5, currentCut: "20251231", tyreCuts: ["20241231", "20231231", "20221231"], dir: "data/mtc", sectorMajority: 0.9 });
     expect((cfg as Record<string, unknown>).otra).toEqual({ x: 1 });
     expect(loadPortalConfig({ file: file + ".missing" }).import.minUnits).toBe(10);
+  });
+  it("sectorMajority must be above 0.5 and at most 1", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "portal-"));
+    for (const bad of [0.5, 0.3, 1.2]) {
+      const file = path.join(dir, `bad-${bad}.json`);
+      fs.writeFileSync(file, JSON.stringify({ import: { sectorMajority: bad } }));
+      expect(() => loadPortalConfig({ file })).toThrow(/inválido/);
+    }
+    const ok = path.join(dir, "ok.json");
+    fs.writeFileSync(ok, JSON.stringify({ import: { sectorMajority: 0.8 } }));
+    expect(loadPortalConfig({ file: ok }).import.sectorMajority).toBe(0.8);
+  });
+});
+
+/** Flota sintética: `carga` vehículos de carga y `pasajeros` de pasajeros para un RUC inventado. */
+function synthetic(ruc: string, carga: number, pasajeros: number) {
+  const base = { ruc, razonSocial: "EMPRESA DE PRUEBA S.A.C.", departamento: "LIMA", llantas: null, anio: null, fechaCorte: "20251231" };
+  return [
+    ...Array.from({ length: carga }, () => ({ ...base, origen: "carga" as const })),
+    ...Array.from({ length: pasajeros }, () => ({ ...base, origen: "pasajeros" as const })),
+  ];
+}
+
+describe("sector por mayoría", () => {
+  const sectorOf = (carga: number, pasajeros: number, opts: { sectorMajority?: number } = {}) => aggregateCompanies(synthetic("20999999991", carga, pasajeros), opts)[0].sector;
+
+  it("82 ómnibus + 3 de carga (caso ZBUSS) → pasajeros", () => {
+    expect(sectorOf(3, 82)).toBe("pasajeros");
+  });
+  it("mayoría de carga → carga", () => {
+    expect(sectorOf(95, 5)).toBe("carga");
+  });
+  it("50/50 → mixto", () => {
+    expect(sectorOf(50, 50)).toBe("mixto");
+  });
+  it("borde exacto del 90 % → ese sector; justo debajo → mixto", () => {
+    expect(sectorOf(1, 9)).toBe("pasajeros");
+    expect(sectorOf(10, 90)).toBe("pasajeros");
+    expect(sectorOf(90, 10)).toBe("carga");
+    expect(sectorOf(11, 89)).toBe("mixto");
+  });
+  it("un solo origen → ese sector", () => {
+    expect(sectorOf(0, 12)).toBe("pasajeros");
+    expect(sectorOf(12, 0)).toBe("carga");
+  });
+  it("umbral configurado distinto", () => {
+    expect(sectorOf(20, 80, { sectorMajority: 0.8 })).toBe("pasajeros");
+    expect(sectorOf(21, 79, { sectorMajority: 0.8 })).toBe("mixto");
+    expect(sectorOf(3, 82, { sectorMajority: 0.99 })).toBe("mixto");
+    expect(sectorOf(0, 82, { sectorMajority: 1 })).toBe("pasajeros");
+    expect(sectorOf(1, 82, { sectorMajority: 1 })).toBe("mixto");
+  });
+  it("classifySector: sin unidades → null", () => {
+    expect(classifySector(0, 0)).toBeNull();
+    expect(classifySector(3, 82)).toBe("pasajeros");
+    expect(classifySector(3, 82, 0.99)).toBe("mixto");
   });
 });

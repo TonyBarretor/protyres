@@ -7,7 +7,9 @@
  *     confirmar con *sí*; sin cotización (o si el vendedor escribe otros), con el formato de cotización
  *     (order/items.ts: parser y listas del cotizador). Máximo 7 (filas del formato).
  *  3. Preguntas una por una (order/questions.ts) con la memoria del cliente (company_order_profile) como defecto;
- *     también por voz (misma transcripción que los reportes). `cancelar` aborta (lo limpia routePortal).
+ *     también por voz (misma transcripción que los reportes). `cancelar` aborta (lo limpia routePortal). Las preguntas
+ *     con valor por defecto o sí/no llevan botones (questionButtons; *Sí* y *No* para usar la cotización): cada id es la
+ *     respuesta escrita equivalente ("igual", "sí", "no", "ninguna", "la misma"...).
  *  4. Excel "FORMATO PEDIDO ATC´S" sin leyenda + resumen con el recordatorio de reenviarlo a Patricia. Oportunidad a
  *     Cerrado ganado, actividad `oc` con la venta esperada en `data` (no se inserta en `sales`: eso llega del Excel de
  *     ventas), empresa como cliente, memoria del cliente y OC en "pedido_generado".
@@ -17,11 +19,12 @@
  * todas, los comandos del cotizador (`ayuda`, `proveedores`...) van al cotizador. `acceptsMedia`: el adjunto sin leyenda
  * (o con leyenda `oc …`) dentro de los 10 min; una lista de precios o una `foto …` siguen al cotizador.
  *
- * Si el mensaje se va al cotizador (o llega otro comando del portal), el pedido NO se pierde ni se queda capturando: se
- * aparta (estado `parked`, 24 h) y se avisa "Dejé pendiente el pedido de la OC …; escribe *oc <RUC>* para retomarlo".
- * `oc` a la misma empresa (sin n° o con el mismo) lo retoma donde quedó, con la misma OC. Se eligió apartarlo y no
- * dejarlo pendiente porque un paso pendiente se quedaría con el siguiente "sí"/"gracias" tras la cotización. `cancelar`
- * durante el pedido marca la OC como "cancelada".
+ * Si el mensaje se va al cotizador (o llega otro comando del portal), el pedido NO se pierde ni se queda capturando: pasa
+ * a pausa (bot/pause.ts, corrida D: reemplaza al `parked` de 24 h) y, al final de la respuesta, "⏸ Dejaste pendiente:
+ * pedido de ZBUSS (falta fecha de entrega)." con *Continuar* / *Descartar*. *Continuar* (o `oc` a la misma empresa, sin n°
+ * o con el mismo) lo retoma donde quedó, con la misma OC y las respuestas dadas. No se deja pendiente porque un paso
+ * pendiente se quedaría con el siguiente "sí"/"gracias" tras la cotización. `cancelar` durante el pedido, *Descartar* o
+ * la caducidad de la pausa (48 h) marcan la OC como "cancelada".
  *
  * Al empezar, si el cotizador está revisando una cotización ya guardada (`review_quote`, `need_email`), ese paso se cierra
  * como con `cancelar`: si no, las respuestas cortas ("sí", "igual") irían al cotizador. Con una cotización o lista a medio
@@ -45,6 +48,8 @@ import {
   isDefaultAnswer,
   nextOrderQuestion,
   profileFromAnswers,
+  questionButtons,
+  type QuickAnswer,
   type OrderAnswers,
   type OrderField,
   type OrderProfile,
@@ -56,10 +61,11 @@ import { findTyreSizes } from "../../../tyre/spec";
 import { stageLabel } from "../../stages";
 import type { Company, Opportunity } from "../../store/types";
 import { limaDateKey } from "../../ui/time";
-import { findCompanies, resolveCompany, shortName } from "../companies";
-import { registerCompanyAction, registerPendingDrop, registerPendingHandler, registerPortalCommand, type PortalContext } from "../registry";
+import { findCompanies, resolveCompany, shortName, splitCompany, unusedNote } from "../companies";
+import { companyProgressLine } from "../progress";
+import { registerCompanyAction, registerPausable, registerPendingDrop, registerPendingHandler, registerPortalCommand, replyButtons, type PortalContext } from "../registry";
 import { downloader, transcribeVoice } from "../report";
-import { clearPending, parkedOf, setParked, setPending, type PendingStep } from "../state";
+import { clearLegacyParked, clearPending, parkedOf, pausedOf, removePaused, setPending, type PendingStep } from "../state";
 import { creditWarning } from "../../credit/warning";
 
 export const OC_STEP = "oc_pedido";
@@ -129,6 +135,8 @@ export interface OcStep extends PendingStep {
 interface OcArgs {
   numero: string | null;
   media: Media | null;
+  /** "No usé: «…»." (texto de más en el comando), en la cabecera de la respuesta. */
+  note?: string;
 }
 
 /** "zbuss 4500123", "zbuss n° 4500123", "zbuss oc 4500123", "20602221505 4500123" -> empresa y número. */
@@ -139,6 +147,34 @@ export function parseOcArgs(args: string): { empresa: string; numero: string | n
   const bare = splitTrailingNumber(t);
   if (bare && bare.numero.length >= 5) return bare;
   return { empresa: t, numero: null };
+}
+
+const OC_KEYWORD = /^(?:oc|o\/c|n[°ºo]\.?|nro\.?|n[uú]mero|#)$/i;
+
+/**
+ * Texto de más (corrida D): el n° de OC en cualquier parte ("zbuss 4500123 y responde las preguntas", "4500123 de zbuss",
+ * "la empresa 20602221505 n° 4501000 urgente"). Número = token con 5 o más dígitos (o cualquiera con dígitos tras
+ * `oc` / `n°` / `nro` / `#`), sin contar un RUC de 11 dígitos. Lo de antes es la empresa (o lo de después, si el número
+ * va primero) y lo de después sobra (`rest`); sin número, todo es la empresa.
+ */
+export function parseOcLoose(args: string): { empresa: string; numero: string | null; rest: string } {
+  const toks = args.trim().split(/\s+/).filter(Boolean);
+  for (let i = 0; i < toks.length; i++) {
+    const tok = toks[i].replace(/[,;.:]+$/, "").replace(/^#/, "");
+    if (/^\d{11}$/.test(tok) || !/^[A-Za-z0-9][\w/-]*$/.test(tok)) continue;
+    const afterKw = i > 0 && OC_KEYWORD.test(toks[i - 1]);
+    const nd = (tok.match(/\d/g) ?? []).length;
+    if (!(nd >= 5 || (afterKw && nd >= 1)) || OC_KEYWORD.test(tok)) continue;
+    const before = toks
+      .slice(0, afterKw ? i - 1 : i)
+      .join(" ")
+      .replace(/[\s,;]*(?:(?:la\s+)?orden(?:\s+de\s+compra)?|oc)\s*$/i, "")
+      .trim();
+    const after = toks.slice(i + 1).join(" ");
+    if (!before) return { empresa: after.replace(/^(?:de|del|para|a|al)\s+/i, ""), numero: tok, rest: "" };
+    return { empresa: before, numero: tok, rest: after };
+  }
+  return { empresa: args.trim(), numero: null, rest: "" };
 }
 
 /** "roca 7788" -> empresa "roca", número "7788" (el comando lo usa solo si "roca 7788" no es una empresa). */
@@ -184,6 +220,17 @@ async function quoterBusy(ctx: PortalContext): Promise<string | null> {
     ctx.log(`portal: no pude leer el estado del cotizador: ${(err as Error).message}`);
     return null;
   }
+}
+
+/**
+ * Antes de retomar un proceso en pausa (corrida D): con el cotizador revisando una cotización ya guardada, ese paso se
+ * cierra (como al empezar `oc`) y se puede seguir; con una cotización o lista a medio armar, no (null = se puede).
+ */
+export async function quoterBlocksResume(ctx: PortalContext, quoteStep: string): Promise<string | null> {
+  if (quoteStep === "idle") return null;
+  if (!CLOSABLE_QUOTER_STEPS.has(quoteStep)) return "Tienes una cotización/lista a medio armar; termínala (p. ej. *ok*) o escribe *cancelar*, y luego *continuar*.";
+  await endQuoterFlow(ctx);
+  return null;
 }
 
 /** Cierra el paso del cotizador si está revisando una cotización ya guardada (como `cancelar`): las respuestas siguientes son del pedido. */
@@ -249,6 +296,23 @@ function quotePrompt(s: Pick<OcStep, "quoteNumber" | "quoteItems" | "currency">)
   return `Uso la cotización *${shortQuoteNumber(s.quoteNumber ?? "")}* (${shortItems(items)} · ${money(itemsTotal(items), s.currency)} inc. IGV) — responde *sí*, o *no* para escribir otros ítems.`;
 }
 
+/** Botones de la pregunta en curso: *Sí* y *No* para usar la cotización; los de order/questions.ts en las preguntas. */
+function currentButtons(s: OcStep): QuickAnswer[] {
+  if (s.phase === "quote") return [{ id: "sí", title: "Sí" }, { id: "no", title: "No" }];
+  if (s.phase === "questions" && s.qctx) {
+    const q = nextOrderQuestion(s.answers, s.qctx);
+    return q ? questionButtons(q) : [];
+  }
+  return [];
+}
+
+/** Responde `body` (que termina en la pregunta en curso) con sus botones si los tiene; en texto, el mismo body. */
+async function ask(ctx: PortalContext, s: OcStep, body: string): Promise<void> {
+  const buttons = currentButtons(s);
+  if (buttons.length) await replyButtons(ctx, body, buttons, { fallback: body });
+  else await ctx.reply(body);
+}
+
 /** La pregunta en curso (para repetirla). */
 function currentPrompt(s: OcStep): string {
   if (s.phase === "quote") return quotePrompt(s);
@@ -264,31 +328,89 @@ async function save(ctx: PortalContext, s: OcStep): Promise<void> {
 
 const notYours = (c: Company) => `*${c.razonSocial}* no es tuya. Primero: *asignarme ${c.ruc}* (o pide al supervisor).`;
 
-/** "Dejé pendiente el pedido de la OC 4500123 (ZBUSS); escribe *oc 20602221505* para retomarlo." */
-export function parkedNotice(s: Pick<OcStep, "numero">, company: Pick<Company, "razonSocial" | "ruc">): string {
-  return `⏸️ Dejé pendiente el pedido de la OC${s.numero ? ` ${s.numero}` : " sin n°"} (${shortName(company.razonSocial)}); escribe *oc ${company.ruc}* para retomarlo.`;
+/** Qué falta en el pedido, para el recordatorio de la pausa ("falta fecha de entrega"). */
+const FIELD_MISSING: Record<OrderField, string> = {
+  cliente: "faltan los datos del cliente",
+  direccionFiscal: "falta la dirección fiscal",
+  direccionEntrega: "falta la dirección de entrega",
+  contacto: "falta el contacto",
+  agencia: "falta la agencia",
+  fechaEntrega: "falta fecha de entrega",
+  enllante: "falta si va enllantado",
+  marcado: "falta si va marcado",
+  flete: "falta el flete",
+  plazoCredito: "falta el plazo de crédito",
+  proveedor: "faltan las condiciones del proveedor",
+  observaciones: "faltan las observaciones",
+};
+
+export function orderMissing(s: OcStep): string {
+  if (s.phase === "quote") return "falta confirmar la cotización";
+  if (s.phase === "items") return "faltan los ítems";
+  const q = s.qctx ? nextOrderQuestion(s.answers, s.qctx) : null;
+  return q ? FIELD_MISSING[q.field] : "falta generar el pedido";
 }
 
-/** Al dejar el pedido: con `cancelar` la OC queda "cancelada"; si el mensaje fue a otra cosa, el pedido se aparta (24 h). */
+/** Con `cancelar` (o *Descartar* / caducidad de la pausa) la OC queda "cancelada"; dejarlo por otra cosa lo pone en pausa (routePortal). */
 registerPendingDrop(OC_STEP, async (dctx, step, reason) => {
   const s = step as OcStep;
   if (reason === "cancel") {
-    await dctx.store.updatePurchaseOrder(s.orderId, { status: OC_STATUS_CANCELLED });
-    await setParked(dctx.store, dctx.from, OC_STEP, null, dctx.now);
-    return null;
+    const order = await dctx.store.getPurchaseOrder(s.orderId);
+    if (order && order.status === OC_STATUS_RECEIVED) await dctx.store.updatePurchaseOrder(s.orderId, { status: OC_STATUS_CANCELLED });
+    await clearLegacyParked(dctx.store, dctx.from, OC_STEP);
   }
-  await setParked(dctx.store, dctx.from, OC_STEP, s, dctx.now);
-  const company = await dctx.store.getCompany(s.companyId);
-  return company ? parkedNotice(s, company) : null;
+  return null;
 });
 
-/** El pedido apartado de esta empresa (y de este n° de OC si se escribió), si la OC sigue sin pedido. */
+/** En pausa: "pedido de ZBUSS (falta fecha de entrega)"; *Continuar* lo retoma donde quedó (misma OC). */
+registerPausable(OC_STEP, {
+  async describe(ctx, step) {
+    const s = step as OcStep;
+    const company = await ctx.store.getCompany(s.companyId).catch(() => null);
+    return { companyId: s.companyId, label: `pedido de ${s.numero ? `la OC ${s.numero} de ` : ""}${company ? shortName(company.razonSocial) : "la empresa"}`, missing: orderMissing(s) };
+  },
+  async resume(ctx, step, prefix) {
+    const s = step as OcStep;
+    const company = await ctx.store.getCompany(s.companyId);
+    if (!company) {
+      await ctx.reply("Esa empresa ya no está en el portal; dejé el pedido.");
+      return;
+    }
+    await resumeOrder(ctx, s, company, null, prefix);
+  },
+});
+
+/** El pedido en pausa de esta empresa (y de este n° de OC si se escribió), si la OC sigue sin pedido; lo saca de la pausa. */
 async function takeParked(ctx: PortalContext, company: Company, numero: string | null): Promise<OcStep | null> {
-  const parked = parkedOf(await ctx.store.getPortalConversation(ctx.from), OC_STEP, ctx.now) as OcStep | null;
+  const conv = await ctx.store.getPortalConversation(ctx.from);
+  const parked = parkedOf(conv, OC_STEP, ctx.now) as OcStep | null;
   if (!parked || parked.companyId !== company.id || (numero && parked.numero && numero !== parked.numero)) return null;
   const order = await ctx.store.getPurchaseOrder(parked.orderId);
-  await setParked(ctx.store, ctx.from, OC_STEP, null, ctx.now);
+  const hit = pausedOf(conv).find((p) => p.step.kind === OC_STEP && (p.step as OcStep).orderId === parked.orderId);
+  if (hit) await removePaused(ctx.store, ctx.from, hit.ref);
+  await clearLegacyParked(ctx.store, ctx.from, OC_STEP);
   return order && order.status === OC_STATUS_RECEIVED ? parked : null;
+}
+
+/** Retoma el pedido donde quedó (misma OC; el adjunto se acepta otros 10 min). */
+async function resumeOrder(ctx: PortalContext, parked: OcStep, company: Company, media: Media | null, prefix = ""): Promise<void> {
+  const order = await ctx.store.getPurchaseOrder(parked.orderId);
+  if (!order || order.status !== OC_STATUS_RECEIVED) {
+    await ctx.reply(`Esa OC ya no está pendiente (${order ? order.status : "no existe"}); escribe *oc ${company.ruc}* para registrar otra.`);
+    return;
+  }
+  const head = [prefix || `▶️ Retomo el pedido de la OC${parked.numero ? ` *${parked.numero}*` : ""} de *${shortName(company.razonSocial)}*.`];
+  parked.mediaUntil = new Date(ctx.now.getTime() + OC_MEDIA_WINDOW_MS).toISOString();
+  if (media) {
+    const file = await downloadOc(ctx, media, company, parked.numero);
+    if (file) {
+      await ctx.store.updatePurchaseOrder(parked.orderId, { fileName: file.fileName, mimeType: file.mimeType, data: file.data });
+      parked.hasFile = true;
+      head.push(`📎 Guardé la OC (${file.fileName}).`);
+    }
+  }
+  await save(ctx, parked);
+  await ask(ctx, parked, `${head.join("\n")}\n\n${currentPrompt(parked)}`);
 }
 
 // ── inicio ──
@@ -307,19 +429,7 @@ async function startOrder(ctx: PortalContext, company: Company, args: OcArgs): P
   await endQuoterFlow(ctx);
   const parked = await takeParked(ctx, company, args.numero);
   if (parked) {
-    // retoma el pedido apartado donde quedó (misma OC); el adjunto se acepta otros 10 min
-    const head = [`▶️ Retomo el pedido de la OC${parked.numero ? ` *${parked.numero}*` : ""} de *${shortName(company.razonSocial)}*.`];
-    parked.mediaUntil = new Date(now.getTime() + OC_MEDIA_WINDOW_MS).toISOString();
-    if (args.media) {
-      const file = await downloadOc(ctx, args.media, company, parked.numero);
-      if (file) {
-        await store.updatePurchaseOrder(parked.orderId, { fileName: file.fileName, mimeType: file.mimeType, data: file.data });
-        parked.hasFile = true;
-        head.push(`📎 Guardé la OC (${file.fileName}).`);
-      }
-    }
-    await save(ctx, parked);
-    await ctx.reply(`${head.join("\n")}\n\n${currentPrompt(parked)}`);
+    await resumeOrder(ctx, parked, company, args.media);
     return;
   }
   const file = args.media ? await downloadOc(ctx, args.media, company, args.numero) : null;
@@ -339,6 +449,7 @@ async function startOrder(ctx: PortalContext, company: Company, args: OcArgs): P
   });
   const who = shortName(company.razonSocial);
   const head = [`🧾 OC${args.numero ? ` *${args.numero}*` : ""} de *${who}* registrada${file ? ` con el adjunto (${file.fileName})` : ""}.`];
+  if (args.note) head.push(args.note);
   if (args.media && !file) head.push("⚠️ No pude descargar el adjunto; envíamelo de nuevo en los próximos 10 min.");
   else if (!file) head.push("📎 Si tienes el PDF o la foto de la OC, envíamelo en los próximos 10 min.");
   const credit = await creditWarning(ctx.store, company); // aviso (C4), no bloquea la OC
@@ -379,7 +490,7 @@ async function startOrder(ctx: PortalContext, company: Company, args: OcArgs): P
     }
   } else head.push(`No encontré una cotización tuya para *${who}*.`);
   await save(ctx, s);
-  await ctx.reply(`${head.join("\n")}\n\n${currentPrompt(s)}`);
+  await ask(ctx, s, `${head.join("\n")}\n\n${currentPrompt(s)}`);
 }
 
 registerCompanyAction("oc", (ctx, company, args) => startOrder(ctx, company, args as unknown as OcArgs));
@@ -391,6 +502,16 @@ registerPortalCommand("oc", async (ctx, args) => {
     const alt = splitTrailingNumber(p.empresa);
     if (alt && /^\D/.test(p.empresa) && (await findCompanies(ctx.store, p.empresa)).total === 0) p = alt;
   }
+  let note = "";
+  if (p.empresa && (await findCompanies(ctx.store, p.empresa)).total === 0) {
+    // texto de más: número en cualquier parte y empresa al inicio de lo que queda; lo que sobra se dice en una línea
+    const loose = parseOcLoose(args);
+    const split = await splitCompany(ctx.store, loose.empresa);
+    if (split) {
+      p = { empresa: split.query, numero: loose.numero ?? p.numero };
+      note = unusedNote([split.rest, loose.rest].filter(Boolean).join(" "));
+    }
+  }
   if (!p.empresa) {
     await ctx.reply(OC_USAGE);
     return;
@@ -400,8 +521,8 @@ registerPortalCommand("oc", async (ctx, args) => {
     await ctx.reply(busy);
     return;
   }
-  const a: OcArgs = { numero: p.numero, media: mediaOf(ctx) };
-  const company = await resolveCompany(ctx, p.empresa, "oc", a as unknown as Record<string, unknown>);
+  const a: OcArgs = { numero: p.numero, media: mediaOf(ctx), ...(note ? { note } : {}) };
+  const company = await resolveCompany(ctx, p.empresa, "oc", a as unknown as Record<string, unknown>, { note });
   if (company) await startOrder(ctx, company, a);
 });
 
@@ -449,7 +570,7 @@ async function askNext(ctx: PortalContext, s: OcStep, company: Company, prefix =
   }
   s.field = q.field;
   await save(ctx, s);
-  await ctx.reply(prefix ? `${prefix}\n\n${q.text}` : q.text);
+  await ask(ctx, s, prefix ? `${prefix}\n\n${q.text}` : q.text);
 }
 
 async function attachLate(ctx: PortalContext, s: OcStep, media: Media, company: Company): Promise<void> {
@@ -533,7 +654,7 @@ registerPendingHandler(OC_STEP, async (ctx, step, rawText) => {
   if (q.field === "observaciones" && orderShaped(text)) return false;
   const r = applyOrderAnswer(s.answers, q, text, s.qctx!, ctx.now);
   if (r.error) {
-    await ctx.reply(`${r.error}\n\n${q.text}`);
+    await ask(ctx, s, `${r.error}\n\n${q.text}`);
     return true;
   }
   s.answers = r.answers;
@@ -625,5 +746,7 @@ async function finishOrder(ctx: PortalContext, s: OcStep, company: Company, pref
     "",
     PATRICIA_REMINDER,
   ];
+  const progress = await companyProgressLine(store, company, 7);
+  if (progress) lines.push(progress);
   await ctx.reply(lines.join("\n"));
 }

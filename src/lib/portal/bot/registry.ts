@@ -8,6 +8,7 @@
  *   setReportHandler(async (ctx, text, { occurredAt }) => { ... });
  */
 import type { MessageLogEntry } from "../../store/types";
+import { interactiveAsText, type ListRow, type ReplyButton } from "../../whatsapp/interactive";
 import type { InboundMessage } from "../../whatsapp/webhook";
 import type { Company, PortalStore, PortalUser } from "../store/types";
 import type { PortalCommandName } from "./router";
@@ -20,6 +21,15 @@ export interface PortalContext {
   from: string;
   msg: InboundMessage;
   reply(body: string): Promise<void>;
+  /**
+   * Mensaje con botones de respuesta (máx. 3). `id` de cada botón = el texto equivalente que el bot ya entiende escrito
+   * (`sí`, `corregir`, `asignarme 20602221505`); el prefijo `pt:` lo pone el canal. Sin canal interactivo, fuera de los
+   * límites o si WhatsApp lo rechaza: va como texto (`opts.fallback`, o body + "Responde *a* o *b*."). Opcional: un
+   * contexto armado a mano (tests) no lo trae; usa replyButtons()/replyList() de este módulo, que caen a `reply`.
+   */
+  replyButtons?(body: string, buttons: ReplyButton[], opts?: InteractiveReplyOptions): Promise<void>;
+  /** Lista para elegir (máx. 10 filas en total; `id` de cada fila = texto equivalente, p. ej. el número de la opción). */
+  replyList?(body: string, buttonLabel: string, rows: ListRow[], opts?: InteractiveReplyOptions & { sectionTitle?: string }): Promise<void>;
   /** Documento al mismo usuario (sin leyenda si caption es "" o undefined). */
   sendDocument(file: Buffer, fileName: string, caption?: string, mimeType?: string): Promise<void>;
   /**
@@ -36,6 +46,24 @@ export interface PortalContext {
   downloadMedia?(mediaId: string): Promise<{ data: Buffer; mimeType: string; fileName?: string }>;
   /** Registra un mensaje en `messages` (la transcripción de una nota de voz). Opcional: sin él, el store del cotizador. */
   logMessage?(entry: MessageLogEntry): Promise<void>;
+}
+
+export interface InteractiveReplyOptions {
+  /** Texto si no va como interactivo (por defecto: body + las opciones escritas). */
+  fallback?: string;
+  footer?: string;
+}
+
+/** Botones (o el texto equivalente si el contexto no tiene canal interactivo). */
+export async function replyButtons(ctx: Pick<PortalContext, "reply" | "replyButtons">, body: string, buttons: ReplyButton[], opts: InteractiveReplyOptions = {}): Promise<void> {
+  if (ctx.replyButtons) return ctx.replyButtons(body, buttons, opts);
+  await ctx.reply(opts.fallback ?? interactiveAsText({ type: "button", body, buttons }));
+}
+
+/** Lista (o el texto equivalente si el contexto no tiene canal interactivo). */
+export async function replyList(ctx: Pick<PortalContext, "reply" | "replyList">, body: string, buttonLabel: string, rows: ListRow[], opts: InteractiveReplyOptions & { sectionTitle?: string } = {}): Promise<void> {
+  if (ctx.replyList) return ctx.replyList(body, buttonLabel, rows, opts);
+  await ctx.reply(opts.fallback ?? interactiveAsText({ type: "list", body, button: buttonLabel, sections: [{ rows }] }));
 }
 
 export type PortalCommandHandler = (ctx: PortalContext, args: string) => Promise<void>;
@@ -86,6 +114,34 @@ export function registerPendingDrop(kind: string, handler: PendingDropHandler): 
 
 export function getPendingDrop(kind: string): PendingDropHandler | undefined {
   return dropHandlers.get(kind);
+}
+
+/** Cómo se describe un paso en pausa: "pedido de ZBUSS" (falta "fecha de entrega"). */
+export interface PauseInfo {
+  companyId: number | null;
+  label: string;
+  missing: string;
+  /** Solo falta el *sí* (reporte con el resumen mostrado): el recordatorio ofrece *Sí, guardar*. */
+  confirm?: boolean;
+}
+
+/**
+ * Un tipo de paso que puede quedar en pausa (corrida D, punto 7): `describe` arma el recordatorio y `resume` lo vuelve a
+ * dejar pendiente y repite la pregunta en curso, con las respuestas que ya tenía. Los pasos sin esto se descartan como antes.
+ */
+export interface Pausable {
+  describe(ctx: DropContext, step: PendingStep): Promise<PauseInfo>;
+  resume(ctx: PortalContext, step: PendingStep, prefix: string): Promise<void>;
+}
+
+const pausables = new Map<string, Pausable>();
+
+export function registerPausable(kind: string, p: Pausable): void {
+  pausables.set(kind, p);
+}
+
+export function getPausable(kind: string): Pausable | undefined {
+  return pausables.get(kind);
 }
 
 export function registerCompanyAction(action: string, handler: CompanyActionHandler): void {

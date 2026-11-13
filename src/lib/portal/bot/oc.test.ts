@@ -7,7 +7,7 @@ import { SettingsSchema, type Settings } from "../../settings";
 import { JsonStore } from "../../store/json-store";
 import { FakeWhatsAppClient, type OutboundMessage } from "../../whatsapp/client";
 import { BotHandler } from "../../whatsapp/handler";
-import type { InboundMessage } from "../../whatsapp/webhook";
+import { parseWebhook, type InboundMessage } from "../../whatsapp/webhook";
 import { normalizeOrderItemsText } from "../order/items";
 import { parseAgencia, parseFechaEntrega, parseFlete, parsePlazo, parseProveedor } from "../order/questions";
 import { JsonPortalStore } from "../store";
@@ -82,7 +82,8 @@ async function say(msg: InboundMessage | string): Promise<OutboundMessage[]> {
   await bot.handle(typeof msg === "string" ? textMsg(msg) : msg);
   return client.sent.slice(before);
 }
-const lastText = (out: OutboundMessage[]) => [...out].reverse().find((m) => m.kind === "text")?.body ?? "";
+/** Lo último que leyó el vendedor: texto o body de un interactivo (las preguntas con botones). */
+const lastText = (out: OutboundMessage[]) => [...out].reverse().find((m) => m.kind === "text" || m.kind === "interactive")?.body ?? "";
 
 async function sheetOf(doc: OutboundMessage): Promise<ExcelJS.Worksheet> {
   const wb = new ExcelJS.Workbook();
@@ -194,7 +195,8 @@ describe("oc: con cotización enlazada y PDF adjunto", () => {
     const summary = lastText(out);
     expect(summary).toContain("✅ Pedido de *TRANSPORTES ANDES DEL PERU* listo (OC 4500123, cotización 032)");
     expect(summary).toContain("Cerrado ganado");
-    expect(summary.endsWith(PATRICIA_REMINDER)).toBe(true);
+    // corrida D: el resumen termina con el recordatorio para Patricia y la línea de avance (paso 7 de 7)
+    expect(summary).toContain(`${PATRICIA_REMINDER}\n✅ Paso 7 de 7 con TRANSPORTES ANDES DEL PERU: pedido a Patricia generado`);
 
     const ws = await sheetOf(doc);
     expect(cell(ws, "G5")).toBe("Frank Rodríguez");
@@ -301,6 +303,57 @@ describe("oc: sin cotización previa", () => {
   });
 });
 
+describe("oc: preguntas con botones (corrida D)", () => {
+  /** Pulsa `title` en el último interactivo: entra como lo manda WhatsApp (button_reply con el id `pt:…`). */
+  function press(title: string): InboundMessage {
+    const last = client.interactives().at(-1);
+    const b = last?.type === "button" ? last.buttons.find((x) => x.title === title) : undefined;
+    if (!b) throw new Error(`no hay botón «${title}» (último: ${JSON.stringify(last)})`);
+    const payload = { entry: [{ changes: [{ field: "messages", value: { messages: [{ id: `wamid.oc${++seq}`, from: FRANK, timestamp: "1", type: "interactive", interactive: { type: "button_reply", button_reply: { id: b.id, title } } }] } }] }] };
+    return parseWebhook(payload).messages[0];
+  }
+  const titles = (out: OutboundMessage[]) => {
+    const m = [...out].reverse().find((x) => x.kind === "interactive" || x.kind === "text");
+    return m?.interactive?.type === "button" ? m.interactive.buttons.map((b) => b.title) : [];
+  };
+
+  it("cotización *Sí*/*No*, *Igual*, *La misma*, *Ninguna*, *Sí*/*No* y *Cliente*: pulsarlos completa el pedido como escribirlos", async () => {
+    await seedQuote();
+    let out = await say("oc andes 4500123");
+    expect(titles(out)).toEqual(["Sí", "No"]);
+    out = await say(press("Sí"));
+    expect(lastText(out)).toContain("Dirección fiscal de *TRANSPORTES ANDES DEL PERU*?");
+    expect(titles(out)).toEqual(["Igual"]);
+    out = await say(press("Igual"));
+    expect(titles(out)).toEqual(["La misma"]);
+    out = await say(press("La misma"));
+    expect(lastText(out)).toContain("Persona de contacto");
+    out = await say(press("Igual"));
+    expect(titles(out)).toEqual(["Ninguna"]);
+    out = await say(press("Ninguna"));
+    expect(lastText(out)).toContain("Fecha de entrega?");
+    expect(titles(out)).toEqual([]); // sin defecto: respuesta libre
+    out = await say("20/11");
+    expect(titles(out)).toEqual(["Sí", "No"]);
+    out = await say(press("Sí"));
+    out = await say(press("No"));
+    expect(titles(out)).toEqual(["Cliente", "360", "Agencia"]);
+    out = await say(press("Cliente"));
+    expect(titles(out)).toEqual(["Igual", "Contado"]);
+    out = await say(press("Igual"));
+    out = await say("letras 90, almacén Steel");
+    expect(titles(out)).toEqual(["Ninguna"]);
+    out = await say(press("Ninguna"));
+    const ws = await sheetOf(out.find((m) => m.kind === "document")!);
+    expect(cell(ws, "G8")).toBe("Av. Los Andes 450, Ate");
+    expect(cell(ws, "G9")).toBe("Av. Los Andes 450, Ate");
+    expect(cell(ws, "G12")).toBe("SI");
+    expect(cell(ws, "G13")).toBe("NO");
+    expect(cell(ws, "G15")).toBe("CLIENTE");
+    expect(lastText(out)).toContain(PATRICIA_REMINDER);
+  });
+});
+
 describe("oc: memoria del cliente", () => {
   it("ofrece los datos y las respuestas de la última vez; *igual* los acepta", async () => {
     await portal.setOrderProfile(roca.id, {
@@ -380,7 +433,7 @@ describe("oc: respuesta por voz", () => {
       await say("4 x Fenixway Valor 87 295/80R22.5");
       await say("igual");
       const out = await say({ id: `wamid.oc${++seq}`, from: FRANK, timestamp: "1", type: "audio", forwarded: false, media: { id: "aud-oc", mimeType: "audio/ogg" } });
-      const texts = out.filter((m) => m.kind === "text").map((m) => m.body ?? "");
+      const texts = out.filter((m) => m.kind === "text" || m.kind === "interactive").map((m) => m.body ?? "");
       expect(texts[0]).toContain("🎙️ Entendí: «48 horas después de la OC»");
       expect(texts[1]).toContain("Servicio de enllante?");
       const step = (await getPending(portal, FRANK, new Date())) as OcStep;
@@ -489,7 +542,9 @@ describe("revisión B: el pedido de la OC no se queda con lo que no es suyo", ()
   const imgMsg = (caption: string, mediaId: string): InboundMessage => ({ id: `wamid.oc${++seq}`, from: FRANK, timestamp: "1", type: "image", text: caption, forwarded: false, media: { id: mediaId, mimeType: "image/jpeg", caption } });
   const all = (out: OutboundMessage[]) => out.map((m) => ("body" in m ? (m.body ?? "") : "")).join("\n");
   const parked = async () => parkedOf(await portal.getPortalConversation(FRANK), OC_STEP, new Date()) as OcStep | null;
-  const NOTICE = `⏸️ Dejé pendiente el pedido de la OC 7788 (E.T. LA ROCA); escribe *oc ${RUC_ROCA}* para retomarlo.`;
+  // corrida D (punto 7): el pedido ya no se "aparta" con un aviso antes del cotizador; pasa a pausa y el recordatorio va
+  // DESPUÉS de la respuesta del cotizador, con *Continuar* / *Descartar*. `oc <RUC>` lo sigue retomando.
+  const NOTICE = "⏸ Dejaste pendiente: pedido de la OC 7788 de E.T. LA ROCA (";
 
   async function toQuestions() {
     await say("oc roca 7788");
@@ -507,6 +562,9 @@ describe("revisión B: el pedido de la OC no se queda con lo que no es suyo", ()
     let out = await say("ayuda");
     expect(all(out)).toContain(NOTICE);
     expect(all(out)).toContain("cotiz"); // la ayuda del cotizador
+    // el recordatorio es lo último (después del cotizador) y lleva los botones
+    expect(lastText(out)).toBe(`${NOTICE}faltan los ítems).`);
+    expect(out.at(-1)).toMatchObject({ kind: "interactive", interactive: { buttons: [{ title: "Continuar" }, { title: "Descartar" }] } });
     expect(await getPending(portal, FRANK, new Date())).toBeNull();
     expect((await parked())?.orderId).toBe(step.orderId);
     out = await say(`oc ${RUC_ROCA}`);
@@ -544,7 +602,7 @@ describe("revisión B: el pedido de la OC no se queda con lo que no es suyo", ()
     await seedQuote();
     await say("oc andes 4500777");
     const out = await say("Fenixway Valor 87 295/80R22.5 x2 para Transportes Beta");
-    expect(all(out)).toContain("Dejé pendiente el pedido de la OC 4500777 (TRANSPORTES ANDES DEL PERU)");
+    expect(all(out)).toContain("⏸ Dejaste pendiente: pedido de la OC 4500777 de TRANSPORTES ANDES DEL PERU (falta confirmar la cotización)."); // corrida D
     expect(all(out)).toContain("Cotización nueva");
   });
 

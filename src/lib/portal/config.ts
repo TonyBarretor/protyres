@@ -12,6 +12,8 @@ const ImportSchema = z.object({
   tyreCuts: z.array(z.string().regex(/^\d{8}$/)).default(["20241231", "20231231", "20221231"]),
   /** Folder with the MTC CSVs (relative to the repo root). */
   dir: z.string().default("data/mtc"),
+  /** Sector por mayoría: si esta porción de las unidades (o más) es de un origen, ese sector; si no, "mixto". */
+  sectorMajority: z.number().gt(0.5).max(1).default(0.9),
 });
 
 /** Citas del bot (comando `cita`). */

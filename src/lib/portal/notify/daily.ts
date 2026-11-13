@@ -2,11 +2,13 @@
  * Resumen diario por WhatsApp (bloque B6), en hora de Lima. Solo lee del store; el envío está en send.ts.
  *
  * Para cada vendedor: citas de hoy (hora, empresa, lugar, con técnico), acciones vencidas y de hoy (misma selección que
- * /portal/hoy y el comando `hoy`) y cotizaciones que piden seguimiento (quotes/reminders.ts). Sin nada de eso -> null
- * (no se le escribe). Supervisor: lo suyo y además una línea por vendedor activo (citas, vencidas, seguimientos).
+ * /portal/hoy y el comando `hoy`), cotizaciones que piden seguimiento (quotes/reminders.ts) y los procesos en pausa del
+ * bot (corrida D: con su vencimiento a las 48 h; los ya vencidos, avisados como descartados en el próximo mensaje). Sin
+ * nada de eso -> null (no se le escribe). Supervisor: lo suyo y además una línea por vendedor activo (citas, vencidas, seguimientos).
  */
 import { portalBaseUrl } from "../auth/tokens";
 import { shortName } from "../bot/companies";
+import { pausedExpired, pausedOf, pausedUntil, type PausedProcess } from "../bot/state";
 import { followUpMessage, quoteFollowUpsFor, type QuoteFollowUpWithCompany } from "../quotes/reminders";
 import { stageLabel } from "../stages";
 import type { Appointment, PortalStore, PortalUser } from "../store/types";
@@ -33,6 +35,8 @@ export interface UserDay {
   followUps: QuoteFollowUpWithCompany[];
   /** companyId -> razón social. */
   names: Map<number, string>;
+  /** Procesos en pausa del bot (portal_conversations del número del usuario). */
+  paused: PausedProcess[];
 }
 
 export interface DailyDigest {
@@ -42,7 +46,7 @@ export interface DailyDigest {
   counts: { citas: number; vencidas: number; deHoy: number; seguimientos: number };
 }
 
-const isEmpty = (d: UserDay) => !d.citas.length && !d.vencidas.length && !d.deHoy.length && !d.followUps.length;
+const isEmpty = (d: UserDay) => !d.citas.length && !d.vencidas.length && !d.deHoy.length && !d.followUps.length && !d.paused.length;
 
 /** Citas, acciones y seguimientos de hoy del usuario. */
 export async function userDay(store: PortalStore, user: PortalUser, now: Date, opts: DigestOptions = {}): Promise<UserDay> {
@@ -58,7 +62,8 @@ export async function userDay(store: PortalStore, user: PortalUser, now: Date, o
   for (const id of new Set([...sel.acciones.map((a) => a.opportunity.companyId), ...citas.map((a) => a.companyId)])) {
     names.set(id, (await store.getCompany(id))?.razonSocial ?? `empresa ${id}`);
   }
-  const day: UserDay = { citas, vencidas: sel.acciones.filter((a) => a.vencida), deHoy: sel.acciones.filter((a) => !a.vencida), followUps, names };
+  const paused = user.whatsapp ? pausedOf(await store.getPortalConversation(user.whatsapp).catch(() => null)) : [];
+  const day: UserDay = { citas, vencidas: sel.acciones.filter((a) => a.vencida), deHoy: sel.acciones.filter((a) => !a.vencida), followUps, names, paused };
   opts.cache?.set(user.id, day);
   return day;
 }
@@ -99,6 +104,16 @@ export async function buildDailyDigest(store: PortalStore, user: PortalUser, now
   if (d.followUps.length) {
     out.push("", "*Cotizaciones por seguir*");
     out.push(...capped(d.followUps, (f) => followUpMessage(f)));
+  }
+
+  if (d.paused.length) {
+    out.push("", "*En pausa en el bot*");
+    out.push(
+      ...capped(d.paused, (p) =>
+        pausedExpired(p, now) ? `• ⌛ ${p.label}: venció (48 h); se descarta en tu próximo mensaje` : `• ${p.label} (${p.missing}) · vence ${formatLimaShort(pausedUntil(p))} ${formatLimaTime(pausedUntil(p))}`,
+      ),
+    );
+    out.push("_Escríbeme *continuar* o *descartar* (o *hoy* para verlos)._");
   }
 
   let team = false;

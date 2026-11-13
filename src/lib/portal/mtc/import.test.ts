@@ -7,7 +7,7 @@ import { loadTyreRules } from "./inference";
 const FIX = path.join(__dirname, "__fixtures__");
 const files = ["carga2224.csv", "carga25.csv", "pasajeros.csv"].map((f) => path.join(FIX, f));
 const rules = loadTyreRules(path.join(__dirname, "..", "..", "..", "..", "config", "tyre-inference.json"));
-const config = (minUnits: number) => ({ minUnits, currentCut: "20251231", tyreCuts: ["20241231", "20231231", "20221231"], dir: "unused" });
+const config = (minUnits: number, sectorMajority = 0.9) => ({ minUnits, currentCut: "20251231", tyreCuts: ["20241231", "20231231", "20221231"], dir: "unused", sectorMajority });
 
 describe("importMtc (fixtures)", () => {
   it("dry run computes without a store", async () => {
@@ -17,6 +17,15 @@ describe("importMtc (fixtures)", () => {
     expect(s.empresas).toBe(3);
     expect(s.files.map((f) => f.origen)).toEqual(["carga", "carga", "pasajeros"]);
     expect(formatImportSummary(s)).toContain("simulación");
+  });
+
+  it("uses import.sectorMajority for the sector (3 carga + 1 pasajeros = 75 %)", async () => {
+    const at = async (m: number) => (await importMtc({ files, config: config(3, m), rules, dryRun: true, verifyRuc: "20111111111" })).verificacion?.sector;
+    expect(await at(0.9)).toBe("mixto");
+    expect(await at(0.75)).toBe("carga");
+    const store = JsonPortalStore.memory();
+    await importMtc({ files, config: config(3, 0.75), rules, store });
+    expect((await store.getCompanyByRuc("20111111111"))!.sector).toBe("carga");
   });
 
   it("writes companies above the threshold and is idempotent", async () => {

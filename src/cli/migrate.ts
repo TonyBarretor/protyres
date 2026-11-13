@@ -362,6 +362,8 @@ const STATEMENTS = [
     referencia boolean,
     created_at timestamptz not null default now()
   )`,
+  // Corrida D (punto 7): qué regla del enrutador del portal decidió cada mensaje (filas kind 'route'), para revisar el piloto.
+  `alter table messages add column if not exists route_rule text`,
 ];
 
 /** Desde aquí empiezan las sentencias del portal: antes de ejecutarlas se pasa la guardia (migrate-guard.ts). */

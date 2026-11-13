@@ -122,7 +122,8 @@ describe("classifyIntent", () => {
       expect([t, classifyIntent(user(t, { pendingPortalStep: p }))]).toEqual([t, "portal_flow"]);
     }
     expect(classifyIntent(user("Michelin 11R22.5 XZE2+ x4 para Transportes ABC, juan@abc.com", { pendingPortalStep: p }))).toBe("quote");
-    expect(classifyIntent(user("295/80R22.5", { pendingPortalStep: p }))).toBe("quote");
+    // corrida D (P4): una medida sola con una pregunta en curso puede ser la respuesta o un pedido nuevo: se pregunta
+    expect(classifyIntent(user("295/80R22.5", { pendingPortalStep: p }))).toBe("route_choice");
     expect(classifyIntent(user("proveedores", { pendingPortalStep: p }))).toBe("passthrough");
     expect(classifyIntent(user("ayuda", { pendingPortalStep: p }))).toBe("passthrough");
     expect(isQuoterCommand("cotizaciones Prosegur")).toBe(true);
@@ -177,7 +178,7 @@ describe("classifyIntent", () => {
       expect([t, classifyIntent(user(t, { pendingPortalStep: questions }))]).toEqual([t, "portal_flow"]);
     }
     expect(classifyIntent(user("Fenixway 295/80R22.5 x4 para Transportes ABC", { pendingPortalStep: questions }))).toBe("quote");
-    expect(classifyIntent(user("11R22.5", { pendingPortalStep: questions }))).toBe("quote");
+    expect(classifyIntent(user("11R22.5", { pendingPortalStep: questions }))).toBe("route_choice"); // corrida D (P4): medida sola, se pregunta
     expect(classifyIntent(user("proveedores", { pendingPortalStep: questions }))).toBe("passthrough");
     expect(classifyIntent(user("ayuda", { pendingPortalStep: questions }))).toBe("passthrough");
   });

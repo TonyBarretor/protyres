@@ -18,6 +18,7 @@ import type {
   AppointmentPatch,
   Company,
   CompanyInput,
+  CompanyOriginCounts,
   CompanyOrderProfile,
   CompanyPatch,
   CompanyRow,
@@ -157,9 +158,31 @@ export class JsonPortalStore implements PortalStore {
   /** companyId -> marcas normalizadas (se invalida al cambiar la flota). */
   private marcasCache: Map<number, Set<string>> | null = null;
   private timer: NodeJS.Timeout | null = null;
+  /** Marca (mtime + tamaño) del archivo tal como lo cargó o escribió este proceso: si cambia, otro proceso lo escribió. */
+  private diskMark: string | null = null;
 
   constructor(private file: string | null = null) {
     if (file && fs.existsSync(file)) this.load(file);
+    this.diskMark = this.readDiskMark();
+  }
+
+  private readDiskMark(): string | null {
+    if (!this.file) return null;
+    try {
+      const st = fs.statSync(this.file);
+      return `${st.mtimeMs}:${st.size}`;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * true si otro proceso escribió el archivo después de que este lo cargó o escribió (p. ej. el simulador con --persist
+   * mientras corre `npm run dev`) y aquí no hay cambios sin guardar: quien lo tiene en memoria debe volver a cargarlo.
+   */
+  isStaleOnDisk(): boolean {
+    if (!this.file || this.timer) return false;
+    return this.readDiskMark() !== this.diskMark;
   }
 
   /** Solo memoria (tests). */
@@ -251,6 +274,7 @@ export class JsonPortalStore implements PortalStore {
     const tmp = `${this.file}.tmp`;
     fs.writeFileSync(tmp, JSON.stringify(this.snapshot()));
     fs.renameSync(tmp, this.file);
+    this.diskMark = this.readDiskMark();
   }
 
   async flush(): Promise<void> {
@@ -530,6 +554,16 @@ export class JsonPortalStore implements PortalStore {
 
   async countFleet(): Promise<number> {
     return this.fleet.size;
+  }
+
+  async companyOriginCounts(): Promise<CompanyOriginCounts[]> {
+    const out: CompanyOriginCounts[] = [];
+    for (const c of this.companies.values()) {
+      const r: CompanyOriginCounts = { companyId: c.id, ruc: c.ruc, razonSocial: c.razonSocial, sector: c.sector, carga: 0, pasajeros: 0 };
+      for (const key of this.fleetByCompany.get(c.id) ?? []) r[this.fleet.get(key)!.origen]++;
+      out.push(r);
+    }
+    return out.sort((a, b) => a.companyId - b.companyId);
   }
 
   // ── ventas ──

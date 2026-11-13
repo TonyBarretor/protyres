@@ -141,7 +141,7 @@ export async function importMtc(opts: ImportMtcOptions): Promise<ImportMtcSummar
   }
 
   // 4. Agregado por empresa y umbral.
-  const all = aggregateCompanies(fleet);
+  const all = aggregateCompanies(fleet, { sectorMajority: config.sectorMajority });
   const companies = all.filter((c) => c.unidades >= config.minUnits);
   const passing = new Set(companies.map((c) => c.ruc));
   const imported = fleet.filter((v) => passing.has(v.ruc));

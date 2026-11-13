@@ -71,7 +71,8 @@ async function harness(portal: PortalStore): Promise<Harness> {
     const before = client.sent.length;
     const msg: InboundMessage = { id: `wamid.b4.${++n}`, from: FRANK, timestamp: "1", type: "text", text, forwarded: false };
     await bot.handle(msg);
-    return client.sent.slice(before).map((m) => (m.kind === "text" ? m.body! : `[${m.kind}] ${m.fileName}`));
+    // un interactivo (botón *Enlazar*) se lee por su body, igual que un texto
+    return client.sent.slice(before).map((m) => (m.kind === "text" || m.kind === "interactive" ? m.body! : `[${m.kind}] ${m.fileName}`));
   };
   return { bot, client, emails, logs, say };
 }
@@ -183,6 +184,8 @@ describe("cotización enlazada", () => {
     await h.say(REQ_NAME);
     const out = await h.say("ok");
     expect(out.at(-1)).toBe(`¿La cotización *0001* es para *TRANSPORTES ANDES DEL PERU S.A.C.* (RUC ${RUC_ANDES}) del portal? Responde *enlazar* o ignóralo.`);
+    // corrida D: la pregunta lleva el botón *Enlazar* (id = el comando `enlazar`)
+    expect(h.client.sent.at(-1)).toMatchObject({ kind: "interactive", interactive: { type: "button", buttons: [{ id: "pt:enlazar", title: "Enlazar" }] } });
     expect(await portal.getOpenOpportunity(andesId)).toBeNull();
     const conv = await portal.getPortalConversation(FRANK);
     expect(conv?.state[LINK_STATE_KEY]).toMatchObject({ kind: "link_quote", quoteNumber: "COT-0001", companyId: andesId });
@@ -193,7 +196,8 @@ describe("cotización enlazada", () => {
 
     const { ctx, replies } = ctxFor(portal, frank);
     expect(await confirmQuoteLink(ctx, "")).toBe(true);
-    expect(replies).toEqual([`🔗 Listo: cotización *0001* enlazada a *TRANSPORTES ANDES DEL PERU S.A.C.* (Prospecto).\n${WARN_SIN_EVALUAR}`]);
+    // corrida D: termina con la línea de avance (la empresa de la prueba no tiene dueño ni contactos: pasos omitidos)
+    expect(replies).toEqual([`🔗 Listo: cotización *0001* enlazada a *TRANSPORTES ANDES DEL PERU S.A.C.* (Prospecto).\n${WARN_SIN_EVALUAR}\n✅ Paso 5 de 7 con TRANSPORTES ANDES DEL PERU: cotización enlazada (4 pasos omitidos). Sigue: registrar la orden de compra.`]);
     expect((await portal.getOpenOpportunity(andesId, frank.id))?.quoteNumber).toBe("COT-0001");
     expect((await portal.getPortalConversation(FRANK))?.state?.[LINK_STATE_KEY]).toBeUndefined();
     expect(await confirmQuoteLink(ctx, "")).toBe(false); // ya no hay propuesta
@@ -223,7 +227,8 @@ describe("cotización enlazada", () => {
     await h.say("ok");
     const { ctx, replies } = ctxFor(portal, frank);
     expect(await markQuoteForwarded(ctx, "la cotización 001")).toBe(true);
-    expect(replies[0]).toBe("📤 Cotización *0001* de *TRANSPORTES ANDES DEL PERU* registrada como enviada (Cotización enviada).");
+    // corrida D: termina con la línea de avance
+    expect(replies[0]).toBe("📤 Cotización *0001* de *TRANSPORTES ANDES DEL PERU* registrada como enviada (Cotización enviada).\n✅ Paso 5 de 7 con TRANSPORTES ANDES DEL PERU: cotización enviada (pasos 1 y 2 omitidos). Sigue: registrar la orden de compra.");
     expect((await portal.getOpenOpportunity(andesId, frank.id))?.etapa).toBe("cotizacion_enviada");
     expect((await quoteActs(portal, "cotizacion_enviada"))[0].data).toMatchObject({ via: "whatsapp" });
     expect(await markQuoteForwarded(ctx, "999")).toBe(false);

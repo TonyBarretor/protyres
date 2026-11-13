@@ -15,6 +15,7 @@ import type {
   AppointmentPatch,
   Company,
   CompanyInput,
+  CompanyOriginCounts,
   CompanyOrderProfile,
   CompanyPatch,
   CompanyRow,
@@ -517,6 +518,24 @@ export class PgPortalStore implements PortalStore {
   async countFleet(): Promise<number> {
     const [{ n }] = await this.sql`select count(*)::int as n from fleet_vehicles`;
     return Number(n);
+  }
+
+  async companyOriginCounts(): Promise<CompanyOriginCounts[]> {
+    const rows = await this.sql`
+      select c.id, c.ruc, c.razon_social, c.sector,
+        count(f.id) filter (where f.origen = 'carga')::int as carga,
+        count(f.id) filter (where f.origen = 'pasajeros')::int as pasajeros
+      from companies c left join fleet_vehicles f on f.company_id = c.id
+      group by c.id
+      order by c.id`;
+    return rows.map((r) => ({
+      companyId: Number(r.id),
+      ruc: String(r.ruc),
+      razonSocial: String(r.razon_social),
+      sector: (r.sector as Sector | null) ?? null,
+      carga: Number(r.carga),
+      pasajeros: Number(r.pasajeros),
+    }));
   }
 
   // ── ventas ──

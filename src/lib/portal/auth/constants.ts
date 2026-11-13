@@ -16,3 +16,10 @@ export const LOGIN_PATH = "/portal/login";
 
 /** Pantalla de inicio tras entrar. */
 export const HOME_PATH = "/portal";
+
+/**
+ * Política de Referer de las páginas que llevan un token en la URL y envían un formulario (login, encuesta pública).
+ * same-origin: el token no viaja a otros sitios y el POST al mismo origen conserva la cabecera Origin. NUNCA no-referrer:
+ * con ella el navegador manda `Origin: null` en el POST, el login lo rechaza (403) y Next aborta las server actions.
+ */
+export const TOKEN_PAGE_REFERRER_POLICY = "same-origin";

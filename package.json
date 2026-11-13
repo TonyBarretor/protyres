@@ -20,6 +20,7 @@
     "photos": "tsx --tsconfig tsconfig.cli.json src/cli/photos.ts",
     "db:studio": "drizzle-kit studio",
     "portal:import-mtc": "tsx --tsconfig tsconfig.cli.json src/cli/portal-import-mtc.ts",
+    "portal:recalc-sector": "tsx --tsconfig tsconfig.cli.json src/cli/portal-recalc-sector.ts",
     "portal:seed-demo": "tsx --tsconfig tsconfig.cli.json src/cli/portal-seed-demo.ts",
     "portal:clear-demo": "tsx --tsconfig tsconfig.cli.json src/cli/portal-clear-demo.ts",
     "portal:simulate": "tsx --tsconfig tsconfig.cli.json src/cli/portal-simulate.ts",

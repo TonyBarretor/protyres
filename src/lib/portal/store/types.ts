@@ -170,6 +170,16 @@ export interface CompanyRepo {
   countCompanies(): Promise<number>;
 }
 
+/** Empresa con su flota contada por origen (recálculo del sector sin reimportar el padrón). */
+export interface CompanyOriginCounts {
+  companyId: number;
+  ruc: string;
+  razonSocial: string;
+  sector: Sector | null;
+  carga: number;
+  pasajeros: number;
+}
+
 export interface FleetRepo {
   /** Inserta o actualiza por (placa, origen); reimportar no duplica. Una placa puede pasar a otra empresa. */
   upsertFleet(batch: FleetVehicleInput[]): Promise<{ inserted: number; updated: number }>;
@@ -183,6 +193,8 @@ export interface FleetRepo {
   listFleet(companyId: number): Promise<FleetVehicle[]>;
   fleetByBrand(companyId: number): Promise<FleetGroup[]>;
   countFleet(): Promise<number>;
+  /** Todas las empresas (también las sin flota, con 0 y 0) con sus vehículos contados por origen; orden por id. */
+  companyOriginCounts(): Promise<CompanyOriginCounts[]>;
 }
 
 // ── Ventas ──

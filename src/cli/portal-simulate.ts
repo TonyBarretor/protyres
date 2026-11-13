@@ -12,6 +12,11 @@
  *   @audio <archivo>             nota de voz: con DEEPGRAM_API_KEY se transcribe de verdad (Deepgram); sin ella se salta, con aviso
  *   @doc <archivo> [leyenda]     documento o imagen (por extensión) con leyenda opcional
  *   @fwd <texto>                 mensaje reenviado
+ *   @btn <título, id o número>   pulsa un botón / fila del último mensaje interactivo del bot ("@btn Sí, guardar",
+ *                                "@btn Asignarme", "@btn 2" en una lista). Entra como un `interactive` real
+ *                                (button_reply / list_reply) por parseWebhook, con su id `pt:…`; si no existe, es un error
+ *   @btn <botón> || <texto>      pulsa el botón si el bot lo ofreció; si no (p. ej. la empresa ya era suya en estos
+ *                                datos), manda <texto> escrito, que es su equivalente
  *   @cron [ventana]              corre el resumen diario (runDailyDigest, como /api/cron/daily) con este WhatsApp de
  *                                consola, para todos los usuarios; con `ventana` cada envío falla como fuera de las 24 h
  *                                (131047) y el resumen queda como aviso pendiente para el siguiente mensaje del usuario
@@ -26,7 +31,8 @@ import fs from "node:fs";
 import path from "node:path";
 import readline from "node:readline";
 import type { OutboundMessage, WhatsAppClient } from "../lib/whatsapp/client";
-import type { InboundMessage } from "../lib/whatsapp/webhook";
+import { stripPortalPrefix, type InteractiveMessage } from "../lib/whatsapp/interactive";
+import { parseWebhook, type InboundMessage } from "../lib/whatsapp/webhook";
 
 interface Args {
   as: string;
@@ -143,11 +149,47 @@ class ConsoleWhatsAppClient implements WhatsAppClient {
     const p = image.data ? this.save(`imagen${image.mimeType === "image/png" ? ".png" : ".jpg"}`, image.data) : null;
     this.print({ to, kind: "image", link: image.link, caption, fileName: p ? path.basename(p) : image.link }, to, p ? `\n   guardado en ${path.relative(process.cwd(), p)}` : "");
   }
+  /** El último interactivo enviado al usuario (para @btn). */
+  lastInteractive: InteractiveMessage | null = null;
+  async sendInteractive(to: string, message: InteractiveMessage): Promise<void> {
+    this.texts++;
+    if (to === currentPhone) this.lastInteractive = message;
+    const who = to === currentPhone ? "" : ` (→ ${to})`;
+    const opts =
+      message.type === "button"
+        ? message.buttons.map((b) => `[${b.title}]`).join(" ")
+        : `☰ ${message.button}\n${message.sections
+            .flatMap((sec) => sec.rows)
+            .map((r, i) => `   ${i + 1}. ${r.title}${r.description ? ` — ${r.description}` : ""}  (id: ${r.id})`)
+            .join("\n")}`;
+    console.log(`\n🤖${who} ${message.body}\n   ${opts}\n`);
+  }
   async downloadMedia(mediaId: string) {
     const m = this.media.get(mediaId);
     if (!m) throw new Error(`medio simulado no encontrado: ${mediaId}`);
     return m;
   }
+}
+
+const foldBtn = (s: string) =>
+  s
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/\s+/g, " ")
+    .trim();
+
+/** El botón / fila de `m` que corresponde a `arg` (título, id con o sin prefijo, o número de fila de una lista). */
+function findPressed(m: InteractiveMessage, arg: string): { kind: "button_reply" | "list_reply"; id: string; title: string; description?: string } | null {
+  const a = foldBtn(arg);
+  if (m.type === "button") {
+    const b = m.buttons.find((x) => foldBtn(x.title) === a || foldBtn(x.id) === a || foldBtn(stripPortalPrefix(x.id)) === a);
+    return b ? { kind: "button_reply", id: b.id, title: b.title } : null;
+  }
+  const rows = m.sections.flatMap((sec) => sec.rows);
+  const n = /^\d{1,2}$/.test(a) ? rows[Number(a) - 1] : undefined;
+  const r = n ?? rows.find((x) => foldBtn(x.title) === a || foldBtn(x.id) === a || foldBtn(stripPortalPrefix(x.id)) === a);
+  return r ? { kind: "list_reply", id: r.id, title: r.title, description: r.description } : null;
 }
 
 let currentPhone = "";
@@ -241,6 +283,29 @@ async function main() {
     }
     const doc = line.match(/^@doc\s+(\S+)(?:\s+(.+))?$/);
     if (doc) return media(doc[1], "doc", doc[2]?.trim());
+    const btn = line.match(/^@btn\s+(.+?)(?:\s+\|\|\s+(.+))?$/);
+    if (btn) {
+      const last = client.lastInteractive;
+      const hit = last ? findPressed(last, btn[1].trim()) : null;
+      if (!hit && btn[2]) {
+        console.log(`ℹ️  el bot no ofreció el botón «${btn[1].trim()}»: se escribe su equivalente`);
+        msg.text = btn[2].trim();
+        return msg;
+      }
+      if (!hit) {
+        thrown.push(`@btn ${btn[1]}: no hay ese botón en el último mensaje interactivo`);
+        console.log(`⚠️  no hay botón «${btn[1]}» en el último mensaje interactivo${last ? "" : " (no hubo ninguno)"}`);
+        return null;
+      }
+      client.lastInteractive = null; // un botón se pulsa una vez
+      // como lo manda WhatsApp: webhook con interactive.button_reply / list_reply (y el id `pt:…`)
+      const reply = hit.kind === "button_reply" ? { button_reply: { id: hit.id, title: hit.title } } : { list_reply: { id: hit.id, title: hit.title, ...(hit.description ? { description: hit.description } : {}) } };
+      const payload = {
+        object: "whatsapp_business_account",
+        entry: [{ changes: [{ field: "messages", value: { messaging_product: "whatsapp", messages: [{ id: msg.id, from: msg.from, timestamp: msg.timestamp, type: "interactive", interactive: { type: hit.kind, ...reply } }] } }] }],
+      };
+      return parseWebhook(payload).messages[0] ?? null;
+    }
     const fwd = line.match(/^@fwd\s+([\s\S]+)$/);
     if (fwd) {
       msg.text = fwd[1].replace(/\\n/g, "\n");
@@ -274,7 +339,8 @@ async function main() {
     if (cron) return runCron(cron[1]);
     const msg = toMessage(line);
     if (!msg) return;
-    console.log(`👤 ${msg.media ? `[${msg.type}] ${msg.media.fileName ?? ""} ${msg.text ?? ""}`.trim() : msg.forwarded ? `[reenviado] ${msg.text}` : msg.text}`);
+    const shown = msg.media ? `[${msg.type}] ${msg.media.fileName ?? ""} ${msg.text ?? ""}`.trim() : msg.forwarded ? `[reenviado] ${msg.text}` : msg.type === "interactive" ? `[botón] ${msg.interactiveTitle ?? ""} (id: ${msg.interactiveId ?? ""} → «${msg.text ?? ""}»)` : msg.text;
+    console.log(`👤 ${shown}`);
     sent++;
     try {
       await bot.handle(msg);
@@ -298,7 +364,7 @@ async function main() {
   if (lines.length) {
     for (const l of lines) await send(l);
   } else {
-    console.log('Modo interactivo: escribe un mensaje ("@doc <archivo> [leyenda]", "@audio <archivo>", "@fwd <texto>", "@cron [ventana]", "/quit").');
+    console.log('Modo interactivo: escribe un mensaje ("@doc <archivo> [leyenda]", "@audio <archivo>", "@fwd <texto>", "@btn <botón>", "@cron [ventana]", "/quit").');
     const rl = readline.createInterface({ input: process.stdin, output: process.stdout, prompt: "> " });
     rl.prompt();
     for await (const line of rl) {
