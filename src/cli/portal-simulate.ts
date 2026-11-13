@@ -10,6 +10,9 @@
  *
  * Guion: una línea por mensaje; se ignoran líneas vacías y las que empiezan con #.
  *   @audio <archivo>             nota de voz: con DEEPGRAM_API_KEY se transcribe de verdad (Deepgram); sin ella se salta, con aviso
+ *   @voz <transcripción>         nota de voz con la transcripción inyectada (sin Deepgram ni archivo): entra como un audio
+ *                                real y el bot recibe <transcripción> como si la devolviera Deepgram (corrida D, punto 8:
+ *                                cotización por voz). Ver scripts/guion-voz.txt
  *   @doc <archivo> [leyenda]     documento o imagen (por extensión) con leyenda opcional
  *   @fwd <texto>                 mensaje reenviado
  *   @btn <título, id o número>   pulsa un botón / fila del último mensaje interactivo del bot ("@btn Sí, guardar",
@@ -229,7 +232,15 @@ async function main() {
   const client = new ConsoleWhatsAppClient();
   // sin Graph API: las notas de voz (@audio / --audio) se "descargan" del archivo local que el guion cargó en el cliente
   const { configureReportBot } = await import("../lib/portal/bot");
-  configureReportBot({ downloadMedia: (id) => client.downloadMedia(id) });
+  // @voz: la transcripción va en cola y este fetch la devuelve como Deepgram; el resto (@audio con clave) va a Deepgram
+  const realDeepgram = !!process.env.DEEPGRAM_API_KEY;
+  const injected: string[] = [];
+  const deepgramFetch = (async (url: string | URL | Request, init?: RequestInit) => {
+    const transcript = injected.shift();
+    if (transcript === undefined) return fetch(url, init);
+    return new Response(JSON.stringify({ metadata: { duration: 5 }, results: { channels: [{ alternatives: [{ transcript, confidence: 0.9 }] }] } }), { status: 200, headers: { "Content-Type": "application/json" } });
+  }) as typeof fetch;
+  configureReportBot({ downloadMedia: (id) => client.downloadMedia(id), deepgramFetch });
   let emailSeq = 0;
   const bot = new BotHandler({
     client,
@@ -272,9 +283,21 @@ async function main() {
       msg.text = caption;
       return msg;
     };
+    const voz = line.match(/^@voz\s+(\S.*)$/);
+    if (voz) {
+      // sin clave real, una de simulación: la transcripción no sale de la máquina (deepgramFetch la devuelve)
+      if (!process.env.DEEPGRAM_API_KEY) process.env.DEEPGRAM_API_KEY = "simulacion";
+      injected.length = 0; // una transcripción por nota (si la anterior no llegó a Deepgram, no se arrastra)
+      injected.push(voz[1].trim());
+      const id = `media.sim.${n}`;
+      client.media.set(id, { data: Buffer.from("OggS-simulado"), mimeType: "audio/ogg; codecs=opus" });
+      msg.type = "audio";
+      msg.media = { id, mimeType: "audio/ogg; codecs=opus" };
+      return msg;
+    }
     const audio = line.match(/^@audio\s+(\S.*)$/);
     if (audio) {
-      if (!process.env.DEEPGRAM_API_KEY) {
+      if (!realDeepgram) {
         console.log(`⚠️  sin DEEPGRAM_API_KEY: se salta el audio ${audio[1].trim()}`);
         skipped++;
         return null;
@@ -339,7 +362,7 @@ async function main() {
     if (cron) return runCron(cron[1]);
     const msg = toMessage(line);
     if (!msg) return;
-    const shown = msg.media ? `[${msg.type}] ${msg.media.fileName ?? ""} ${msg.text ?? ""}`.trim() : msg.forwarded ? `[reenviado] ${msg.text}` : msg.type === "interactive" ? `[botón] ${msg.interactiveTitle ?? ""} (id: ${msg.interactiveId ?? ""} → «${msg.text ?? ""}»)` : msg.text;
+    const shown = msg.type === "audio" && /^@voz\s/.test(line) ? `[voz] «${line.replace(/^@voz\s+/, "")}»` : msg.media ? `[${msg.type}] ${msg.media.fileName ?? ""} ${msg.text ?? ""}`.trim() : msg.forwarded ? `[reenviado] ${msg.text}` : msg.type === "interactive" ? `[botón] ${msg.interactiveTitle ?? ""} (id: ${msg.interactiveId ?? ""} → «${msg.text ?? ""}»)` : msg.text;
     console.log(`👤 ${shown}`);
     sent++;
     try {
@@ -364,7 +387,7 @@ async function main() {
   if (lines.length) {
     for (const l of lines) await send(l);
   } else {
-    console.log('Modo interactivo: escribe un mensaje ("@doc <archivo> [leyenda]", "@audio <archivo>", "@fwd <texto>", "@btn <botón>", "@cron [ventana]", "/quit").');
+    console.log('Modo interactivo: escribe un mensaje ("@doc <archivo> [leyenda]", "@audio <archivo>", "@voz <transcripción>", "@fwd <texto>", "@btn <botón>", "@cron [ventana]", "/quit").');
     const rl = readline.createInterface({ input: process.stdin, output: process.stdout, prompt: "> " });
     rl.prompt();
     for await (const line of rl) {

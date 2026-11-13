@@ -1,0 +1,52 @@
+# Guion de cotización por voz (corrida D, punto 8) para el simulador:
+#   npm run portal:simulate -- --as frank --script scripts/guion-voz.txt
+# @voz <transcripción> entra como una nota de voz real cuya transcripción (la de Deepgram) se inyecta: no hace falta
+# DEEPGRAM_API_KEY ni un archivo de audio. El bot responde primero "🎙 Escuché: …" (lo literal) y luego el "Entendí:"
+# de siempre. Por voz nunca se arma el PDF sin un *ok* escrito.
+
+# 0. Empezar limpio
+cancelar
+
+# 1. El ejemplo del punto 8, con correcciones por voz y el ok escrito
+@voz Cotízame ocho Flama 77 en 295 80 22.5 a 254 para Transportes Beta, a 45 días.
+# elegir una opción escrita (en texto armaría el PDF; en una cotización por voz solo cambia la opción)
+1b
+@voz No, eran doce.
+@voz Cámbialo a Valor 99.
+@voz Precio doscientos cincuenta y nueve.
+# un "ok" dictado no arma el PDF: pide escribirlo
+@voz Ok, dale.
+ok
+cancelar
+
+# 2. Medida que no está en el catálogo: pregunta con las candidatas (no elige) y sigue con la elegida
+@voz Cotízame cuatro Flama 77 en doscientos ochenta y cinco ochenta erre veintidós y medio para Transportes Beta.
+@btn 295/80R22.5 || 295/80R22.5
+cancelar
+
+# 3. Sin medida: la pregunta, y la medida dictada como respuesta
+@voz Cotízame cuatro Valor 87 para Transportes Beta.
+@voz doscientos noventa y cinco ochenta veintidós y medio
+cancelar
+
+# 4. Transcripción con ruido
+@voz Eh, cotízame este... ocho llantas eh Flama setenta y siete en doscientos noventa y cinco, ochenta erre veintidós punto cinco, a doscientos cincuenta y cuatro dólares para transportes beta. Mmm, a cuarenta y cinco días, gracias.
+cancelar
+
+# 5. Otras formas de dictar la medida (cada una es una cotización nueva)
+@voz Cotiza cuatro Valor 99 en once erre veintidós y medio.
+cancelar
+@voz Cotiza cuatro Valor 99 en 11 22.5 para Transportes Beta.
+cancelar
+@voz Cotiza seis Flama 77 en doscientos noventa y cinco sobre ochenta R veintidós coma cinco.
+cancelar
+@voz Cotiza una docena de Flama 77 en trescientos quince ochenta erre veintidós cinco, margen de diez por ciento.
+cancelar
+@voz Cotiza cuatro llantas doscientos quince setenta y cinco diecisiete y medio, descuento de cinco por ciento.
+cancelar
+@voz Cotiza dos llantas mil R veinte.
+cancelar
+
+# 6. Una nota de voz de reporte sigue siendo reporte
+@voz Visité Transportes Gamma, me atendió el jefe de flota, quedamos en llamar el lunes.
+cancelar

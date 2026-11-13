@@ -20,6 +20,7 @@ import { loadProvidersConfig, resolveSourceOptions } from "../ingest/sources";
 import { extractPricesWithLLM, llmAvailable } from "../llm/extract-prices";
 import { parseRequestWithLLM } from "../llm/parse-request";
 import { routePortal } from "../portal/bot";
+import { voiceCatalogFromStore } from "../portal/voice/catalog";
 import { linkQuoteToPortal, onQuoteSentToPortal, portalCreditTerm } from "../portal/quotes/link";
 import type { PortalStore } from "../portal/store/types";
 import type { IngestResult } from "../ingest/types";
@@ -413,13 +414,16 @@ export class BotHandler {
     const cmd = norm(text);
     const state: ConversationState = (await this.store.getConversation(from)) ?? { phone: from, step: "idle", updatedAt: now() };
     await this.client.logInbound(msg, state.quoteNumber);
+    // cotización por voz (portal, corrida D punto 8): el texto ya normalizado de una nota de voz. Solo cambia que el PDF
+    // no se arma sin un *ok* escrito (state.voice) y que "modelo X" elige esa opción; sin nota de voz, nada de esto corre.
+    const voice = !!msg.voiceTranscript;
 
     try {
       // portal comercial: único enganche (src/lib/portal/bot, router.ts decide); false = sigue el cotizador sin cambios.
       // Va primero para que `cancelar` limpie también el paso del portal y una nota de voz de un usuario del portal no
       // reciba "no leo audios"; con el cotizador a mitad de un flujo solo entran comandos explícitos del portal.
       const quoteStep = pendingProfile(state) ? "profile" : state.step;
-      if (await routePortal({ from, text, msg, quoteStep, reply: (body) => this.reply(from, body), replyInteractive: (m) => this.client.sendInteractive(from, m), sendDocument: (file, name, caption, mime) => this.client.sendDocument(from, file, name, caption, mime), sendTextTo: (to, body) => this.client.sendText(to, body), downloadMedia: (id) => this.client.downloadMedia(id), logMessage: (e) => this.store.logMessage(e), requote: (m) => this.handle(m), defer: (fn) => after.push(fn), store: this.deps.portalStore, log: (m) => this.log(m) })) return;
+      if (await routePortal({ from, text, msg, quoteStep, voiceQuote: state.step === "choose" && !!state.voice, voiceCatalog: () => voiceCatalogFromStore(this.store), reply: (body) => this.reply(from, body), replyInteractive: (m) => this.client.sendInteractive(from, m), sendDocument: (file, name, caption, mime) => this.client.sendDocument(from, file, name, caption, mime), sendTextTo: (to, body) => this.client.sendText(to, body), downloadMedia: (id) => this.client.downloadMedia(id), logMessage: (e) => this.store.logMessage(e), requote: (m) => this.handle(m), defer: (fn) => after.push(fn), store: this.deps.portalStore, log: (m) => this.log(m) })) return;
       if (["ayuda", "help", "?", "hola", "menu", "inicio"].includes(cmd)) return this.reply(from, HELP);
       if (["cancelar", "cancel", "salir", "reset"].includes(cmd)) {
         await this.store.setConversation(from, null);
@@ -461,6 +465,10 @@ export class BotHandler {
       if (state.step === "confirm_new" && state.resume && (await this.handleConfirmNew(from, state, text))) return;
       const addText = parseAddCommand(text);
       if (addText && (state.step === "choose" || state.step === "review_quote" || state.step === "need_email")) return this.addLines(from, state, addText);
+      if (voice && state.step === "choose" && state.pending) {
+        const model = text.match(/^modelo\s+(\S.*)$/i);
+        if (model) return void (await this.voiceModelPick(from, state, model[1].trim()));
+      }
       if (state.step === "choose" && state.pending) {
         const handled = await this.handleChoice(from, state, text);
         if (handled) return;
@@ -514,8 +522,8 @@ export class BotHandler {
       if ((state.step === "review_quote" || state.step === "need_email") && (await this.addToQuote(from, state, text))) return;
       if (!text) return this.reply(from, "No entendí el mensaje. Escribe *ayuda* para ver cómo funciona.");
       // a new request while a quote is open: never a silent restart
-      if ((state.step === "choose" || state.step === "review_quote" || state.step === "need_email") && (await this.confirmNewRequest(from, state, text))) return;
-      return this.startRequest(from, text, undefined, { profile: profileNext?.profile, header: profileNext?.header });
+      if ((state.step === "choose" || state.step === "review_quote" || state.step === "need_email") && (await this.confirmNewRequest(from, state, text, voice))) return;
+      return this.startRequest(from, text, undefined, { profile: profileNext?.profile, header: profileNext?.header, ...(voice ? { voice } : {}) });
     } catch (err) {
       this.log(`error handling ${msg.id}: ${(err as Error).stack ?? err}`);
       await this.reply(from, `Ocurrió un error: ${(err as Error).message}. Intenta de nuevo o escribe *cancelar*.`);
@@ -745,7 +753,7 @@ export class BotHandler {
     return (req.unparsed ?? []).filter((seg) => !detectProfile(this.settings, seg, { raw: seg, lines: [], parsedBy: "regex" }));
   }
 
-  private async startRequest(from: string, text: string, note?: string, opts: { profile?: string; header?: string; lead?: string[] } = {}): Promise<void> {
+  private async startRequest(from: string, text: string, note?: string, opts: { profile?: string; header?: string; lead?: string[]; voice?: boolean } = {}): Promise<void> {
     // customer profile (Prosegur…): the message starts with its alias, says "para prosegur", names it as the customer,
     // or the salesman asked for it with a bare "prosegur" (or "prosegur ayacucho 1830") just before
     let profile = findProfile(this.settings, opts.profile) ?? detectProfile(this.settings, text, parseRequestRegex(text)) ?? undefined;
@@ -798,7 +806,7 @@ export class BotHandler {
       req = { ...req, paymentTerm: credit.term };
       note = `${note ? note + "\n" : ""}${credit.note}`;
     }
-    return this.showOptions(from, text, req, profile, { note, newQuote: true, lead: opts.lead });
+    return this.showOptions(from, text, req, profile, { note, newQuote: true, lead: opts.lead, ...(opts.voice ? { voice: true } : {}) });
   }
 
   /**
@@ -851,7 +859,7 @@ export class BotHandler {
    * The profile's required fields first (unidad, ub, solicitante), then the options of every line. A request made only
    * of contract items has nothing to choose: the quote is built right away.
    */
-  private async showOptions(from: string, text: string, req: QuoteRequest, profile: CustomerProfile | undefined, opts: { note?: string; skipRequired?: boolean; newQuote?: boolean; lead?: string[] } = {}): Promise<void> {
+  private async showOptions(from: string, text: string, req: QuoteRequest, profile: CustomerProfile | undefined, opts: { note?: string; skipRequired?: boolean; newQuote?: boolean; lead?: string[]; voice?: boolean } = {}): Promise<void> {
     const allContract = req.lines.length > 0 && req.lines.every((l) => l.contract);
     // a new quote is announced ("🆕 Cotización nueva · MOVIL BUS S.A.C."), with the lines that explain it ("Cerré la 032 …");
     // the short contract texts go without them (their summary is the boundary), except "Cerré …", sent on its own
@@ -863,7 +871,7 @@ export class BotHandler {
     const id = profile ? profileId(profile) : undefined;
     const missingFields = profile && !opts.skipRequired ? missingRequired(profile, req) : [];
     if (profile && missingFields.length) {
-      await this.store.setConversation(from, { phone: from, step: "need_fields", requestText: text, profile: id, updatedAt: now() });
+      await this.store.setConversation(from, { phone: from, step: "need_fields", requestText: text, profile: id, ...(opts.voice ? { voice: true } : {}), updatedAt: now() });
       const unparsed = this.unparsedOf(req);
       const understood = `${allContract ? this.contractSummary(profile, req) : `Entendí:\n${describeRequest(req)}\n`}${unparsed.length ? `\n${unparsedWarning(unparsed)}\n` : ""}`;
       return this.reply(from, `${note}${understood}\n${askRequired(profile, missingFields)}`);
@@ -873,8 +881,13 @@ export class BotHandler {
     const pending: PendingLine[] = lcs.map((lc) => ({ candidateIds: lc.candidates.map((c) => c.row.id), chosen: lc.candidates.length ? 0 : null, quantity: lc.line.quantity, ...(lc.line.unitPrice !== undefined ? { unitPriceOverride: lc.line.unitPrice } : {}) }));
     // a new quote to a customer quoted lately: the manual price of the same tyre is kept ("precio 254 como en la 031")
     const carried = opts.newQuote ? await this.carryPrices(from, req, profile, lcs, pending) : [];
-    const state: ConversationState = { phone: from, step: "choose", requestText: text, pending, profile: id, updatedAt: now() };
+    const state: ConversationState = { phone: from, step: "choose", requestText: text, pending, profile: id, ...(opts.voice ? { voice: true } : {}), updatedAt: now() };
     await this.store.setConversation(from, state);
+    if (allContract && opts.voice) {
+      // por voz nunca se arma el PDF sin *ok*: el resumen del contrato espera la confirmación
+      await this.reshow(from, state, text, { lead: note.trim() || undefined });
+      return;
+    }
     if (allContract) {
       await this.finishChoice(from, state);
       return;
@@ -923,7 +936,7 @@ export class BotHandler {
       fieldLines = true;
     }
     const req = await this.parseFor(requestText, contract);
-    await this.showOptions(from, requestText, req, profile, { skipRequired: !fieldLines, newQuote: true });
+    await this.showOptions(from, requestText, req, profile, { skipRequired: !fieldLines, newQuote: true, ...(state.voice ? { voice: true } : {}) });
     return true;
   }
 
@@ -1047,7 +1060,8 @@ export class BotHandler {
         }
         touched = true;
       }
-      if (touched) return this.finishChoice(from, { ...state, pending });
+      // una cotización por voz nunca arma el PDF sin *ok*: la elección solo cambia la opción
+      if (touched) return state.voice ? this.reshow(from, { ...state, pending }, requestText) : this.finishChoice(from, { ...state, pending });
     }
     const lineRef = text.match(/^(?:quitar|quita|eliminar|sin|precio|price|cantidad|cant|qty)\s+(\d{1,2})\b/i);
     if (lineRef && !pending[parseInt(lineRef[1], 10) - 1]) {
@@ -1114,6 +1128,31 @@ export class BotHandler {
       return this.reshow(from, { ...state, requestText }, requestText);
     }
     return false; // not a choice: treat as a new request
+  }
+
+  /**
+   * Cotización por voz: "cámbialo a Valor 99" llega como "modelo Valor 99" y elige esa opción en el ítem que la tiene (la
+   * única forma de elegir por voz; sin PDF hasta el *ok*). Si ninguna opción o varios ítems la tienen, lo dice.
+   */
+  private async voiceModelPick(from: string, state: ConversationState, model: string): Promise<void> {
+    const req = await this.parseFor(state.requestText ?? "", await this.contractFor(findProfile(this.settings, state.profile)));
+    const lcs = await this.lineCandidates(req);
+    const want = foldKey(model);
+    const hits: { line: number; option: number }[] = [];
+    (state.pending ?? []).forEach((p, i) => {
+      if (p.removed) return;
+      p.candidateIds.forEach((id, k) => {
+        const c = lcs[i]?.candidates.find((x) => x.row.id === id);
+        if (c && (foldKey(c.row.model ?? "") === want || foldKey(`${c.row.brand ?? ""} ${c.row.model ?? ""}`) === want)) hits.push({ line: i, option: k });
+      });
+    });
+    const lines = [...new Set(hits.map((h) => h.line))];
+    if (!hits.length) return this.reply(from, `No tengo *${model}* entre las opciones de esta cotización: no cambié nada. Elige con la letra (p. ej. *1b*) o *opciones* para verlas.`);
+    if (lines.length > 1) return this.reply(from, `*${model}* está en ${lines.length} ítems: elige con la letra, p. ej. *${hits[0].line + 1}${LETTERS[hits[0].option]}*.`);
+    const pending = (state.pending ?? []).map((p) => ({ ...p }));
+    const h = hits[0];
+    pending[h.line] = { ...pending[h.line], chosen: h.option, removed: false, extra: [] };
+    await this.reshow(from, { ...state, pending }, state.requestText ?? "", { lead: `✏️ Ítem ${h.line + 1}: *${model}*.` });
   }
 
   /** "número 451" / "nombre: …" while choosing: used when the quote is built; a number already taken asks first. */
@@ -1521,7 +1560,7 @@ export class BotHandler {
    * whether it is a *cambio*, a tyre to *agregar* or a *nueva* quote, and waits (confirm_new). False when the text is
    * not a request (no tyre in it): it goes on as before.
    */
-  private async confirmNewRequest(from: string, state: ConversationState, text: string): Promise<boolean> {
+  private async confirmNewRequest(from: string, state: ConversationState, text: string, voice = false): Promise<boolean> {
     const profile = detectProfile(this.settings, text, parseRequestRegex(text)) ?? undefined;
     const contract = await this.contractFor(profile);
     const req = this.parseForRegex(profile ? this.applyProfile(text, profile, contract).text : text, contract);
@@ -1532,10 +1571,10 @@ export class BotHandler {
     const which = open.number ? `la ${this.shortNumber(open.number)}` : "la cotización en curso";
     if (this.customerRelation(open, req, profile) === "different") {
       const label = [who ? shortCustomer(who) : "", open.profile ? open.unit : ""].filter(Boolean).join(" · ");
-      await this.startRequest(from, text, undefined, { lead: [`Cerré ${which}${label ? ` (${label})` : ""} y empiezo una nueva.`] });
+      await this.startRequest(from, text, undefined, { lead: [`Cerré ${which}${label ? ` (${label})` : ""} y empiezo una nueva.`], ...(voice ? { voice } : {}) });
       return true;
     }
-    await this.store.setConversation(from, { phone: from, step: "confirm_new", confirmText: text, resume: state, quoteNumber: state.quoteNumber, profile: state.profile, updatedAt: now() });
+    await this.store.setConversation(from, { phone: from, step: "confirm_new", confirmText: text, resume: state, quoteNumber: state.quoteNumber, profile: state.profile, ...(voice ? { voice } : {}), updatedAt: now() });
     const open1 = open.number ? `Tienes la cotización ${this.shortNumber(open.number)}${who ? ` (${who})` : ""} abierta.` : `Tienes una cotización en curso${who ? ` (${who})` : ""}.`;
     await this.reply(from, `${open1} ¿Es un *cambio* en esa, una llanta para *agregar*, o una cotización *nueva*?`);
     return true;
@@ -1547,7 +1586,7 @@ export class BotHandler {
     const pendingText = state.confirmText ?? "";
     const answer = confirmAnswer(text);
     if (answer === "new") {
-      await this.startRequest(from, pendingText);
+      await this.startRequest(from, pendingText, undefined, state.voice ? { voice: true } : {});
       return true;
     }
     if (answer === "add") {

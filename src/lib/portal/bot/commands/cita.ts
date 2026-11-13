@@ -19,7 +19,7 @@ import { atLimaTime, formatCitaDate, parseSpanishDateTime, parseTimeOfDay } from
 import { buildIcs, ICS_MIME } from "../ics";
 import { askAgain } from "../pause";
 import { companyProgressLine } from "../progress";
-import { registerCompanyAction, registerPausable, registerPendingHandler, registerPortalCommand, type PortalContext } from "../registry";
+import { registerCompanyAction, registerPausable, registerPendingHandler, registerPortalCommand, replyButtons, type PortalContext } from "../registry";
 import { clearPending, setPending, type PendingStep } from "../state";
 import { limaDateKey, limaStartOfDay } from "../../ui/time";
 
@@ -152,10 +152,63 @@ export interface CitaInput {
   note?: string;
 }
 
-/** Crea la cita y responde (.ics sin leyenda + resumen). La fecha ya viene con hora. */
+/** Cita programada de la empresa en el mismo minuto (misma empresa, fecha y hora), de cualquier vendedor. */
+export async function findDuplicateCita(store: PortalContext["store"], companyId: number, date: Date, exceptId?: number): Promise<Appointment | null> {
+  const from = new Date(Math.floor(date.getTime() / 60_000) * 60_000);
+  const to = new Date(from.getTime() + 60_000);
+  const rows = await store.listAppointments({ companyId, estado: "programada", from, to });
+  return rows.find((a) => a.id !== exceptId) ?? null;
+}
+
+/** Manda el .ics de la cita como documento sin leyenda (si WhatsApp no acepta text/calendar, como text/plain). */
+async function sendCitaIcs(ctx: PortalContext, company: Company, appt: Appointment, contacts: Contact[], sequence = 0): Promise<void> {
+  const cfg = loadPortalConfig();
+  const url = companyUrl(company.id, ctx.env);
+  const vendedor = appt.userId && appt.userId !== ctx.user.id ? ((await ctx.store.getUser(appt.userId).catch(() => null))?.nombre ?? ctx.user.nombre) : ctx.user.nombre;
+  const description = [
+    `Visita a ${company.razonSocial} (RUC ${company.ruc})`,
+    ...contacts.slice(0, 3).map((c) => `Contacto: ${contactLine(c)}`),
+    appt.conTecnico ? `Con el Ing. ${cfg.techLead.nombre} (Dpto. Técnico)` : null,
+    `Vendedor: ${vendedor}`,
+    `Ficha: ${url}`,
+  ]
+    .filter(Boolean)
+    .join("\n");
+  const ics = buildIcs({
+    uid: `cita-${appt.id}-${company.ruc}@portal.360tyres`,
+    start: appt.startsAt,
+    durationMinutes: cfg.appointments.durationMinutes,
+    summary: `Visita: ${company.razonSocial}`,
+    location: appt.lugar,
+    description,
+    url,
+    stamp: ctx.now,
+    alarmMinutes: cfg.appointments.alarmMinutes,
+    sequence,
+  });
+  const file = Buffer.from(ics, "utf8");
+  const name = icsFileName(company, appt.startsAt);
+  try {
+    await ctx.sendDocument(file, name, "", ICS_MIME);
+  } catch (err) {
+    // la API de WhatsApp puede no aceptar text/calendar al subir: mismo archivo .ics como texto plano
+    ctx.log(`portal: .ics como ${ICS_MIME} falló (${(err as Error).message}); reintento como text/plain`);
+    await ctx.sendDocument(file, name, "", "text/plain");
+  }
+}
+
+/**
+ * Crea la cita y responde (.ics sin leyenda + resumen). La fecha ya viene con hora. Si la empresa ya tiene una cita
+ * programada en ese mismo día y hora, no crea otra: lo dice y ofrece reprogramar la existente (paso cita_reprogramar).
+ */
 export async function createCita(ctx: PortalContext, company: Company, input: CitaInput): Promise<Appointment> {
   const { store, user, now } = ctx;
   const cfg = loadPortalConfig();
+  const dup = await findDuplicateCita(store, company.id, input.date);
+  if (dup) {
+    await offerReschedule(ctx, company, dup, input.note);
+    return dup;
+  }
   let opp = await store.getOpenOpportunity(company.id);
   if (!opp) opp = await store.createOpportunity({ companyId: company.id, ownerUserId: company.ownerUserId ?? user.id, etapa: "prospecto", createdBy: user.id, at: now });
   const appt = await store.addAppointment({ companyId: company.id, opportunityId: opp.id, userId: user.id, startsAt: input.date, lugar: input.lugar, conTecnico: input.conTecnico, estado: "programada" });
@@ -180,36 +233,7 @@ export async function createCita(ctx: PortalContext, company: Company, input: Ci
     data: { appointmentId: appt.id, startsAt: input.date.toISOString(), lugar: input.lugar, conTecnico: input.conTecnico, avisoTecnico: notice },
   });
 
-  const url = companyUrl(company.id, ctx.env);
-  const description = [
-    `Visita a ${company.razonSocial} (RUC ${company.ruc})`,
-    ...contacts.slice(0, 3).map((c) => `Contacto: ${contactLine(c)}`),
-    input.conTecnico ? `Con el Ing. ${techName} (Dpto. Técnico)` : null,
-    `Vendedor: ${user.nombre}`,
-    `Ficha: ${url}`,
-  ]
-    .filter(Boolean)
-    .join("\n");
-  const ics = buildIcs({
-    uid: `cita-${appt.id}-${company.ruc}@portal.360tyres`,
-    start: input.date,
-    durationMinutes: cfg.appointments.durationMinutes,
-    summary: `Visita: ${company.razonSocial}`,
-    location: input.lugar,
-    description,
-    url,
-    stamp: now,
-    alarmMinutes: cfg.appointments.alarmMinutes,
-  });
-  const file = Buffer.from(ics, "utf8");
-  const name = icsFileName(company, input.date);
-  try {
-    await ctx.sendDocument(file, name, "", ICS_MIME);
-  } catch (err) {
-    // la API de WhatsApp puede no aceptar text/calendar al subir: mismo archivo .ics como texto plano
-    ctx.log(`portal: .ics como ${ICS_MIME} falló (${(err as Error).message}); reintento como text/plain`);
-    await ctx.sendDocument(file, name, "", "text/plain");
-  }
+  await sendCitaIcs(ctx, company, appt, contacts);
 
   const lines = [`📅 Cita con *${company.razonSocial}* el *${when}*${input.lugar ? ` en ${input.lugar}` : ""} · Agrégala a tu calendario de Outlook abriendo el archivo.`];
   if (input.note) lines.push(input.note);
@@ -221,6 +245,151 @@ export async function createCita(ctx: PortalContext, company: Company, input: Ci
   await ctx.reply(lines.join("\n"));
   return appt;
 }
+
+// ── cita duplicada: reprogramar ──
+
+/**
+ * Paso pendiente: la cita pedida ya existía; se ofrece reprogramarla (nuevo día y hora) o dejarla así. La oferta
+ * (`cita_reprogramar`) no se pausa: si el vendedor manda otra cosa, se deja (la cita existente sigue igual, no se pierde
+ * nada). Tras elegir *Reprogramar* (`cita_reprogramar_fecha`) ya está a mitad de algo y sí pasa a pausa como los demás.
+ */
+export interface CitaReprogramarStep extends PendingStep {
+  kind: "cita_reprogramar" | "cita_reprogramar_fecha";
+  appointmentId: number;
+  companyId: number;
+  /** Ya eligió *Reprogramar*: solo falta el día y la hora. */
+  asked?: boolean;
+  /** Dio el día sin hora: ISO de la medianoche (Lima) de ese día. */
+  day?: string;
+}
+
+export const RESCHEDULE_BUTTONS = [
+  { id: "reprogramar", title: "Reprogramar" },
+  { id: "dejarla así", title: "Dejarla así" },
+];
+const RESCHEDULE_WORD = /^(?:reprogramar(?:la)?|reprograma(?:la)?|cambiar(?:la)?(?: de)?(?: fecha| hora)?|mover(?:la)?|s[ií])[.!]*$/i;
+const KEEP_WORD = /^(?:dejar(?:la)?(?: as[ií])?|d[eé]jala(?: as[ií])?|as[ií] est[aá] bien|no|no gracias|est[aá] bien)[.!]*$/i;
+const RESCHEDULE_FILLER = /^(?:(?:mejor|para|pasala|p[aá]sala|mu[eé]vela|c[aá]mbiala|reprogr[a-z]*|al?|el|la|las|de|en|y|ok|s[ií]|mejor)[\s,.!]*)*$/i;
+const rescheduleQuestion = (company: Company) => `¿Para qué día y hora reprogramo la cita con *${company.razonSocial}*? (p. ej. *jueves 4pm* o *19/11 9:00*, o *cancelar*)`;
+
+async function offerReschedule(ctx: PortalContext, company: Company, appt: Appointment, note?: string): Promise<void> {
+  const step: Omit<CitaReprogramarStep, "createdAt"> = { kind: "cita_reprogramar", appointmentId: appt.id, companyId: company.id };
+  await setPending(ctx.store, ctx.from, step, ctx.now);
+  const body = [
+    `📅 Ya existe una cita con *${company.razonSocial}* el *${formatCitaDate(appt.startsAt)}*${appt.lugar ? ` en ${appt.lugar}` : ""}. No creé otra.`,
+    note || null,
+    "¿Quieres reprogramarla? Responde el nuevo día y hora, o elige.",
+  ]
+    .filter(Boolean)
+    .join("\n");
+  await replyButtons(ctx, body, RESCHEDULE_BUTTONS);
+}
+
+/** Mueve la cita existente: misma cita (mismo UID en el .ics, SEQUENCE mayor), próxima acción y actividad. */
+async function rescheduleCita(ctx: PortalContext, company: Company, appt: Appointment, date: Date): Promise<void> {
+  const { store, user, now } = ctx;
+  const from = appt.startsAt;
+  const moved = (await store.updateAppointment(appt.id, { startsAt: date })) ?? { ...appt, startsAt: date };
+  const opp = appt.opportunityId ? await store.getOpportunity(appt.opportunityId).catch(() => null) : null;
+  // la próxima acción solo sigue a la cita si apuntaba a ella (no se pisa una próxima acción posterior distinta)
+  if (opp && opp.proximaAccion === "Visita" && opp.proximaAccionAt?.getTime() === from.getTime()) await store.updateOpportunity(opp.id, { proximaAccionAt: date });
+  await store.addActivity({
+    companyId: company.id,
+    opportunityId: appt.opportunityId,
+    userId: user.id,
+    tipo: "cita",
+    texto: `Cita reprogramada del ${formatCitaDate(from)} al ${formatCitaDate(date)}.`,
+    canal: "whatsapp",
+    occurredAt: now,
+    data: { appointmentId: appt.id, startsAt: date.toISOString(), antes: from.toISOString(), reprogramada: true },
+  });
+  // SEQUENCE creciente sin columna nueva: segundos desde que se creó la cita
+  const sequence = Math.max(1, Math.floor((now.getTime() - appt.createdAt.getTime()) / 1000));
+  await sendCitaIcs(ctx, company, moved, await store.listContacts(company.id), sequence);
+  await ctx.reply(`🔁 Reprogramé la cita con *${company.razonSocial}*: del ${formatCitaDate(from)} al *${formatCitaDate(date)}*${moved.lugar ? ` en ${moved.lugar}` : ""}. Abre el archivo para actualizarla en Outlook.`);
+}
+
+const reprogramarHandler: Parameters<typeof registerPendingHandler>[1] = async (ctx, step, text) => {
+  const s = step as CitaReprogramarStep;
+  const t = text.trim();
+  const [company, appt] = await Promise.all([ctx.store.getCompany(s.companyId), ctx.store.getAppointment(s.appointmentId)]);
+  if (!company || !appt || appt.estado !== "programada") {
+    await clearPending(ctx.store, ctx.from);
+    await ctx.reply("Esa cita ya no está programada; no la cambié.");
+    return true;
+  }
+  if (KEEP_WORD.test(t)) {
+    await clearPending(ctx.store, ctx.from);
+    await ctx.reply(`Listo. Queda la cita con *${company.razonSocial}* el *${formatCitaDate(appt.startsAt)}*.`);
+    return true;
+  }
+  if (RESCHEDULE_WORD.test(t)) {
+    if (!canEditCompany(ctx.user, company)) {
+      await clearPending(ctx.store, ctx.from);
+      await ctx.reply(notYours(company));
+      return true;
+    }
+    await setPending(ctx.store, ctx.from, { ...s, kind: "cita_reprogramar_fecha", asked: true }, ctx.now);
+    await ctx.reply(rescheduleQuestion(company));
+    return true;
+  }
+  // el nuevo día y hora (o solo la hora, si ya dio el día)
+  let date: Date | null = null;
+  let allDay = false;
+  // solo una fecha (con relleno corto: "mejor el jueves 4pm", "para el 19/11 a las 9"): un reporte o una cotización que
+  // menciona un día ("quedamos en mandarle la cotización el jueves") no es la respuesta
+  const dm0 = parseSpanishDateTime(t, ctx.now);
+  const dm = dm0 && RESCHEDULE_FILLER.test(dm0.rest) ? dm0 : null;
+  if (dm) {
+    date = dm.date;
+    allDay = !!dm.allDay;
+  } else if (s.day) {
+    const tod = parseTimeOfDay(t);
+    if (tod) date = atLimaTime(new Date(s.day), tod);
+  }
+  if (!date) return false;
+  if (!canEditCompany(ctx.user, company)) {
+    await clearPending(ctx.store, ctx.from);
+    await ctx.reply(notYours(company));
+    return true;
+  }
+  if (isPast(date, allDay, ctx.now)) {
+    await ctx.reply(`${pastReply(date, allDay)} (o *cancelar*)`);
+    return true;
+  }
+  if (allDay) {
+    await setPending(ctx.store, ctx.from, { ...s, kind: "cita_reprogramar_fecha", asked: true, day: date.toISOString() }, ctx.now);
+    await ctx.reply(hourQuestion(company, date));
+    return true;
+  }
+  const clash = await findDuplicateCita(ctx.store, company.id, date, appt.id);
+  if (clash) {
+    await ctx.reply(`📅 Ya existe una cita con *${company.razonSocial}* el *${formatCitaDate(clash.startsAt)}*. Elige otro día u hora (o *cancelar*).`);
+    return true;
+  }
+  await clearPending(ctx.store, ctx.from);
+  if (date.getTime() === appt.startsAt.getTime()) {
+    await ctx.reply(`La cita con *${company.razonSocial}* ya es el *${formatCitaDate(date)}*; no cambié nada.`);
+    return true;
+  }
+  await rescheduleCita(ctx, company, appt, date);
+  return true;
+};
+registerPendingHandler("cita_reprogramar", reprogramarHandler);
+registerPendingHandler("cita_reprogramar_fecha", reprogramarHandler);
+
+registerPausable("cita_reprogramar_fecha", {
+  async describe(ctx, step) {
+    const s = step as CitaReprogramarStep;
+    const c = await citaCompany(ctx, s.companyId);
+    return { companyId: s.companyId, label: `reprogramar la cita con ${c ? shortName(c.razonSocial) : "la empresa"}`, missing: "falta el nuevo día y hora" };
+  },
+  async resume(ctx, step, prefix) {
+    const c = await citaCompany(ctx, (step as CitaReprogramarStep).companyId);
+    if (!c) return void (await ctx.reply("Esa empresa ya no está en el padrón."));
+    await askAgain(ctx, step, prefix, rescheduleQuestion(c));
+  },
+});
 
 // ── flujo del comando ──
 

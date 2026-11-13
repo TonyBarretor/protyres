@@ -68,6 +68,8 @@ export interface ConversationState {
   /** A web photo candidate waiting for "foto ok" / "foto no". */
   pendingPhoto?: { brand: string; model: string; url: string; candidates: string[]; index: number };
   pendingMedia?: { id: string; mimeType: string; fileName?: string };
+  /** Cotización pedida por nota de voz (portal): el PDF solo se arma con *ok* (elegir *1b* no lo arma). */
+  voice?: boolean;
   updatedAt: string;
 }
 

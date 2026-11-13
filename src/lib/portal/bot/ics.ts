@@ -18,6 +18,8 @@ export interface IcsEvent {
   stamp?: Date;
   /** Aviso antes de la cita (minutos); 0 o null = sin aviso. */
   alarmMinutes?: number | null;
+  /** SEQUENCE: mayor que la anterior cuando la misma cita (mismo UID) cambia, para que Outlook la actualice. Por defecto 0. */
+  sequence?: number;
 }
 
 export const ICS_MIME = "text/calendar";
@@ -90,7 +92,7 @@ export function buildIcs(ev: IcsEvent): string {
   if (ev.location) lines.push(`LOCATION:${escapeText(ev.location)}`);
   if (ev.description) lines.push(`DESCRIPTION:${escapeText(ev.description)}`);
   if (ev.url) lines.push(`URL:${ev.url}`);
-  lines.push("STATUS:CONFIRMED", "SEQUENCE:0", "TRANSP:OPAQUE");
+  lines.push("STATUS:CONFIRMED", `SEQUENCE:${Math.max(0, Math.floor(ev.sequence ?? 0))}`, "TRANSP:OPAQUE");
   if (ev.alarmMinutes && ev.alarmMinutes > 0) {
     lines.push("BEGIN:VALARM", "ACTION:DISPLAY", `DESCRIPTION:${escapeText(ev.summary)}`, `TRIGGER:-PT${Math.round(ev.alarmMinutes)}M`, "END:VALARM");
   }

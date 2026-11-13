@@ -2,9 +2,11 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
+import type { PriceRow } from "../../ingest/types";
 import { JsonPortalStore } from "../store/json-portal-store";
 import { expectedSchema } from "../store/migrate-guard";
 import { TranscriptionError, VoiceNotConfigured, buildListenUrl, transcribe } from "./deepgram";
+import { voiceCatalogFromRows } from "./catalog";
 import { FIXED_KEYTERMS, KEYTERM_TOKEN_BUDGET, MAX_KEYTERMS, applyVocabulary, buildKeyterms, estimateTokens, parseLearnCommand } from "./vocabulary";
 
 const OGG = "audio/ogg; codecs=opus";
@@ -84,6 +86,35 @@ describe("vocabulario", () => {
     expect(k.length).toBeLessThanOrEqual(MAX_KEYTERMS);
     expect(k.reduce((a, t) => a + estimateTokens(t), 0)).toBeLessThanOrEqual(KEYTERM_TOKEN_BUDGET);
     expect(k.slice(0, 4)).toEqual(FIXED_KEYTERMS);
+  });
+
+  it("buildKeyterms con el catálogo (punto 8): diseños y medidas del catálogo entran aunque haya muchas empresas, dentro del límite", () => {
+    const rows: Pick<PriceRow, "brand" | "model" | "size" | "isTyre" | "kind">[] = [
+      { brand: "Fenixway", model: "Flama 77", size: "295/80R22.5", isTyre: true, kind: "own" },
+      { brand: "Fenixway", model: "Valor 99", size: "11R22.5", isTyre: true, kind: "own" },
+      { brand: "Fenixway", model: "VALOR 99", size: "12R22.5", isTyre: true, kind: "provider" },
+      { brand: "Aonaite", model: "ADR523", size: "445/65R22.5", isTyre: true, kind: "provider" },
+      { brand: "Vipal", model: "Parche RS-35", size: "", isTyre: false, kind: "provider" },
+    ];
+    const catalog = voiceCatalogFromRows(rows);
+    expect(catalog.designs.map((d) => d.model)).toEqual(["Valor 99", "Flama 77", "ADR523"]); // propio primero; luego por filas
+    expect(catalog.sizes).toContain("445/65R22.5");
+    expect(catalog.brands).toEqual(["Fenixway", "Aonaite"]);
+    const many = Array.from({ length: 300 }, (_, i) => `EMPRESA DE TRANSPORTES NUMERO ${i} S.A.C.`);
+    const k = buildKeyterms({ companies: many, catalog });
+    expect(k.slice(0, 4)).toEqual(FIXED_KEYTERMS);
+    for (const t of ["Valor 99", "ADR523", "Aonaite", "445/65R22.5"]) expect(k).toContain(t);
+    expect(k.filter((x) => x.toLowerCase() === "valor 99")).toHaveLength(1);
+    expect(k.length).toBeLessThanOrEqual(MAX_KEYTERMS);
+    expect(k.reduce((a, t) => a + estimateTokens(t), 0)).toBeLessThanOrEqual(KEYTERM_TOKEN_BUDGET);
+  });
+
+  it("buildKeyterms con un catálogo grande respeta el tope de tokens", () => {
+    const rows = Array.from({ length: 2000 }, (_, i) => ({ brand: `Marca${i % 200}`, model: `Diseño largo número ${i}`, size: `${200 + (i % 250)}/80R22.5`, isTyre: true, kind: "provider" as const }));
+    const k = buildKeyterms({ companies: ["TRANSPORTES ZBUSS S.A.C."], catalog: voiceCatalogFromRows(rows) });
+    expect(k.length).toBeLessThanOrEqual(MAX_KEYTERMS);
+    expect(k.reduce((a, t) => a + estimateTokens(t), 0)).toBeLessThanOrEqual(KEYTERM_TOKEN_BUDGET);
+    expect(k).toContain("TRANSPORTES ZBUSS");
   });
 
   it("applyVocabulary reemplaza sin distinguir mayúsculas ni tildes, palabra completa, el más largo primero", () => {

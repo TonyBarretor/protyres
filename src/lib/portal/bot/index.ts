@@ -42,6 +42,10 @@ import { askAgain, expirePaused, findPaused, parseResume, pauseStep, resumePause
 import { getPausable, getPendingDrop, getPendingHandler, getPortalCommand, handleReport, registerPausable, registerPendingDrop, registerPendingHandler, replyButtons, type DropContext, type DropReason, type PortalContext } from "./registry";
 import { isCancel, isQuoterCommand, mediaAccepted, parsePortalCommand, routeIntent, textSignals, type Intent, type RouteRule } from "./router";
 import { withTimeout } from "../quotes/link";
+import type { VoiceCatalog } from "../voice/catalog";
+import { deepgramKeyFromEnv } from "../voice/deepgram";
+import { fetchVoice } from "./report";
+import { heardLine, spokenForRouting, startVoiceQuote, VOICE_QUOTE_FAILED, voiceCorrection } from "./voice-quote";
 import { clearNotices, clearPending, noticesOf, pausedOf, pendingOf, rawPendingOf, setPending, type IntentChoiceStep, type PendingStep } from "./state";
 import { fold } from "../../tyre/brands";
 
@@ -59,6 +63,13 @@ export interface PortalRouteInput {
   msg?: InboundMessage;
   /** Paso del cotizador (ConversationState.step), o "profile" si hay un perfil elegido esperando el pedido. Por defecto idle. */
   quoteStep?: string;
+  /**
+   * El cotizador está en `choose` con una cotización pedida por voz (ConversationState.voice): una nota de voz es una
+   * corrección de esa cotización (corrida D, punto 8). Sin esto, una nota de voz a mitad de un flujo sigue al cotizador.
+   */
+  voiceQuote?: boolean;
+  /** Catálogo de precios para la voz (keyterms de Deepgram y validar la medida dictada). Opcional. */
+  voiceCatalog?: () => Promise<VoiceCatalog>;
   reply: (body: string) => Promise<void>;
   /**
    * Envía un mensaje interactivo ya validado (botones / lista, ids con prefijo `pt:`); lanza si WhatsApp lo rechaza.
@@ -145,6 +156,8 @@ export interface RouteChoiceStep extends PendingStep {
   kind: typeof ROUTE_CHOICE;
   text: string;
   prev: PendingStep | null;
+  /** Nota de voz: la transcripción literal (si es *Cotización nueva*, se cotiza por voz). */
+  voice?: string;
 }
 /** Botones (títulos ≤ 20 caracteres de WhatsApp: "Es una cotización nueva" no cabe). */
 export const ROUTE_CHOICE_BUTTONS = [
@@ -280,7 +293,8 @@ export async function routePortal(input: PortalRouteInput): Promise<boolean> {
 
   // nada de esto puede ser del portal: va al cotizador (antes, los avisos pendientes si los hay). Una nota de voz con el
   // cotizador a mitad de un flujo también es del cotizador (router, regla 6).
-  if (msg.forwarded || (!cmd && !cancel && !portalButton && (isAudio ? quoteStep !== "idle" : hasMedia || quoteStep !== "idle" || !text))) {
+  const voiceFix = isAudio && quoteStep === "choose" && !!input.voiceQuote;
+  if (msg.forwarded || (!cmd && !cancel && !portalButton && (isAudio ? quoteStep !== "idle" && !voiceFix : hasMedia || quoteStep !== "idle" || !text))) {
     // excepción: un adjunto sin leyenda justo después de `oc` (paso pendiente con acceptsMedia) es del portal
     if (!(await mediaForPendingStep(input, { forwarded: !!msg.forwarded, hasMedia: hasMedia && !isAudio, quoteStep, text }))) {
       await deliverNoticesOnly(input);
@@ -411,8 +425,8 @@ export async function routePortal(input: PortalRouteInput): Promise<boolean> {
       if (!input.sendTextTo) throw new Error("este canal no puede escribir a otros números");
       await input.sendTextTo(phone, body);
     },
-    requote: async (t: string) => {
-      const again: InboundMessage = { ...msg, id: `${msg.id}#cotizacion`, type: "text", text: t, media: undefined, forwarded: false };
+    requote: async (t: string, opts: { voice?: string } = {}) => {
+      const again: InboundMessage = { ...msg, id: `${msg.id}#cotizacion`, type: "text", text: t, media: undefined, forwarded: false, ...(opts.voice ? { voiceTranscript: opts.voice } : {}) };
       PASS.add(again);
       if (input.requote) await input.requote(again);
       else await input.reply("Escríbeme de nuevo el pedido para cotizarlo.");
@@ -422,6 +436,7 @@ export async function routePortal(input: PortalRouteInput): Promise<boolean> {
     log,
     downloadMedia: input.downloadMedia,
     logMessage: input.logMessage,
+    ...(input.voiceCatalog ? { voiceCatalog: input.voiceCatalog } : {}),
   };
 
   /** Registra la regla en `messages` (route_rule), recuerda lo que pasó a pausa y devuelve si el portal atendió. */
@@ -475,7 +490,8 @@ export async function routePortal(input: PortalRouteInput): Promise<boolean> {
         const p = await pauseStep(dctx, s.prev);
         if (p) pausedNow.push(p.ref);
       }
-      await ctx.requote(s.text);
+      if (s.voice) await startVoiceQuote(ctx, s.voice);
+      else await ctx.requote(s.text);
       return finish(true, "4_ambiguo", "cotización nueva");
     }
     if (ans === "answer") {
@@ -528,12 +544,16 @@ export async function routePortal(input: PortalRouteInput): Promise<boolean> {
     return finish(true, "comando", cmd.name);
   }
 
-  /** Pregunta "¿cotización nueva o tu respuesta?" con dos botones; el paso en curso queda guardado dentro. */
-  const askRoute = async (step: PendingStep, rule: RouteRule, notUnderstood: boolean): Promise<boolean> => {
+  /**
+   * Pregunta "¿cotización nueva o tu respuesta?" con dos botones; el paso en curso queda guardado dentro. Una nota de voz
+   * pregunta por su transcripción (`said`) y guarda la literal (`voice`) para cotizarla por voz si es una cotización.
+   */
+  const askRoute = async (step: PendingStep, rule: RouteRule, notUnderstood: boolean, said = text, voice?: string): Promise<boolean> => {
     const pz = getPausable(step.kind);
     const info = pz ? await pz.describe(dctx, step).catch(() => null) : null;
     const about = info ? ` (${info.label}: ${info.missing})` : "";
-    const rc: Omit<RouteChoiceStep, "createdAt"> = { kind: ROUTE_CHOICE, text, prev: step };
+    const text = said;
+    const rc: Omit<RouteChoiceStep, "createdAt"> = { kind: ROUTE_CHOICE, text, prev: step, ...(voice ? { voice } : {}) };
     await setPending(store, from, rc, now);
     const body = notUnderstood
       ? `No entendí «${clip(text)}» como respuesta a lo que te pregunté${about}. ¿Es una *cotización nueva* o tu *respuesta*?`
@@ -542,8 +562,40 @@ export async function routePortal(input: PortalRouteInput): Promise<boolean> {
     return finish(true, rule, "pregunta");
   };
 
+  // nota de voz (corrida D, punto 8): se transcribe una vez y la precedencia del punto 7 se aplica a la transcripción. Una
+  // cotización (P1/P2, o señales fuertes sin verbos de reporte) va al cotizador por voice-quote.ts; P4 con un paso en curso
+  // pregunta con los dos botones; lo demás sigue como antes con la misma transcripción (no se vuelve a Deepgram): sin
+  // paso, reporte (también lo ambiguo, p. ej. "visité X, usan 295/80R22.5": una nota de voz era y sigue siendo reporte);
+  // con paso, la respuesta; un comando dictado, ese comando.
+  if (isAudio && msg.media && (voiceFix || quoteStep === "idle") && deepgramKeyFromEnv(ctx.env)) {
+    const heard = await fetchVoice(ctx, { id: msg.media.id, mimeType: msg.media.mimeType });
+    if (voiceFix) {
+      if (!heard.ok) await input.reply(VOICE_QUOTE_FAILED);
+      else await voiceCorrection(ctx, heard.text);
+      return finish(true, "voz", heard.ok ? "corrección por voz" : "transcripción fallida");
+    }
+    if (heard.ok) {
+      const spoken = await spokenForRouting(ctx, heard.text);
+      const vd = routeIntent({ text: spoken, state: "idle", isPortalUser: true, pendingPortalStep: live, mentionsKnownCompany: false, now });
+      if (vd.intent === "quote") {
+        if (pending) await leave(pending, "quoter");
+        await startVoiceQuote(ctx, heard.text);
+        return finish(true, vd.rule, "cotización por voz");
+      }
+      if (vd.intent === "route_choice" && live && getPausable(live.kind)) {
+        await ctx.reply(heardLine(heard.text));
+        return askRoute(live, vd.rule, false, spoken, heard.text);
+      }
+    }
+  }
+
   let dropped = false;
-  if (intent === "route_choice" && live) return askRoute(live, decision.rule, false);
+  if (intent === "route_choice" && live) {
+    // solo se pregunta si hay algo que proteger: un paso que no se pausa (p. ej. la oferta de reprogramar una cita
+    // duplicada) se intenta como respuesta y, si no lo es, se deja y el mensaje se enruta como si no hubiera paso
+    if (getPausable(live.kind)) return askRoute(live, decision.rule, false);
+    intent = "portal_flow";
+  }
   if (intent === "portal_flow" && live) {
     const consumed = await getPendingHandler(live.kind)!(ctx, live, text);
     if (consumed) return finish(true, decision.rule, live.kind);

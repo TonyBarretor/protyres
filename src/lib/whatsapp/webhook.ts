@@ -20,6 +20,11 @@ export interface InboundMessage {
   interactiveType?: string;
   /** Título del botón / fila pulsado. */
   interactiveTitle?: string;
+  /**
+   * Solo interno (nunca del webhook): el texto es la versión normalizada de una nota de voz y esto, lo que se transcribió.
+   * El cotizador no arma el PDF de una cotización por voz sin un *ok* escrito (portal, corrida D punto 8).
+   */
+  voiceTranscript?: string;
 }
 
 interface WebhookPayload {

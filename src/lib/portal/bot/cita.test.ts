@@ -245,6 +245,131 @@ describe("comando cita", () => {
   });
 });
 
+describe("cita duplicada (misma empresa, fecha y hora)", () => {
+  const ics = (m: Out) => parseIcsLines(m.file!.toString("utf8"));
+  const icsValue = (m: Out, name: string) => {
+    const lines = ics(m);
+    return lines.slice(lines.findIndex((l) => l.name === "BEGIN" && l.value === "VEVENT")).find((l) => l.name === name)?.value;
+  };
+
+  it("no crea una segunda cita: avisa que ya existe y ofrece reprogramar", async () => {
+    await send("cita transportes andes martes 10am en su base de Ate");
+    out = [];
+    expect(await send("cita andes del peru el martes a las 10")).toBe(true);
+    const appts = await store.listAppointments({ companyId: ids[RUC_ANDES] });
+    expect(appts).toHaveLength(1);
+    expect(out.map((m) => m.kind)).toEqual(["text"]); // sin segundo .ics
+    expect(lastText()).toContain("Ya existe una cita con *TRANSPORTES ANDES DEL PERU S.A.C.* el *martes 17/11 10:00* en su base de Ate");
+    expect(lastText()).toContain("No creé otra");
+    expect(lastText()).toMatch(/reprogramar/i);
+    expect((await store.listActivities({ companyId: ids[RUC_ANDES] })).filter((a) => a.tipo === "cita")).toHaveLength(1);
+    expect((await getPending(store, FRANK, NOW))?.kind).toBe("cita_reprogramar");
+  });
+
+  it("también al completar la hora en un segundo paso", async () => {
+    await send("cita transportes andes martes 10am");
+    await send("cita transportes andes martes");
+    out = [];
+    await send("10am");
+    expect(await store.listAppointments({ companyId: ids[RUC_ANDES] })).toHaveLength(1);
+    expect(lastText()).toContain("Ya existe una cita");
+  });
+
+  it("otra hora u otra empresa a la misma hora sí crean cita", async () => {
+    await send("cita transportes andes martes 10am");
+    await send("cita transportes andes martes 11am");
+    await send("cita andes sur martes 10am");
+    expect(await store.listAppointments({ companyId: ids[RUC_ANDES] })).toHaveLength(2);
+    expect(await store.listAppointments({ companyId: ids[RUC_ANDES_SUR] })).toHaveLength(1);
+  });
+
+  it("una cita cancelada no cuenta como duplicada", async () => {
+    await send("cita transportes andes martes 10am");
+    const [a] = await store.listAppointments({ companyId: ids[RUC_ANDES] });
+    await store.updateAppointment(a.id, { estado: "cancelada" });
+    await send("cita transportes andes martes 10am");
+    expect(await store.listAppointments({ companyId: ids[RUC_ANDES], estado: "programada" })).toHaveLength(1);
+  });
+
+  it("Reprogramar -> pide día y hora -> mueve la misma cita y reenvía el .ics con el mismo UID", async () => {
+    await send("cita transportes andes martes 10am en su base de Ate");
+    const [orig] = await store.listAppointments({ companyId: ids[RUC_ANDES] });
+    const firstIcs = out.find((m) => m.kind === "document")!;
+    await send("cita transportes andes martes 10am");
+    out = [];
+    const later = new Date(NOW.getTime() + 60_000);
+    await send("reprogramar", { now: later });
+    expect(lastText()).toContain("¿Para qué día y hora");
+    expect((await getPending(store, FRANK, later))?.kind).toBe("cita_reprogramar_fecha");
+    expect(await send("jueves 19/11 4pm", { now: later })).toBe(true);
+    const appts = await store.listAppointments({ companyId: ids[RUC_ANDES] });
+    expect(appts).toHaveLength(1);
+    expect(appts[0].id).toBe(orig.id);
+    expect(appts[0].startsAt.toISOString()).toBe("2026-11-19T21:00:00.000Z");
+    expect(appts[0].lugar).toBe("su base de Ate");
+    const opp = (await store.getOpenOpportunity(ids[RUC_ANDES]))!;
+    expect(opp.proximaAccionAt?.toISOString()).toBe("2026-11-19T21:00:00.000Z");
+    const doc = out.find((m) => m.kind === "document")!;
+    expect(icsValue(doc, "UID")).toBe(icsValue(firstIcs, "UID"));
+    expect(Number(icsValue(doc, "SEQUENCE"))).toBeGreaterThan(0);
+    expect(icsValue(doc, "DTSTART")).toBe("20261119T160000");
+    expect(lastText()).toContain("🔁 Reprogramé la cita con *TRANSPORTES ANDES DEL PERU S.A.C.*: del martes 17/11 10:00 al *jueves 19/11 16:00*");
+    const acts = (await store.listActivities({ companyId: ids[RUC_ANDES] })).filter((a) => a.tipo === "cita");
+    expect(acts).toHaveLength(2);
+    expect(acts[0].texto).toContain("reprogramada");
+    expect(await getPending(store, FRANK, later)).toBeNull();
+  });
+
+  it("se puede responder directamente con el nuevo día y hora", async () => {
+    await send("cita transportes andes martes 10am");
+    await send("cita transportes andes martes 10am");
+    await send("mejor el miércoles 18/11 9am");
+    const appts = await store.listAppointments({ companyId: ids[RUC_ANDES] });
+    expect(appts.map((a) => a.startsAt.toISOString())).toEqual(["2026-11-18T14:00:00.000Z"]);
+  });
+
+  it("si después manda otra cosa, la oferta se deja sin preguntar y el mensaje se atiende (la cita sigue igual)", async () => {
+    await send("cita transportes andes martes 10am");
+    await send("cita transportes andes martes 10am");
+    out = [];
+    await send("Visité Andes, hablé con Carlos. Quedamos en mandarle la cotización el jueves.");
+    expect(lastText()).not.toContain("¿A qué hora");
+    expect((await store.listAppointments({ companyId: ids[RUC_ANDES] }))[0].startsAt.toISOString()).toBe("2026-11-17T15:00:00.000Z");
+    out = [];
+    await send("cita transportes andes martes 10am");
+    await send("hoy");
+    expect(lastText()).not.toContain("cotización nueva");
+    expect(lastText()).not.toContain("Dejaste pendiente");
+    expect(await getPending(store, FRANK, NOW)).toBeNull();
+    expect(await store.listAppointments({ companyId: ids[RUC_ANDES] })).toHaveLength(1);
+  });
+
+  it("Dejarla así: no cambia nada", async () => {
+    await send("cita transportes andes martes 10am");
+    await send("cita transportes andes martes 10am");
+    out = [];
+    await send("dejarla");
+    expect(lastText()).toContain("Queda la cita");
+    const appts = await store.listAppointments({ companyId: ids[RUC_ANDES] });
+    expect(appts.map((a) => a.startsAt.toISOString())).toEqual(["2026-11-17T15:00:00.000Z"]);
+    expect(out.some((m) => m.kind === "document")).toBe(false);
+    expect(await getPending(store, FRANK, NOW)).toBeNull();
+  });
+
+  it("reprogramar a una hora pasada o ya ocupada por otra cita de la empresa: no la mueve", async () => {
+    await send("cita transportes andes martes 10am");
+    await send("cita transportes andes martes 11am");
+    await send("cita transportes andes martes 10am");
+    await send("martes 17/11 11am");
+    expect(lastText()).toContain("Ya existe una cita");
+    await send("hoy 8am"); // NOW = 09:00 en Lima
+    expect(lastText()).toContain("ya pasó");
+    const appts = await store.listAppointments({ companyId: ids[RUC_ANDES] });
+    expect(appts.map((a) => a.startsAt.toISOString())).toEqual(["2026-11-17T15:00:00.000Z", "2026-11-17T16:00:00.000Z"]);
+    expect((await getPending(store, FRANK, NOW))?.kind).toBe("cita_reprogramar");
+  });
+});
+
 describe("cita por el BotHandler (enganche de sendTextTo)", () => {
   const settings: Settings = SettingsSchema.parse({
     company: { name: "Professional Tyres", tradeName: "360° Tyres", signatureName: "360 by Professional Tyres", taxId: "RUC: 20565716396" },

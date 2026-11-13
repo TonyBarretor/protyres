@@ -48,6 +48,13 @@
  *      proceso pasa a pausa y sigue eso; si no, se dice que no se entendió y se ofrecen las mismas dos opciones. Nunca se
  *      descarta el mensaje.
  * routeIntent() devuelve también la regla (`rule`) que decidió; routePortal la registra en `messages` (route_rule).
+ *
+ * Notas de voz (corrida D, punto 8; en routePortal, con DEEPGRAM_API_KEY): con el cotizador en idle se transcriben UNA vez
+ * y estas mismas reglas se aplican a la transcripción (números y medidas dictados ya normalizados): una cotización (P1, P2
+ * o señales fuertes sin verbos de reporte) va al cotizador por bot/voice-quote.ts; P4 con un paso en curso pregunta con los
+ * dos botones; lo demás sigue la regla 6 (reporte sin paso, también lo ambiguo; respuesta con paso; comando dictado) con
+ * esa transcripción. Con el cotizador en `choose` de una cotización pedida por voz, la nota de voz es una corrección
+ * (regla "voz"); a mitad de cualquier otro flujo sigue al cotizador, como siempre.
  */
 import { looksLikePriceMessage } from "../../ingest/whatsapp-text";
 import { findBrandInText, fold } from "../../tyre/brands";
@@ -74,6 +81,7 @@ export type RouteRule =
   | "5_no_entendido"
   | "reanudar"
   | "boton"
+  | "voz"
   | "cotizacion"
   | "reporte"
   | "ambiguo"

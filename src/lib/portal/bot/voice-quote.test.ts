@@ -1,0 +1,325 @@
+/**
+ * Cotización por voz (corrida D, punto 8), por el BotHandler con WhatsApp y Deepgram simulados:
+ *  - la nota de voz "cotízame …" pasa por el MISMO flujo del cotizador: mismo "Entendí:" y mismas opciones que el texto
+ *    normalizado escrito por cualquier número; antes, una línea `🎙 Escuché: …` con la transcripción literal;
+ *  - nunca hay PDF sin `ok` escrito: ni con un atajo del texto (elegir *1b* arma el PDF en texto) ni con un "ok" dictado;
+ *  - correcciones por voz con la cotización a la vista ("no, eran doce", "cámbialo a Valor 99", "precio 259");
+ *  - medida que no está en el catálogo (o falta): se pregunta (con botones si hay candidatas), no se elige;
+ *  - precedencia del punto 7 sobre la transcripción: con un reporte en confirmación, la cotización por voz lo pasa a pausa;
+ *  - keyterms de Deepgram con diseños y medidas del catálogo.
+ */
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import type { PriceRow } from "../../ingest/types";
+import { loadCustomerProfiles, SettingsSchema, type Settings } from "../../settings";
+import { JsonStore } from "../../store/json-store";
+import { FakeWhatsAppClient, type OutboundMessage } from "../../whatsapp/client";
+import { BotHandler } from "../../whatsapp/handler";
+import { parseWebhook, type InboundMessage } from "../../whatsapp/webhook";
+import { JsonPortalStore } from "../store";
+import { configureReportBot } from "./report";
+import { getPending } from "./state";
+
+const settings: Settings = SettingsSchema.parse({
+  company: { name: "Professional Tyres", tradeName: "360° Tyres", signatureName: "360 by Professional Tyres", taxId: "RUC: 20565716396" },
+  pricing: { currency: "USD", taxPct: 18, own: { pricesIncludeTax: true, maxDiscountPct: 20, defaultDiscountPct: 0 }, provider: { marginPct: 15, pricesIncludeTax: false }, exchangeRates: { PEN: 3.75 }, stalePriceDays: 30 },
+  quote: { numberFormat: "COT-{NNNN}", counterStart: 1, validityDays: 7 },
+});
+
+const FRANK = "51900000001";
+const STRANGER = "51911111111";
+
+const row = (id: string, model: string, size: string, cost: number): PriceRow => ({
+  id,
+  provider: "360 Tyres",
+  kind: "own",
+  description: `${size} FENIXWAY ${model.toUpperCase()}`,
+  brand: "Fenixway",
+  model,
+  size,
+  sizeDisplay: size,
+  sizeRaw: size,
+  isTyre: true,
+  ply: 18,
+  cost,
+  priceIncludesTax: true,
+  currency: "USD",
+  stock: null,
+  priceDate: "2026-11-10",
+  source: "excel",
+  sourceRef: "t.xlsx",
+});
+const ROWS: PriceRow[] = [
+  row("own-flama77-295", "Flama 77", "295/80R22.5", 450),
+  row("own-valor99-295", "Valor 99", "295/80R22.5", 480),
+  row("own-valor87-295", "Valor 87", "295/80R22.5", 472),
+  row("own-flama77-275", "Flama 77", "275/80R22.5", 430),
+  row("own-valor99-11", "Valor 99", "11R22.5", 400),
+];
+
+let seq = 0;
+let client: FakeWhatsAppClient;
+let prices: JsonStore;
+let portal: JsonPortalStore;
+let bot: BotHandler;
+const saved: Record<string, string | undefined> = {};
+/** Transcripciones que devolverá Deepgram, en orden, y las URLs pedidas (keyterms). */
+let queue: string[];
+let urls: string[];
+
+const text = (body: string, from = FRANK): InboundMessage => ({ id: `wamid.v${++seq}`, from, timestamp: "1", type: "text", text: body, forwarded: false });
+/** Nota de voz cuya transcripción será `transcript`. */
+function voice(transcript: string, from = FRANK): InboundMessage {
+  queue.push(transcript);
+  const id = `aud-${++seq}`;
+  client.media.set(id, { data: Buffer.from("OggS-fake"), mimeType: "audio/ogg; codecs=opus" });
+  return { id: `wamid.v${seq}`, from, timestamp: "1", type: "audio", forwarded: false, media: { id, mimeType: "audio/ogg; codecs=opus" } };
+}
+function press(title: string): InboundMessage {
+  const last = client.interactives().at(-1);
+  if (!last || last.type !== "button") throw new Error("no hubo botones");
+  const hit = last.buttons.find((b) => b.title === title);
+  if (!hit) throw new Error(`no hay botón ${title}: ${last.buttons.map((b) => b.title).join(", ")}`);
+  const payload = { object: "whatsapp_business_account", entry: [{ changes: [{ field: "messages", value: { messages: [{ id: `wamid.v${++seq}`, from: FRANK, timestamp: "1", type: "interactive", interactive: { type: "button_reply", button_reply: { id: hit.id, title: hit.title } } }] } }] }] };
+  return parseWebhook(payload).messages[0];
+}
+const say = async (m: InboundMessage | string): Promise<OutboundMessage[]> => {
+  const before = client.sent.length;
+  await bot.handle(typeof m === "string" ? text(m) : m);
+  return client.sent.slice(before);
+};
+const bodies = (out: OutboundMessage[]) => out.filter((m) => m.kind === "text" || m.kind === "interactive").map((m) => m.body ?? "");
+const docs = (out: OutboundMessage[]) => out.filter((m) => m.kind === "document");
+const step = async (phone = FRANK) => (await prices.getConversation(phone))?.step ?? "idle";
+
+beforeEach(async () => {
+  for (const k of ["LLM_DISABLED", "PHOTOS_DISABLED", "PORTAL_SESSION_SECRET", "PORTAL_BASE_URL", "DEEPGRAM_API_KEY"]) saved[k] = process.env[k];
+  process.env.LLM_DISABLED = "1";
+  process.env.PHOTOS_DISABLED = "1";
+  process.env.PORTAL_SESSION_SECRET = "test-secret-0123456789abcdef";
+  process.env.PORTAL_BASE_URL = "https://portal.example.pe";
+  process.env.DEEPGRAM_API_KEY = "dg-test-key";
+  client = new FakeWhatsAppClient();
+  prices = JsonStore.memory();
+  portal = JsonPortalStore.memory();
+  await prices.upsertRows(ROWS);
+  await portal.upsertUser({ nombre: "Frank Rodríguez", whatsapp: FRANK, rol: "vendedor" });
+  queue = [];
+  urls = [];
+  const deepgramFetch = (async (url: string | URL | Request) => {
+    urls.push(decodeURIComponent(String(url)).replace(/\+/g, " "));
+    const transcript = queue.shift();
+    if (transcript === undefined) throw new Error("cola de transcripciones vacía");
+    return new Response(JSON.stringify({ metadata: { duration: 6 }, results: { channels: [{ alternatives: [{ transcript, confidence: 0.9 }] }] } }), { status: 200, headers: { "Content-Type": "application/json" } });
+  }) as typeof fetch;
+  configureReportBot({ llm: null, deepgramFetch, downloadMedia: (id) => client.downloadMedia(id), logMessage: (e) => prices.logMessage(e) });
+  bot = new BotHandler({ client, store: prices, settings, portalStore: portal });
+});
+
+afterEach(() => {
+  configureReportBot(null);
+  for (const [k, v] of Object.entries(saved)) {
+    if (v === undefined) delete process.env[k];
+    else process.env[k] = v;
+  }
+});
+
+const DICTADO = "Cotízame ocho Flama 77 en 295 80 22.5 a 254 para Transportes Beta, a 45 días.";
+const ESCRITO = "Fenixway Flama 77 295/80R22.5 x8 precio 254\npara Transportes Beta\nplazo: 45 días";
+
+describe("cotización por voz: mismo flujo que el texto", () => {
+  it("🎙 Escuché (literal, una línea) y luego el mismo Entendí y las mismas opciones que el texto escrito; sin PDF hasta el ok", async () => {
+    const typed = await say(text(ESCRITO, STRANGER));
+    const out = await say(voice(DICTADO));
+    const b = bodies(out);
+    expect(b[0]).toBe(`🎙 Escuché: ${DICTADO}`);
+    expect(b[0]).not.toContain("\n");
+    expect(b.slice(1)).toEqual(bodies(typed));
+    expect(b[1]).toContain("Entendí:");
+    expect(b[1]).toContain("295/80R22.5");
+    expect(docs(out)).toHaveLength(0);
+    expect(await step()).toBe("choose");
+    expect(urls).toHaveLength(1);
+    // la transcripción queda en messages
+    expect((await prices.listMessages(FRANK, 20)).some((m) => m.kind === "transcript" && m.body === DICTADO)).toBe(true);
+
+    const ok = await say("ok");
+    expect(docs(ok)).toHaveLength(1);
+    expect(await step()).not.toBe("choose");
+  });
+
+  it("nunca PDF sin ok: elegir *1b* arma el PDF en texto, pero en una cotización por voz solo cambia la opción", async () => {
+    await say(text(ESCRITO, STRANGER));
+    const textPick = await say(text("1b", STRANGER));
+    expect(docs(textPick)).toHaveLength(1); // el atajo del texto, sin cambios
+
+    await say(voice(DICTADO));
+    const pick = await say("1b");
+    expect(docs(pick)).toHaveLength(0);
+    expect(await step()).toBe("choose");
+    expect(bodies(pick).join("\n")).toContain("Responde *ok* para armar el PDF");
+    const ok = await say("ok");
+    expect(docs(ok)).toHaveLength(1);
+  });
+
+  it("un 'ok' dictado no arma el PDF: pide escribirlo", async () => {
+    await say(voice(DICTADO));
+    const out = await say(voice("Ok, dale."));
+    expect(docs(out)).toHaveLength(0);
+    expect(bodies(out).join("\n")).toMatch(/escribe \*ok\*/i);
+    expect(await step()).toBe("choose");
+  });
+
+  it("transcripción con ruido -> mismo pedido", async () => {
+    const out = await say(voice("Eh, cotízame este... ocho llantas eh Flama setenta y siete en doscientos noventa y cinco, ochenta erre veintidós punto cinco, a doscientos cincuenta y cuatro dólares para transportes beta. Mmm, a cuarenta y cinco días, gracias."));
+    const b = bodies(out);
+    expect(b[0]).toMatch(/^🎙 Escuché: Eh, cotízame/);
+    expect(b[1]).toContain("Entendí:");
+    expect(b[1]).toContain("295/80R22.5");
+    expect(b[1]).toContain("x8");
+    expect(b[1]).toContain("254");
+    expect(b[1]).toContain("45 días");
+    expect(docs(out)).toHaveLength(0);
+  });
+
+  it("keyterms de Deepgram: diseños y medidas del catálogo además del vocabulario", async () => {
+    await say(voice(DICTADO));
+    expect(urls[0]).toContain("keyterm=Valor 99");
+    expect(urls[0]).toContain("keyterm=295/80R22.5");
+    expect(urls[0]).toContain("keyterm=Fenixway");
+  });
+});
+
+describe("correcciones por voz", () => {
+  it("'no, eran doce', 'cámbialo a Valor 99', 'precio 259' -> el resumen cambia, sin PDF; el ok escrito arma lo corregido", async () => {
+    await say(voice(DICTADO));
+    const qty = await say(voice("No, eran doce."));
+    expect(bodies(qty)[0]).toBe("🎙 Escuché: No, eran doce.");
+    expect(bodies(qty).join("\n")).toMatch(/x12/);
+    const model = await say(voice("Cámbialo a Valor 99."));
+    expect(bodies(model).join("\n")).toMatch(/Valor 99[^\n]*x12/i);
+    const price = await say(voice("Precio doscientos cincuenta y nueve."));
+    expect(bodies(price).join("\n")).toMatch(/259/);
+    for (const out of [qty, model, price]) expect(docs(out)).toHaveLength(0);
+    expect(await step()).toBe("choose");
+
+    const ok = await say("ok");
+    expect(docs(ok)).toHaveLength(1);
+    const quote = (await prices.listQuotes(1))[0];
+    expect(quote.items.map((it) => [it.model, it.quantity, it.unitPrice])).toEqual([["Valor 99", 12, 259]]);
+  });
+
+  it("un modelo que no está entre las opciones se dice, sin cambiar nada", async () => {
+    await say(voice(DICTADO));
+    const out = await say(voice("cámbialo a Flama 89"));
+    expect(bodies(out).join("\n")).toMatch(/Flama 89/);
+    expect(bodies(out).join("\n")).toMatch(/no (?:está|tengo)/i);
+    expect(await step()).toBe("choose");
+  });
+});
+
+describe("medida dictada que no está en el catálogo", () => {
+  it("medida inexistente con dos candidatas: pregunta con botones, no elige; el botón sigue con la elegida", async () => {
+    const out = await say(voice("cotízame cuatro Flama 77 en doscientos ochenta y cinco ochenta erre veintidós y medio para Transportes Beta"));
+    const b = bodies(out);
+    expect(b[0]).toMatch(/^🎙 Escuché: cotízame cuatro Flama 77/);
+    expect(b.join("\n")).toContain("285/80R22.5");
+    expect(b.join("\n")).not.toContain("Entendí:");
+    const asked = client.interactives().at(-1);
+    expect(asked?.type === "button" ? asked.buttons.map((x) => x.title) : null).toEqual(["275/80R22.5", "295/80R22.5"]);
+    expect(await step()).toBe("idle");
+    expect((await getPending(portal, FRANK, new Date()))?.kind).toBe("voice_size");
+
+    const picked = await say(press("295/80R22.5"));
+    const pb = bodies(picked);
+    expect(pb.join("\n")).toContain("Entendí:");
+    expect(pb.join("\n")).toContain("295/80R22.5");
+    expect(pb.join("\n")).toContain("x4");
+    expect(docs(picked)).toHaveLength(0);
+    expect(await step()).toBe("choose");
+    expect(await getPending(portal, FRANK, new Date())).toBeNull();
+  });
+
+  it("sin medida: la pregunta y la respuesta escrita (o dictada) completa el pedido", async () => {
+    const out = await say(voice("cotízame cuatro Flama 77 para Transportes Beta"));
+    expect(bodies(out).join("\n")).toMatch(/medida/i);
+    expect(bodies(out).join("\n")).not.toContain("Entendí:");
+    const ans = await say(voice("doscientos noventa y cinco ochenta veintidós y medio"));
+    expect(bodies(ans).join("\n")).toContain("Entendí:");
+    expect(bodies(ans).join("\n")).toContain("295/80R22.5");
+    expect(await step()).toBe("choose");
+  });
+
+  it("medida que no existe ni se parece: lo dice y pide la medida", async () => {
+    const out = await say(voice("cotízame cuatro Flama 77 en 445 65 22.5"));
+    expect(bodies(out).join("\n")).toContain("445/65R22.5");
+    expect(bodies(out).join("\n")).toMatch(/no está en el catálogo/i);
+    expect(await step()).toBe("idle");
+  });
+});
+
+describe("precedencia del punto 7 sobre la transcripción", () => {
+  it("con un reporte esperando confirmación, 'cotízame …' por voz lo pasa a pausa y cotiza", async () => {
+    await say("Visité Transportes Gamma, me atendió el jefe de flota, quedamos en llamar el lunes");
+    expect((await getPending(portal, FRANK, new Date()))?.kind).toBe("report_draft");
+    const out = await say(voice(DICTADO));
+    const b = bodies(out).join("\n");
+    expect(b).toContain("🎙 Escuché:");
+    expect(b).toContain("Entendí:");
+    expect(b).toContain("⏸ Dejaste pendiente");
+    expect(await step()).toBe("choose");
+  });
+
+  it("P4 por voz: con un reporte en confirmación, una medida sola dictada pregunta con los dos botones; *Cotización nueva* la cotiza por voz", async () => {
+    await say("Visité Transportes Gamma, me atendió el jefe de flota, quedamos en llamar el lunes");
+    const out = await say(voice("doscientos noventa y cinco ochenta veintidós y medio"));
+    expect(bodies(out)[0]).toBe("🎙 Escuché: doscientos noventa y cinco ochenta veintidós y medio");
+    const asked = client.interactives().at(-1);
+    expect(asked?.type === "button" ? asked.buttons.map((x) => x.title) : null).toEqual(["Cotización nueva", "Es mi respuesta"]);
+    expect(await step()).toBe("idle");
+    const quoted = await say(press("Cotización nueva"));
+    const b = bodies(quoted).join("\n");
+    expect(b).toContain("🎙 Escuché:");
+    expect(b).toContain("Entendí:");
+    expect(b).toContain("⏸ Dejaste pendiente");
+    expect(docs(quoted)).toHaveLength(0);
+    expect(await step()).toBe("choose");
+  });
+
+    it("una nota de voz de reporte sigue siendo reporte", async () => {
+    const out = await say(voice("Visité Transportes Gamma, me atendió el jefe de flota, quedamos en llamar el lunes"));
+    expect(bodies(out).join("\n")).toContain("🎙️ Entendí:");
+    expect(bodies(out).join("\n")).not.toContain("🎙 Escuché:");
+    expect((await getPending(portal, FRANK, new Date()))?.kind).toBe("report_draft");
+    expect(await step()).toBe("idle");
+  });
+});
+
+describe("cotizador: un pedido de contrato por voz tampoco arma el PDF sin ok", () => {
+  const pSettings: Settings = SettingsSchema.parse({
+    company: { name: "Professional Tyres", tradeName: "360° Tyres", signatureName: "360 by Professional Tyres", taxId: "RUC: 20565716396" },
+    pricing: { currency: "USD", taxPct: 18, provider: { marginPct: 15, pricesIncludeTax: false }, stalePriceDays: 30 },
+    quote: { numberFormat: "COT-{NNNN}", counterStart: 1, validityDays: 7, paymentType: "Factura crédito", paymentTerm: "30 días", deliveryTerm: "48 hrs post OC" },
+    customers: loadCustomerProfiles(),
+  });
+  const PEDIDO = "prosegur ayacucho 1830\n2 v99\n4 v89\nsolicitante: Johann Castañeda";
+
+  it("en texto el contrato va directo al PDF (atajo); con voiceTranscript muestra el resumen y espera el ok", async () => {
+    const c = new FakeWhatsAppClient();
+    const store = JsonStore.memory();
+    const handler = new BotHandler({ client: c, store, settings: pSettings });
+    const run = async (m: InboundMessage) => {
+      const before = c.sent.length;
+      await handler.handle(m);
+      return c.sent.slice(before);
+    };
+    const typed = await run(text(PEDIDO, STRANGER));
+    expect(docs(typed).length).toBeGreaterThan(0);
+
+    const spoken = await run({ ...text(PEDIDO), voiceTranscript: "prosegur ayacucho 1830, dos v99 y cuatro v89, solicitante Johann Castañeda" });
+    expect(docs(spoken)).toHaveLength(0);
+    expect((await store.getConversation(FRANK))?.step).toBe("choose");
+    expect(bodies(spoken).join("\n")).toContain("Responde *ok* para armar el PDF");
+    const ok = await run(text("ok"));
+    expect(docs(ok).length).toBe(docs(typed).length);
+  });
+});

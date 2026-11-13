@@ -143,43 +143,74 @@ async function resolveFromPadron(store: PortalStore, d: ReportDraft, text: strin
 
 // ── voz ──
 
-/** Transcribe la nota de voz del mensaje; null = ya se respondió el error (pedir texto). También la usan las preguntas de `oc`. */
-export async function transcribeVoice(ctx: PortalContext, audio: { id: string; mimeType: string }): Promise<string | null> {
+/** Resultado de transcribir: el texto, o qué decirle al usuario (sin clave, no se pudo descargar, falló, vino vacío). */
+export type VoiceResult = { ok: true; text: string } | { ok: false; reply: string };
+
+/** Una sola transcripción por mensaje: routePortal transcribe primero (precedencia del punto 7) y el paso la reutiliza. */
+const heard = new WeakMap<object, VoiceResult>();
+
+/**
+ * Descarga y transcribe la nota de voz del mensaje SIN responder nada (lo hace quien llama). Keyterms: empresas del
+ * vendedor, vocabulario aprendido y, si el canal lo da, el catálogo de precios (marcas, diseños y medidas: punto 8).
+ * Se guarda por mensaje: la segunda llamada con el mismo ctx.msg no vuelve a Deepgram.
+ */
+export async function fetchVoice(ctx: PortalContext, audio: { id: string; mimeType: string }): Promise<VoiceResult> {
+  const hit = heard.get(ctx.msg);
+  if (hit) return hit;
+  const r = await fetchVoiceOnce(ctx, audio);
+  heard.set(ctx.msg, r);
+  return r;
+}
+
+async function fetchVoiceOnce(ctx: PortalContext, audio: { id: string; mimeType: string }): Promise<VoiceResult> {
   const apiKey = deepgramKeyFromEnv(ctx.env);
-  if (!apiKey) {
-    await ctx.reply(VOICE_OFF);
-    return null;
-  }
+  if (!apiKey) return { ok: false, reply: VOICE_OFF };
   let media: { data: Buffer; mimeType: string };
   try {
     media = await downloader(ctx)(audio.id);
   } catch (err) {
     ctx.log(`portal: no pude descargar el audio ${audio.id}: ${(err as Error).message}`);
-    await ctx.reply(VOICE_DOWNLOAD_FAILED);
-    return null;
+    return { ok: false, reply: VOICE_DOWNLOAD_FAILED };
   }
-  const [companies, learned] = await Promise.all([sellerCompanies(ctx.store, ctx.user.id), ctx.store.listVocabulary()]);
-  const keyterms = buildKeyterms({ companies: companies.map((c) => c.razonSocial), learned });
+  const [companies, learned, catalog] = await Promise.all([
+    sellerCompanies(ctx.store, ctx.user.id),
+    ctx.store.listVocabulary(),
+    ctx.voiceCatalog
+      ? ctx.voiceCatalog().catch((err: Error) => {
+          ctx.log(`portal: no pude leer el catálogo para la voz: ${err.message}`);
+          return undefined;
+        })
+      : Promise.resolve(undefined),
+  ]);
+  const keyterms = buildKeyterms({ companies: companies.map((c) => c.razonSocial), learned, catalog });
   let text: string;
   try {
     const r = await transcribe(media.data, media.mimeType || audio.mimeType, { apiKey, keyterms, fetchImpl: deps.deepgramFetch });
     text = r.text.trim();
   } catch (err) {
-    if (err instanceof VoiceNotConfigured) {
-      await ctx.reply(VOICE_OFF);
-      return null;
-    }
+    if (err instanceof VoiceNotConfigured) return { ok: false, reply: VOICE_OFF };
     ctx.log(`portal: transcripción fallida: ${(err as Error).message}`);
-    await ctx.reply(err instanceof TranscriptionError && err.status === null && /vac[ií]o/.test(err.message) ? VOICE_EMPTY : VOICE_FAILED);
-    return null;
+    return { ok: false, reply: err instanceof TranscriptionError && err.status === null && /vac[ií]o/.test(err.message) ? VOICE_EMPTY : VOICE_FAILED };
   }
-  if (!text) {
-    await ctx.reply(VOICE_EMPTY);
-    return null;
-  }
+  if (!text) return { ok: false, reply: VOICE_EMPTY };
+  return { ok: true, text };
+}
+
+/** Guarda la transcripción en `messages` (kind "transcript"). */
+export async function logTranscript(ctx: PortalContext, text: string): Promise<void> {
   await logMessage(ctx, { phone: ctx.from, direction: "in", kind: "transcript", body: text });
-  await ctx.reply(`🎙️ Entendí: «${clip(text, 400)}»`);
-  return text;
+}
+
+/** Transcribe la nota de voz del mensaje; null = ya se respondió el error (pedir texto). También la usan las preguntas de `oc`. */
+export async function transcribeVoice(ctx: PortalContext, audio: { id: string; mimeType: string }): Promise<string | null> {
+  const r = await fetchVoice(ctx, audio);
+  if (!r.ok) {
+    await ctx.reply(r.reply);
+    return null;
+  }
+  await logTranscript(ctx, r.text);
+  await ctx.reply(`🎙️ Entendí: «${clip(r.text, 400)}»`);
+  return r.text;
 }
 
 // ── borrador ──

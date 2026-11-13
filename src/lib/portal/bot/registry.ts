@@ -11,6 +11,7 @@ import type { MessageLogEntry } from "../../store/types";
 import { interactiveAsText, type ListRow, type ReplyButton } from "../../whatsapp/interactive";
 import type { InboundMessage } from "../../whatsapp/webhook";
 import type { Company, PortalStore, PortalUser } from "../store/types";
+import type { VoiceCatalog } from "../voice/catalog";
 import type { PortalCommandName } from "./router";
 import { setPending, type PendingStep, type ReportDraftStep } from "./state";
 
@@ -37,8 +38,13 @@ export interface PortalContext {
    * cualquier otro número lanza error (el bot nunca escribe a clientes). Lanza también si WhatsApp rechaza el envío.
    */
   sendTextTo(phone: string, body: string): Promise<void>;
-  /** Pasa `text` al cotizador como si el usuario lo hubiera escrito (respuesta "cotización" a la pregunta ambigua). */
-  requote(text: string): Promise<void>;
+  /**
+   * Pasa `text` al cotizador como si el usuario lo hubiera escrito (respuesta "cotización" a la pregunta ambigua). Con
+   * `voice` (la transcripción literal) es una cotización por voz: el cotizador no arma el PDF sin un *ok* escrito.
+   */
+  requote(text: string, opts?: { voice?: string }): Promise<void>;
+  /** Marcas, diseños y medidas de las listas de precios (keyterms y validación de la medida dictada). Opcional. */
+  voiceCatalog?(): Promise<VoiceCatalog>;
   env: Record<string, string | undefined>;
   now: Date;
   log(msg: string): void;

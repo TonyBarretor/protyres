@@ -4,11 +4,14 @@
  *
  * Límite de Deepgram (docs de Keyterm Prompting, Nova-3): 500 tokens en total entre todos los keyterms; recomiendan
  * concentrarse en los 20–50 más importantes. Aquí: como mucho MAX_KEYTERMS (100) términos y un presupuesto estimado de
- * KEYTERM_TOKEN_BUDGET (450) tokens, con prioridad: fijos > aprendidos > clientes > marcas > medidas.
+ * KEYTERM_TOKEN_BUDGET (450) tokens, con prioridad: fijos > aprendidos > [catálogo: 15 diseños, 10 marcas y 10 medidas
+ * principales] > clientes > marcas > medidas > [resto del catálogo]. El tramo del catálogo (corrida D, punto 8: cotizar por
+ * voz) va antes que los clientes para que un vendedor con muchas empresas no lo deje fuera; sin catálogo, como antes.
  */
 import { KNOWN_BRANDS } from "../../tyre/brands";
 import { displayName } from "../report/match";
 import type { VocabularyEntry } from "../store/types";
+import type { VoiceCatalog } from "./catalog";
 
 export const MAX_KEYTERMS = 100;
 /** Margen bajo los 500 tokens de Deepgram (la estimación por caracteres es aproximada). */
@@ -50,9 +53,14 @@ export interface KeytermSources {
   brands?: string[];
   /** Por defecto COMMON_SIZES. */
   sizes?: string[];
+  /** Marcas, diseños y medidas de las listas de precios (voice/catalog.ts). */
+  catalog?: VoiceCatalog;
   maxTerms?: number;
   tokenBudget?: number;
 }
+
+/** Lo principal del catálogo que va antes que los clientes (ver la cabecera). */
+export const CATALOG_TOP = { designs: 15, brands: 10, sizes: 10 };
 
 /** Tokens estimados de un término (≈3 caracteres por token en español y siglas, +1 de separación). */
 export function estimateTokens(term: string): number {
@@ -63,12 +71,19 @@ export function estimateTokens(term: string): number {
 export function buildKeyterms(src: KeytermSources = {}): string[] {
   const maxTerms = src.maxTerms ?? MAX_KEYTERMS;
   const budget = src.tokenBudget ?? KEYTERM_TOKEN_BUDGET;
+  const cat = src.catalog;
+  const models = (cat?.designs ?? []).map((d) => d.model);
   const candidates = [
     ...FIXED_KEYTERMS,
     ...(src.learned ?? []).map((v) => v.meaning),
+    ...models.slice(0, CATALOG_TOP.designs),
+    ...(cat?.brands ?? []).slice(0, CATALOG_TOP.brands),
+    ...(cat?.sizes ?? []).slice(0, CATALOG_TOP.sizes),
     ...(src.companies ?? []).map((c) => displayName(c)),
     ...(src.brands ?? KNOWN_BRANDS),
     ...(src.sizes ?? COMMON_SIZES),
+    ...models.slice(CATALOG_TOP.designs),
+    ...(cat?.sizes ?? []).slice(CATALOG_TOP.sizes),
   ];
   const out: string[] = [];
   const seen = new Set<string>();
