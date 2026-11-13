@@ -17,6 +17,7 @@
  * Dependencias inyectables (tests y simulador) con configureReportBot: cliente de Anthropic, fetch de Deepgram, descarga
  * de medios y registro de mensajes. La descarga inyectada con configureReportBot manda sobre ctx.downloadMedia (el simulador no tiene Graph API).
  */
+import { KNOWN_BRANDS } from "../../tyre/brands";
 import { fixCatalogTerms } from "../voice/fuzzy";
 import { getStore } from "../../store";
 import type { MessageLogEntry } from "../../store/types";
@@ -119,7 +120,10 @@ async function extractContext(ctx: PortalContext, extra: CompanyRef[] = []): Pro
   const companies = await sellerCompanies(ctx.store, ctx.user.id);
   for (const c of extra) if (!companies.some((x) => x.id === c.id)) companies.push(c);
   const vocabulary = (await ctx.store.listVocabulary()).map((v) => ({ term: v.term, meaning: v.meaning }));
-  return { now: ctx.now, vendedor: { id: ctx.user.id, nombre: ctx.user.nombre }, companies, vocabulary };
+  // marcas para registrar las que usa / quiere el cliente: las principales del catálogo y la lista general
+  const catalog = ctx.voiceCatalog ? await ctx.voiceCatalog().catch(() => null) : null;
+  const brands = [...new Set([...(catalog?.brands ?? []).slice(0, 80), ...KNOWN_BRANDS])];
+  return { now: ctx.now, vendedor: { id: ctx.user.id, nombre: ctx.user.nombre }, companies, vocabulary, brands };
 }
 
 const ref = (c: Company): CompanyRef => ({ id: c.id, razonSocial: c.razonSocial, ruc: c.ruc });
@@ -259,10 +263,11 @@ export async function interpretReport(ctx: PortalContext, rawText: string, opts:
   }
   const ectx = await extractContext(ctx);
   const res = await extractReport(text, ectx, { client: deps.llm });
+  if (res.usage) ctx.log(`portal: reporte por modelo (${res.usage.calls} llamada(s), ${res.usage.inputTokens} tokens de entrada, ${res.usage.outputTokens} de salida)`);
   if (res.llmError) ctx.log(`portal: el modelo no armó el reporte (${res.llmError}); uso reglas. Revisa ANTHROPIC_API_KEY con: npm run llm:check`);
   let draft = makeDraft(res.report, { companies: ectx.companies, canal, texto: res.text, messageAt: opts.occurredAt, via: res.via });
   // con reglas la confianza siempre es baja: si el tipo se reconoció ("visité", "llamé") no se pregunta
-  if (res.via === "rules" && !res.report.faltantes.includes("tipo")) draft.answered = [...draft.answered, "tipo"];
+  if ((res.via === "rules" && !res.report.faltantes.includes("tipo")) || res.tipoSeguro) draft.answered = draft.answered.includes("tipo") ? draft.answered : [...draft.answered, "tipo"];
   draft = await resolveFromPadron(ctx.store, draft, res.text, ectx.companies);
   await showDraft(ctx, draft, { text, occurredAt: opts.occurredAt.toISOString() });
 }

@@ -6,11 +6,13 @@
  *
  * Puro salvo la llamada al modelo; el cliente se inyecta (tests sin red).
  */
+import { KNOWN_BRANDS } from "../../tyre/brands";
+import { jaroWinkler, phoneticKey } from "../voice/fuzzy";
 import type Anthropic from "@anthropic-ai/sdk";
 import { z } from "zod";
 import { getAnthropic, llmModel } from "../../llm/client";
 import { parseSpanishDateTime, parseVagueDay } from "../bot/dates";
-import { STAGES, STAGE_IDS, type StageId } from "../stages";
+import { STAGES, STAGE_IDS, stageIndex, type StageId } from "../stages";
 import { formatLimaDateTime, limaDateKey } from "../ui/time";
 import { applyVocabulary } from "../voice/vocabulary";
 import { displayName, matchCompanies, type CompanyRef } from "./match";
@@ -30,6 +32,9 @@ export const ExtractedReportSchema = z.object({
     posicion: z.string().nullable().optional(),
     cantidades: z.string().nullable().optional(),
     notas: z.string().nullable().optional(),
+    /** Marcas que el cliente usa hoy / que quiere probar o cotizar (nombres del catálogo). */
+    marcasUsa: z.array(z.string()).optional(),
+    marcasInteres: z.array(z.string()).optional(),
   }),
   proximaAccion: z.object({ texto: z.string().min(1), fecha: isoDate.nullable().optional() }).nullable(),
   etapaSugerida: z.enum(STAGE_IDS as [StageId, ...StageId[]]).nullable(),
@@ -65,7 +70,9 @@ export const REPORT_TOOL_SCHEMA = {
         medidas: { type: "array", items: { type: "string" }, description: "Medidas de llanta tal como se dijeron (11R22.5, 295/80R22.5...). [] si ninguna." },
         posicion: nullableString("Posición: direccional, tracción, mixta, carreta..."),
         cantidades: nullableString("Cantidades mencionadas, en texto ('40 llantas al mes')."),
-        notas: nullableString("Otros datos útiles: marcas que usa, precio objetivo, CPK, problemas, competencia."),
+        notas: nullableString("Otros datos útiles: precio objetivo, CPK, problemas, competencia."),
+        marcasUsa: { type: "array", items: { type: "string" }, description: "Marcas de llanta que el cliente usa hoy ('usan Continental'). [] si no dice." },
+        marcasInteres: { type: "array", items: { type: "string" }, description: "Marcas que quiere probar o que pide cotizar ('quieren probar Linglong'). [] si no dice." },
       },
       required: ["medidas"],
     },
@@ -92,11 +99,13 @@ export interface ExtractContext {
   companies: CompanyRef[];
   /** Vocabulario aprendido (se aplica al texto y se le pasa al modelo). */
   vocabulary?: { term: string; meaning: string }[];
+  /** Marcas conocidas (catálogo y lista general) para registrar las que usa o quiere el cliente; por defecto KNOWN_BRANDS. */
+  brands?: string[];
 }
 
 /** Lo mínimo del cliente de Anthropic que se usa (inyectable en tests). */
 export interface LlmClient {
-  messages: { create(params: Anthropic.MessageCreateParamsNonStreaming): Promise<{ content: Anthropic.ContentBlock[] }> };
+  messages: { create(params: Anthropic.MessageCreateParamsNonStreaming): Promise<{ content: Anthropic.ContentBlock[]; usage?: Partial<Pick<Anthropic.Usage, "input_tokens" | "output_tokens" | "cache_read_input_tokens" | "cache_creation_input_tokens">> | null }> };
 }
 
 export interface ExtractDeps {
@@ -105,11 +114,21 @@ export interface ExtractDeps {
   model?: string;
 }
 
+export interface LlmUsage {
+  calls: number;
+  inputTokens: number;
+  outputTokens: number;
+}
+
 export interface ExtractResult {
   report: ExtractedReport;
   via: "llm" | "rules";
   /** Texto ya pasado por el vocabulario. */
   text: string;
+  /** Tokens usados por el modelo en este reporte (para el costo; sin modelo, ausente). */
+  usage?: LlmUsage;
+  /** Las reglas reconocen el mismo tipo ("visité…", "llamé…"): no hace falta preguntarlo aunque el modelo dude. */
+  tipoSeguro?: boolean;
   /** Había modelo pero falló (clave inválida, red, respuesta inválida): por qué se usaron reglas. */
   llmError?: string;
 }
@@ -143,12 +162,13 @@ Etapas válidas del pipeline (usa el id):
 ${etapas}
 Pista de etapa: una visita hecha -> visita_realizada; cita acordada a futuro -> cita_agendada; cotización enviada -> cotizacion_enviada; negociando precio/condiciones -> negociacion; compra confirmada / orden de compra -> cerrado_ganado; no comprará -> cerrado_perdido.
 ${vocab ? `Vocabulario del negocio:\n${vocab}\n` : ""}Términos: "enllante" = llanta montada en aro; "CPK" = costo por kilómetro; "Fenixway" y "Flama 77" son productos.
+Marcas: en interes.marcasUsa las que el cliente usa hoy y en interes.marcasInteres las que quiere probar o cotizar.
 No inventes datos: null o [] si no se dicen. Pon confianza "baja" si no está claro de qué empresa o de qué tipo de contacto se trata, y lista en faltantes lo que falta.`;
 }
 
 type Msg = Anthropic.MessageParam;
 
-async function callTool(client: LlmClient, model: string, system: string, messages: Msg[]): Promise<Anthropic.ToolUseBlock | null> {
+async function callTool(client: LlmClient, model: string, system: string, messages: Msg[], usage?: LlmUsage): Promise<Anthropic.ToolUseBlock | null> {
   const res = await client.messages.create({
     model,
     max_tokens: 1500,
@@ -157,6 +177,11 @@ async function callTool(client: LlmClient, model: string, system: string, messag
     tool_choice: { type: "tool", name: TOOL_NAME },
     messages,
   });
+  if (usage) {
+    usage.calls++;
+    usage.inputTokens += (res.usage?.input_tokens ?? 0) + (res.usage?.cache_read_input_tokens ?? 0) + (res.usage?.cache_creation_input_tokens ?? 0);
+    usage.outputTokens += res.usage?.output_tokens ?? 0;
+  }
   const block = res.content.find((b) => b.type === "tool_use");
   return block && block.type === "tool_use" ? block : null;
 }
@@ -166,9 +191,9 @@ function issuesText(err: z.ZodError): string {
 }
 
 /** Pide la herramienta; si no valida, un reintento con los errores. null si no hay modelo o falla dos veces. */
-async function askModel(client: LlmClient, model: string, system: string, userText: string): Promise<ExtractedReport | null> {
+async function askModel(client: LlmClient, model: string, system: string, userText: string, usage?: LlmUsage): Promise<ExtractedReport | null> {
   const messages: Msg[] = [{ role: "user", content: userText }];
-  const first = await callTool(client, model, system, messages);
+  const first = await callTool(client, model, system, messages, usage);
   if (first) {
     const ok = ExtractedReportSchema.safeParse(first.input);
     if (ok.success) return ok.data;
@@ -178,7 +203,7 @@ async function askModel(client: LlmClient, model: string, system: string, userTe
       content: [{ type: "tool_result", tool_use_id: first.id, is_error: true, content: `Respuesta inválida: ${issuesText(ok.error)}. Vuelve a llamar ${TOOL_NAME} con todos los campos correctos.` }],
     });
   }
-  const second = await callTool(client, model, system, messages);
+  const second = await callTool(client, model, system, messages, usage);
   if (!second) return null;
   const ok = ExtractedReportSchema.safeParse(second.input);
   return ok.success ? ok.data : null;
@@ -199,17 +224,23 @@ export async function extractReport(text: string, ctx: ExtractContext, deps: Ext
   const clean = applyVocabulary(text.trim(), ctx.vocabulary ?? []);
   const client = resolveClient(deps);
   let llmError: string | undefined;
+  const usage: LlmUsage = { calls: 0, inputTokens: 0, outputTokens: 0 };
   if (client) {
     try {
-      const r = await askModel(client, deps.model ?? llmModel(), systemPrompt(ctx), clean);
-      if (r) return { report: normalizeCompany(r, ctx.companies), via: "llm", text: clean };
+      const r = await askModel(client, deps.model ?? llmModel(), systemPrompt(ctx), clean, usage);
+      if (r) {
+        const report = reconcile(normalizeCompany(r, ctx.companies), clean, ctx);
+        const tipoSeguro = detectTipo(clean) === report.tipo;
+        return { report: tipoSeguro ? { ...report, faltantes: report.faltantes.filter((f) => f !== "tipo") } : report, via: "llm", text: clean, usage, ...(tipoSeguro ? { tipoSeguro } : {}) };
+      }
       llmError = "el modelo no devolvió un reporte válido";
     } catch (err) {
       // error de red / API (p. ej. 401 clave inválida): se sigue con reglas, pero se dice por qué
       llmError = String((err as Error)?.message ?? err).slice(0, 300);
     }
   }
-  return { report: extractByRules(clean, ctx), via: "rules", text: clean, ...(llmError ? { llmError } : {}) };
+  const rules = extractByRules(clean, ctx);
+  return { report: rules, via: "rules", text: clean, ...(detectTipo(clean) ? { tipoSeguro: true } : {}), ...(llmError ? { llmError } : {}) };
 }
 
 /**
@@ -227,6 +258,91 @@ export async function correctReport(current: ExtractedReport, correction: string
   } catch {
     return null;
   }
+}
+
+// ── modelo + reglas (pasada 5 con el modelo real, 2026-11-13) ──
+
+const SENT_QUOTE = /\bcotizacion\s+enviada|\b(?:le|les)\s+(?:mande|envie|pase)\s+(?:la\s+)?cotizacion|\b(?:mande|envie)\s+(?:la\s+)?cotizacion/;
+const VISIT_ACTION = /\b(visit|cita|reunion|pasar|volver|regresar|ir\b)/;
+
+/**
+ * Lo que el modelo hace mal y las reglas bien (medido con los audios): las fechas relativas ("el martes", "pasado
+ * mañana", "la próxima semana": el modelo se equivocaba de día y copiaba la hora del mensaje), la etapa sin evidencia
+ * ("quedamos en mandarle la cotización" no es *Cotización enviada*; "llamar" no es una *Cita agendada*), las marcas
+ * (contra el catálogo) y la forma del cargo. El resto (empresa, contacto, notas, texto de la próxima acción) es del modelo.
+ */
+export function reconcile(r: ExtractedReport, text: string, ctx: ExtractContext): ExtractedReport {
+  const t = fold(text);
+  const rules = extractByRules(text, ctx);
+  const out: ExtractedReport = { ...r, interes: { ...r.interes } };
+  if (rules.ocurrioEn) out.ocurrioEn = rules.ocurrioEn;
+  if (rules.proximaAccion?.fecha) out.proximaAccion = { texto: r.proximaAccion?.texto ?? rules.proximaAccion.texto, fecha: rules.proximaAccion.fecha };
+  if (out.etapaSugerida === "cotizacion_enviada" && !SENT_QUOTE.test(t)) out.etapaSugerida = rules.etapaSugerida === "cotizacion_enviada" ? null : rules.etapaSugerida;
+  if (out.etapaSugerida === "cita_agendada" && !(out.proximaAccion && VISIT_ACTION.test(fold(out.proximaAccion.texto)))) {
+    out.etapaSugerida = rules.etapaSugerida === "cita_agendada" ? null : rules.etapaSugerida;
+  }
+  // una visita reportada ya ocurrió: la etapa es Visita realizada como mínimo (el modelo sugería *Cita agendada* por el
+  // "quedamos en volver …"); lo que va más allá (cotización enviada, negociación…) se respeta
+  if (out.tipo === "visita" && (!out.etapaSugerida || stageIndex(out.etapaSugerida) < stageIndex("visita_realizada")) && !(out.etapaSugerida && /^cerrado/.test(out.etapaSugerida))) {
+    out.etapaSugerida = "visita_realizada";
+  }
+  const brands = ctx.brands?.length ? ctx.brands : KNOWN_BRANDS;
+  const norm = (list: string[] | undefined) => (list ?? []).map((b) => canonicalBrand(b, brands)).filter((b): b is string => !!b);
+  const interes = uniq([...norm(r.interes.marcasInteres), ...(rules.interes.marcasInteres ?? [])]);
+  out.interes.marcasInteres = interes;
+  out.interes.marcasUsa = uniq([...norm(r.interes.marcasUsa), ...(rules.interes.marcasUsa ?? [])]).filter((b) => !interes.includes(b));
+  if (out.contacto?.cargo) out.contacto = { ...out.contacto, cargo: capitalize(out.contacto.cargo) };
+  return out;
+}
+
+const uniq = (xs: string[]) => [...new Set(xs)];
+const capitalize = (s: string) => {
+  const c = s.trim().replace(/\s+/g, " ");
+  return c ? c[0].toUpperCase() + c.slice(1) : c;
+};
+
+/** La marca del catálogo que corresponde a lo dicho (igual sin tildes/mayúsculas, o muy parecida); null si ninguna. */
+function canonicalBrand(said: string, brands: string[]): string | null {
+  const f = fold(said).trim();
+  const exact = brands.find((b) => fold(b) === f);
+  if (exact) return exact;
+  const k = phoneticKey(said);
+  if (k.length < 5) return null;
+  let best: { b: string; s: number } | null = null;
+  for (const b of brands) {
+    const s = jaroWinkler(k, phoneticKey(b));
+    if (s >= 0.92 && (!best || s > best.s)) best = { b, s };
+  }
+  return best?.b ?? null;
+}
+
+const INTEREST_CUE = /\b(probar|prueba|pruebe|quieren|quiere|quiero|interes\w*|cotizacion\s+de|cotizar|cotice|pidieron|piden|pide)\b/;
+const USE_CUE = /\b(usa|usan|utiliza|utilizan|trabaja|trabajan|tienen|tiene|montan|monta|ruedan|compran|compra)\b/;
+
+/** Marcas mencionadas por oración/cláusula: tras "quieren probar…" -> interés; tras "usan…" -> las que usa. */
+export function detectBrands(text: string, brands: string[] = KNOWN_BRANDS): { usa: string[]; interes: string[] } {
+  const usa: string[] = [];
+  const interes: string[] = [];
+  const sorted = [...brands].sort((a, b) => b.length - a.length);
+  for (const clause of text.split(/[.;,\n]+/)) {
+    let c = ` ${fold(clause).replace(/[^a-z0-9ñ ]+/g, " ").replace(/\s+/g, " ")} `;
+    const hits: { b: string; at: number }[] = [];
+    for (const b of sorted) {
+      const fb = fold(b).replace(/[^a-z0-9ñ ]+/g, " ").trim();
+      if (fb.length < 3) continue;
+      const at = c.indexOf(` ${fb} `);
+      if (at < 0) continue;
+      hits.push({ b, at });
+      // la más larga gana ("Double Coin" antes que "Coin"): se tapa para las siguientes
+      c = `${c.slice(0, at + 1)}${"#".repeat(fb.length)}${c.slice(at + 1 + fb.length)}`;
+    }
+    for (const h of hits.sort((a, b) => a.at - b.at)) {
+      const before = c.slice(0, h.at);
+      if (INTEREST_CUE.test(before)) interes.push(h.b);
+      else if (USE_CUE.test(before)) usa.push(h.b);
+    }
+  }
+  return { usa: uniq(usa), interes: uniq(interes) };
 }
 
 // ── reglas (sin modelo) ──
@@ -355,6 +471,7 @@ export function extractByRules(text: string, ctx: ExtractContext): ExtractedRepo
   const nombreOk = nombre && !nombre.toLowerCase().split(/\s+/).some((w) => companyWords.has(w)) ? nombre : null;
   const { ocurrioEn, proximaAccion } = detectDates(text, ctx.now);
   const t = fold(text);
+  const marcas = detectBrands(text, ctx.brands?.length ? ctx.brands : KNOWN_BRANDS);
   let etapa: StageId | null = null;
   if (/\bcotizacion\s+enviada|\ble\s+(?:mande|envie)\s+(?:la\s+)?cotizacion/.test(t)) etapa = "cotizacion_enviada";
   else if (tipo === "visita") etapa = "visita_realizada";
@@ -367,7 +484,7 @@ export function extractByRules(text: string, ctx: ExtractContext): ExtractedRepo
     empresa,
     tipo,
     contacto: nombreOk || cargo ? { nombre: nombreOk, cargo } : null,
-    interes: { medidas: detectSizes(text), posicion: detectPosition(t), cantidades: detectQuantities(t), notas: null },
+    interes: { medidas: detectSizes(text), posicion: detectPosition(t), cantidades: detectQuantities(t), notas: null, marcasUsa: marcas.usa, marcasInteres: marcas.interes },
     proximaAccion,
     etapaSugerida: etapa,
     ocurrioEn,

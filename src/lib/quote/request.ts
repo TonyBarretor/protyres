@@ -659,7 +659,14 @@ export async function parseRequest(text: string): Promise<QuoteRequest> {
     lines.push({
       raw: l.raw ?? l.description ?? l.size ?? "",
       size,
-      brand: l.brand ? findBrandInText(l.brand)?.brand ?? l.brand : undefined,
+      // a brand the LLM misspelled ("Aonalite" for "Aonaite") is not kept: the one written on the line (or read by the regex
+      // for the same size) wins; an unknown brand is kept only when the message has none
+      brand: l.brand
+        ? findBrandInText(l.brand)?.brand ??
+          (l.raw ? findBrandInText(l.raw)?.brand : undefined) ??
+          base.lines.find((b) => b.brand && size && b.size?.canonical === size.canonical)?.brand ??
+          l.brand
+        : undefined,
       model: l.model ?? undefined,
       quantity: l.quantity ?? 1,
       position: (l.position as RequestLine["position"]) ?? undefined,

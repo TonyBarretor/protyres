@@ -59,7 +59,7 @@ export function formatDraftSummary(draft: ReportDraft, company?: { razonSocial: 
     lines.push(`• Contacto: ${n}${draft.contacto.cargo ? ` — ${draft.contacto.cargo}` : ""}`);
   }
   const i = draft.interes;
-  const interes = [i.medidas.join(", "), i.posicion, i.cantidades].filter((x): x is string => !!x && !!x.trim());
+  const interes = interesParts(i);
   if (interes.length) lines.push(`• Interés: ${interes.join(" · ")}`);
   if (i.notas) lines.push(`• Notas: ${i.notas}`);
   if (draft.proximaAccion) {
@@ -292,13 +292,24 @@ export function advancesStage(from: StageId, to: StageId | null): to is StageId 
   return stageIndex(to) > stageIndex(from);
 }
 
+/** "295/80R22.5 · tracción · 40 llantas · usa Continental, Kumho · le interesa Linglong" (probarla o cotizarla). */
+function interesParts(i: ReportDraft["interes"]): string[] {
+  return [
+    i.medidas.join(", "),
+    i.posicion,
+    i.cantidades,
+    i.marcasUsa?.length ? `usa ${i.marcasUsa.join(", ")}` : null,
+    i.marcasInteres?.length ? `le interesa ${i.marcasInteres.join(", ")}` : null,
+  ].filter((x): x is string => !!x && !!x.trim());
+}
+
 function activityText(d: ReportDraft): string {
   const parts: string[] = [];
   const head = d.tipo === "visita" ? "Visita" : d.tipo === "llamada" ? "Llamada" : "Nota";
   const who = d.contacto && (d.contacto.nombre || d.contacto.cargo) ? ` con ${[d.contacto.nombre, d.contacto.cargo].filter(Boolean).join(" — ")}` : "";
   parts.push(`${head}${who}.`);
   const i = d.interes;
-  const interes = [i.medidas.join(", "), i.posicion, i.cantidades].filter((x): x is string => !!x && !!x.trim());
+  const interes = interesParts(i);
   if (interes.length) parts.push(`Interés: ${interes.join(" · ")}.`);
   if (i.notas) parts.push(i.notas.trim().replace(/\.?$/, "."));
   if (d.proximaAccion) parts.push(`Próxima acción: ${d.proximaAccion.texto}${d.proximaAccion.fecha ? ` (${formatLimaDateTime(new Date(d.proximaAccion.fecha))})` : ""}.`);

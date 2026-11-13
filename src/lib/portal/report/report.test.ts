@@ -390,3 +390,80 @@ describe("fechas en pasado y próxima acción «volver»", () => {
     expect(detectDates("Quedamos en volver a llamar el lunes.", NOW_FRI).proximaAccion?.texto).toBe("Llamar");
   });
 });
+
+describe("tokens por reporte (costo)", () => {
+  it("suma el uso de tokens de las llamadas al modelo (incluido el reintento)", async () => {
+    const outputs = [{ ...GOOD, tipo: "otra cosa" }, GOOD];
+    const create = vi.fn(async () => ({
+      content: [{ type: "tool_use" as const, id: `tu_${outputs.length}`, name: "registrar_reporte", input: outputs.shift() }],
+      usage: { input_tokens: 1000, output_tokens: 200, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+    }));
+    const r = await extractReport("visité a zbuss", CTX, { client: { messages: { create } } as unknown as LlmClient });
+    expect(r.via).toBe("llm");
+    expect(create).toHaveBeenCalledTimes(2);
+    expect(r.usage).toEqual({ calls: 2, inputTokens: 2000, outputTokens: 400 });
+  });
+});
+
+// ── pasada 5 (modelo activo, 2026-11-13): lo que devolvió el modelo real, reconciliado con las reglas ──
+
+describe("modelo + reglas: fechas, etapa, tipo, marcas y cargo", () => {
+  const NOW_FRI = new Date("2026-11-13T23:29:00Z"); // vie 13/11 18:29 Lima
+  const C5: ExtractContext = { now: NOW_FRI, vendedor: { id: 7, nombre: "Frank" }, companies: [{ id: 1, razonSocial: "ZBUSS S.A.C.", ruc: "20602221505" }, { id: 2, razonSocial: "MOVIL BUS S.A.C", ruc: "20555901179" }, { id: 3, razonSocial: "TRANSPORTES PECHE'S S.A.C.", ruc: "20454948450" }, { id: 4, razonSocial: "SHALOM EMPRESARIAL S.A.C.", ruc: "20512528458" }], brands: ["Fenixway", "Linglong", "Continental", "Kumho", "Double Coin"] };
+  const base = (over: Partial<ExtractedReport>): ExtractedReport => ({ empresa: null, tipo: "visita", contacto: null, interes: { medidas: [] }, proximaAccion: null, etapaSugerida: null, ocurrioEn: null, confianza: "alta", faltantes: [], ...over });
+  const run = async (text: string, model: ExtractedReport) => (await extractReport(text, C5, { client: fakeClient(model).client })).report;
+
+  it("P5-E1: fechas relativas las calculan las reglas (el modelo se equivocó de día y copió la hora)", async () => {
+    const r = await run("Visité ZBUS el martes. Hablé con Carlos Quispe, jefe de flota. Quedamos en volver el jueves.", base({ empresa: { nombre: "ZBUSS S.A.C.", ruc: "20602221505" }, ocurrioEn: "2026-11-11T00:00:00-05:00", proximaAccion: { texto: "Volver a visitar", fecha: "2026-11-13T00:00:00-05:00" } }));
+    expect(r.ocurrioEn?.slice(0, 10)).toBe("2026-11-10");
+    expect(r.proximaAccion).toEqual({ texto: "Volver a visitar", fecha: "2026-11-19T09:00:00-05:00" });
+    const p = await run("Llamé a transportes PECHES. Quedamos en llamar pasado mañana.", base({ tipo: "llamada", proximaAccion: { texto: "Llamar", fecha: "2026-11-15T18:29:00-05:00" } }));
+    expect(p.proximaAccion?.fecha).toBe("2026-11-15T09:00:00-05:00");
+    const m = await run("Visité MOVIL BUS ayer. Quedamos en mandarle la cotización la próxima semana.", base({ proximaAccion: { texto: "Enviar cotización", fecha: "2026-11-20T00:00:00-05:00" } }));
+    expect(m.proximaAccion?.fecha).toBe("2026-11-16T09:00:00-05:00");
+  });
+
+  it("P5-E2: etapa sin evidencia se corrige (cotización por enviar no es «enviada»; llamar no es una cita)", async () => {
+    const m = await run("Visité MOVIL BUS ayer. Quedamos en mandarle la cotización la próxima semana.", base({ etapaSugerida: "cotizacion_enviada" }));
+    expect(m.etapaSugerida).toBe("visita_realizada");
+    const p = await run("Llamé a transportes PECHES. Quedamos en llamar pasado mañana.", base({ tipo: "llamada", etapaSugerida: "cita_agendada", proximaAccion: { texto: "Llamar", fecha: null } }));
+    expect(p.etapaSugerida).toBeNull();
+    const ok = await run("Le mandé la cotización a ZBUSS ayer.", base({ tipo: "nota", etapaSugerida: "cotizacion_enviada" }));
+    expect(ok.etapaSugerida).toBe("cotizacion_enviada");
+    const cita = await run("Llamé a ZBUSS. Quedamos en visitarlos el miércoles a las 10.", base({ tipo: "llamada", etapaSugerida: "cita_agendada", proximaAccion: { texto: "Visitar", fecha: null } }));
+    expect(cita.etapaSugerida).toBe("cita_agendada");
+  });
+
+  it("P5-E3: si las reglas reconocen el tipo («Visité…») y coincide, no se pregunta aunque el modelo dude", async () => {
+    const r = await extractReport("Visité salón empresarial hoy. Nos atendió el ingeniero Luis Ramos.", C5, { client: fakeClient(base({ tipo: "visita", confianza: "baja", faltantes: ["tipo"] })).client });
+    expect(r.tipoSeguro).toBe(true);
+    expect(r.report.faltantes).not.toContain("tipo");
+  });
+
+  it("P5-E4: marcas que usa y que quiere probar, en Interés (del modelo y de las reglas, contra el catálogo)", async () => {
+    const r = await run("Visité MOVIL BUS. USA Continental y PUMBO. Quieren probar Linglong en tracción.", base({ interes: { medidas: [], posicion: "tracción", notas: "Usa llantas Continental y PUMBO", marcasUsa: ["continental", "PUMBO"], marcasInteres: [] } }));
+    expect(r.interes.marcasUsa).toEqual(["Continental"]);
+    expect(r.interes.marcasInteres).toEqual(["Linglong"]);
+    const rules = extractByRules("Visité ZBUSS. Usan Kumho y Double Coin, quieren probar Fenixway.", C5);
+    expect(rules.interes.marcasUsa).toEqual(["Kumho", "Double Coin"]);
+    expect(rules.interes.marcasInteres).toEqual(["Fenixway"]);
+    const summary = formatDraftSummary({ ...r, companyId: 2, candidates: [], canal: "voz", texto: "", messageAt: NOW_FRI.toISOString(), answered: [] } as never, { id: 2, razonSocial: "MOVIL BUS S.A.C", ruc: "20555901179" } as never);
+    expect(summary).toContain("• Interés: tracción · usa Continental · le interesa Linglong");
+  });
+
+  it("P5-E5: cargo con mayúscula inicial, como en las reglas", async () => {
+    const r = await run("Llamé a SERVOSA, hablé con la señora Ana Torres, la jefa de compras.", base({ tipo: "llamada", contacto: { nombre: "Ana Torres", cargo: "jefa de compras" } }));
+    expect(r.contacto?.cargo).toBe("Jefa de compras");
+  });
+});
+
+describe("P6-E1: una visita hecha no retrocede a cita agendada", () => {
+  it("visita + «quedamos en volver el jueves» con etapa del modelo cita_agendada -> visita_realizada", async () => {
+    const C6: ExtractContext = { now: new Date("2026-11-13T23:29:00Z"), vendedor: { id: 7, nombre: "Frank" }, companies: [{ id: 1, razonSocial: "ZBUSS S.A.C.", ruc: "20602221505" }] };
+    const model: ExtractedReport = { empresa: { nombre: "ZBUSS S.A.C.", ruc: "20602221505" }, tipo: "visita", contacto: null, interes: { medidas: [] }, proximaAccion: { texto: "Volver a visitar", fecha: null }, etapaSugerida: "cita_agendada", ocurrioEn: null, confianza: "alta", faltantes: [] };
+    const r = await extractReport("Visité ZBUSS el martes. Quedamos en volver el jueves.", C6, { client: fakeClient(model).client });
+    expect(r.report.etapaSugerida).toBe("visita_realizada");
+    const neg = await extractReport("Visité ZBUSS, estamos negociando el precio.", C6, { client: fakeClient({ ...model, etapaSugerida: "negociacion" }).client });
+    expect(neg.report.etapaSugerida).toBe("negociacion");
+  });
+});

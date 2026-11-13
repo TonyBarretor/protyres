@@ -376,3 +376,21 @@ describe("per-line manual price 'precio 259'", () => {
     }
   });
 });
+
+// pasada 7 con el modelo real (2026-11-13): el modelo devolvió "Aonalite" para "Aonaite ADR 778 295/80R22.5 x20"
+describe("with the LLM: a brand the LLM misspells falls back to the brand written in the message", () => {
+  it("Aonalite (unknown) -> Aonaite (in the text); a known brand from the LLM is kept", async () => {
+    llm.on = true;
+    try {
+      llm.answer = { lines: [{ size: "295/80R22.5", brand: "Aonalite", model: "ADR 778", quantity: 20, raw: "Aonaite ADR 778 295/80R22.5 x20" }] };
+      expect((await parseRequest("Aonaite ADR 778 295/80R22.5 x20")).lines[0].brand).toBe("Aonaite");
+      llm.answer = { lines: [{ size: "295/80R22.5", brand: "Aonalite", model: "ADR 778", quantity: 20 }] };
+      expect((await parseRequest("Aonaite ADR 778 295/80R22.5 x20")).lines[0].brand).toBe("Aonaite");
+      llm.answer = { lines: [{ size: "295/80R22.5", brand: "Falken", quantity: 6, raw: "falken 295/80R22.5 x6" }] };
+      expect((await parseRequest("falken 295/80R22.5 x6")).lines[0].brand).toBe("Falken");
+    } finally {
+      llm.on = false;
+      llm.answer = null;
+    }
+  });
+});
