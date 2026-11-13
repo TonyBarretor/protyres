@@ -78,7 +78,23 @@ interface DeepgramResponse {
   results?: { channels?: { alternatives?: { transcript?: string; confidence?: number }[] }[] };
 }
 
+/**
+ * Transcribe; si Deepgram rechaza los keyterms por su límite de tokens (400 "Keyterm limit exceeded"), reintenta con la
+ * primera mitad (los más prioritarios), hasta quedarse sin keyterms: mejor una transcripción sin ayuda que ninguna.
+ */
 export async function transcribe(audio: Buffer, mimeType: string, opts: TranscribeOptions): Promise<Transcription> {
+  let keyterms = opts.keyterms ?? [];
+  for (;;) {
+    try {
+      return await transcribeOnce(audio, mimeType, { ...opts, keyterms });
+    } catch (err) {
+      if (!(err instanceof TranscriptionError) || err.status !== 400 || !/keyterm/i.test(err.message) || !keyterms.length) throw err;
+      keyterms = keyterms.slice(0, Math.floor(keyterms.length / 2));
+    }
+  }
+}
+
+async function transcribeOnce(audio: Buffer, mimeType: string, opts: TranscribeOptions): Promise<Transcription> {
   const apiKey = opts.apiKey?.trim();
   if (!apiKey) throw new VoiceNotConfigured();
   if (!audio || audio.length === 0) throw new TranscriptionError("El audio está vacío");

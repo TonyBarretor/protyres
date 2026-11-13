@@ -20,6 +20,7 @@
  *  5. checkSizes: cada medida contra las del catálogo; si no está, las candidatas (misma medida con otra construcción,
  *     aro con ".5" que no se dijo, o ancho ±10 mm con el mismo perfil y aro). Nunca elige: quien llama pregunta.
  */
+import { fixCatalogTerms } from "./fuzzy";
 import { fold } from "../../tyre/brands";
 import { findTyreSizes, parseTyreSize, sizeLoose } from "../../tyre/spec";
 
@@ -115,7 +116,8 @@ function readWords(toks: Tok[], i: number): { value: number; end: number } | nul
 
 /** "doscientos noventa y cinco ochenta erre veintidós y medio" -> "295 80 erre 22.5". Las cifras escritas no cambian. */
 export function spokenToDigits(text: string): string {
-  const toks = tokenize((text ?? "").replace(/(?<![\p{L}])por\s+ciento(?![\p{L}])/giu, "%"));
+  // "por ciento", y "por 100" como lo escribe el smart_format de Deepgram tras una cifra ("12 por 100")
+  const toks = tokenize((text ?? "").replace(/(?<![\p{L}])por\s+ciento(?![\p{L}])/giu, "%").replace(/(\d)\s+por\s+100(?!\d|[.,]\d)/giu, "$1 %"));
   const out: string[] = [];
   let i = 0;
   while (i < toks.length) {
@@ -260,11 +262,17 @@ export interface DictatedQuote {
   sizes: string[];
   /** Líneas de llanta (sin cliente ni condiciones). */
   items: string[];
+  /** El cliente tal como se dictó ("" si no se dijo); en `text` va en su línea "para …". */
+  customer: string;
+  /** Marcas o diseños mal oídos corregidos contra el catálogo ("Fénix Suite" -> "Fenixway"). */
+  fixes: { from: string; to: string }[];
 }
 
 export interface DictationCatalog {
   /** Diseños del catálogo con su marca (para "Flama 77" -> "Fenixway Flama 77" si la marca no se dijo y es única). */
   designs?: { brand: string; model: string }[];
+  /** Marcas del catálogo (para corregir por parecido lo mal oído: voice/fuzzy.ts). */
+  brands?: string[];
 }
 
 const clean = (s: string) => s.replace(/\s+/g, " ").replace(/\s+([,.;])/g, "$1").replace(/^[\s,.;:]+|[\s,.;:]+$/g, "");
@@ -280,13 +288,18 @@ function withBrand(desc: string, catalog: DictationCatalog): string {
   if (!desc || !designs.length) return desc;
   const f = ` ${fold(desc)} `;
   if (designs.some((d) => f.includes(` ${fold(d.brand)} `))) return desc;
-  const hits = new Set(designs.filter((d) => fold(d.model).length > 2 && f.includes(` ${fold(d.model)} `)).map((d) => d.brand));
+  // también sin espacios entre letras y cifras ("ADR 778" dictado = diseño "ADR778")
+  const tight = (x: string) => fold(x).replace(/(?<=[a-z])\s+(?=\d)|(?<=\d)\s+(?=[a-z])/g, "");
+  const ft = ` ${tight(desc)} `;
+  const hits = new Set(designs.filter((d) => fold(d.model).length > 2 && (f.includes(` ${fold(d.model)} `) || ft.includes(` ${tight(d.model)} `))).map((d) => d.brand));
   return hits.size === 1 ? `${[...hits][0]} ${desc}` : desc;
 }
 
 /** "cotízame ocho Flama 77 en 295 80 22.5 a 254 para ZBUSS, a 45 días" -> líneas para el cotizador (ver la cabecera). */
 export function normalizeDictation(transcript: string, catalog: DictationCatalog = {}): DictatedQuote {
-  let t = normalizeSpoken(transcript).replace(QUOTE_HEAD, "");
+  // marcas y diseños mal oídos, por parecido contra el catálogo (antes de normalizar: compara palabras como se dijeron)
+  const fixed = catalog.designs?.length || catalog.brands?.length ? fixCatalogTerms(transcript, { brands: catalog.brands ?? [], designs: catalog.designs ?? [] }) : { text: transcript, changes: [] };
+  let t = normalizeSpoken(fixed.text).replace(QUOTE_HEAD, "");
   // condiciones
   const terms: string[] = [];
   for (const p of TERM_PATTERNS) {
@@ -361,7 +374,7 @@ export function normalizeDictation(transcript: string, catalog: DictationCatalog
     return clean([desc, marks.join(" "), qty ? `x${qty}` : "", price ? `precio ${price}` : ""].filter(Boolean).join(" "));
   });
   const lines = [...items.filter(Boolean), ...(customer ? [`para ${customer}`] : []), ...terms];
-  return { text: lines.join("\n"), sizes, items: items.filter(Boolean) };
+  return { text: lines.join("\n"), sizes, items: items.filter(Boolean), customer, fixes: fixed.changes };
 }
 
 // ── 4. correcciones dictadas ──

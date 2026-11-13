@@ -4,7 +4,7 @@
  *
  * Límite de Deepgram (docs de Keyterm Prompting, Nova-3): 500 tokens en total entre todos los keyterms; recomiendan
  * concentrarse en los 20–50 más importantes. Aquí: como mucho MAX_KEYTERMS (100) términos y un presupuesto estimado de
- * KEYTERM_TOKEN_BUDGET (450) tokens, con prioridad: fijos > aprendidos > [catálogo: 15 diseños, 10 marcas y 10 medidas
+ * KEYTERM_TOKEN_BUDGET (430) tokens, con prioridad: fijos > aprendidos > [catálogo: 15 diseños, 10 marcas y 10 medidas
  * principales] > clientes > marcas > medidas > [resto del catálogo]. El tramo del catálogo (corrida D, punto 8: cotizar por
  * voz) va antes que los clientes para que un vendedor con muchas empresas no lo deje fuera; sin catálogo, como antes.
  */
@@ -15,7 +15,7 @@ import type { VoiceCatalog } from "./catalog";
 
 export const MAX_KEYTERMS = 100;
 /** Margen bajo los 500 tokens de Deepgram (la estimación por caracteres es aproximada). */
-export const KEYTERM_TOKEN_BUDGET = 450;
+export const KEYTERM_TOKEN_BUDGET = 430;
 
 /** Siempre van: nombres propios del negocio que el modelo genérico escribe mal. */
 export const FIXED_KEYTERMS = ["Fenixway", "Flama 77", "enllante", "CPK"];
@@ -41,6 +41,8 @@ export const COMMON_SIZES = [
 export const DEFAULT_REPLACEMENTS: { term: string; meaning: string }[] = [
   { term: "flama setenta y siete", meaning: "Flama 77" },
   { term: "fenix way", meaning: "Fenixway" },
+  // prueba con Deepgram real (2026-11-13): "Fenixway" dictado llegó como "Fénix Suite"
+  { term: "fénix suite", meaning: "Fenixway" },
   { term: "en llante", meaning: "enllante" },
 ];
 
@@ -62,9 +64,12 @@ export interface KeytermSources {
 /** Lo principal del catálogo que va antes que los clientes (ver la cabecera). */
 export const CATALOG_TOP = { designs: 15, brands: 10, sizes: 10 };
 
-/** Tokens estimados de un término (≈3 caracteres por token en español y siglas, +1 de separación). */
+/**
+ * Tokens estimados de un término, +1 de separación. Medido con Deepgram real (2026-11-13): 100 términos con 869
+ * caracteres (razones sociales, marcas chinas, siglas) pasaron de 500 tokens, o sea ≈1,7 caracteres por token.
+ */
 export function estimateTokens(term: string): number {
-  return Math.ceil(term.length / 3) + 1;
+  return Math.ceil(term.length / 1.7) + 1;
 }
 
 /** Lista de keyterms para Deepgram: sin repetidos (sin distinguir mayúsculas), en orden de prioridad, dentro del límite. */

@@ -3,6 +3,7 @@
  * Misma normalización que bot/companies.ts (sin tildes, sin terminación societaria); copiada aquí para que las librerías
  * de voz y reportes no dependan del registro de comandos del bot.
  */
+import { matchSpokenName, phoneticKey } from "../voice/fuzzy";
 import { foldText } from "../store/shared";
 
 const LEGAL_SUFFIX = /[\s,]+(?:s\.?\s?a\.?\s?c\.?(?:\s?s\.?)?|s\.?\s?a\.?\s?a\.?|s\.?\s?a\.?|e\.?\s?i\.?\s?r\.?\s?l\.?|s\.?\s?r\.?\s?l\.?|ltda\.?|sociedad\s+an[oó]nima(?:\s+cerrada)?)\s*$/i;
@@ -17,6 +18,8 @@ export interface CompanyRef {
 /** "Zbuss S.A.C." -> "zbuss". */
 export function nameKey(name: string): string {
   return foldText(name.trim().replace(LEGAL_SUFFIX, ""))
+    // "PECHE'S" = "peches" (el apóstrofo no separa palabras)
+    .replace(/['’´`]/g, "")
     .replace(/[^a-z0-9ñ]+/g, " ")
     .trim();
 }
@@ -63,8 +66,30 @@ export function matchCompanies(text: string, companies: CompanyRef[]): CompanyRe
   const all = companies.filter((c) => words(c).length > 0 && words(c).every((w) => contains(t, w)));
   if (all.length) return all;
   // alguna palabra distintiva larga ("andino" -> Expreso Andino y Expreso Andino Cargo): candidatas para preguntar
-  return companies.filter((c) => words(c).some((w) => w.length >= 5 && contains(t, w)));
+  const some = companies.filter((c) => words(c).some((w) => w.length >= 5 && contains(t, w)));
+  if (some.length) return some;
+  // por cómo suena (nota de voz: Deepgram escribió "ZBUS" por ZBUSS): solo una clara, sobre nombres propios del texto
+  return spokenCompany(text, companies);
 }
+
+/** Ventanas de 1 a 3 palabras que empiezan con mayúscula, contra las empresas por clave fonética (voice/fuzzy.ts). */
+function spokenCompany(text: string, companies: CompanyRef[]): CompanyRef[] {
+  const words = [...text.matchAll(/[\p{L}][\p{L}'’]*/gu)].map((m) => m[0]);
+  let best: { c: CompanyRef; s: number } | null = null;
+  for (let i = 0; i < words.length; i++) {
+    if (!/^\p{Lu}/u.test(words[i])) continue;
+    for (let n = 1; n <= 3 && i + n <= words.length; n++) {
+      const phrase = words.slice(i, i + n).join(" ");
+      if (phoneticKey(phrase).length < 4) continue;
+      const m = matchSpokenName(phrase, companies.map((c) => ({ ...c, name: c.razonSocial })));
+      if (m.kind === "clear" && m.best && m.score >= SPOKEN_COMPANY_MIN && (!best || m.score > best.s)) best = { c: companies.find((c) => c.id === m.best!.id)!, s: m.score };
+    }
+  }
+  return best ? [best.c] : [];
+}
+
+/** Más estricto que en la cotización (allí se dice qué se eligió; aquí el texto es largo y hay más ventanas). */
+export const SPOKEN_COMPANY_MIN = 0.93;
 
 /** La empresa del nombre/RUC que dio el modelo, o candidatas si hay varias. */
 export function resolveCompanyRef(empresa: { nombre: string; ruc?: string | null } | null, companies: CompanyRef[]): { companyId: number | null; candidates: CompanyRef[] } {

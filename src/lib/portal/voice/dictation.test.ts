@@ -134,3 +134,21 @@ describe("correcciones por voz", () => {
     expect(normalizeVoiceCorrection("Listo")).toEqual({ kind: "confirm" });
   });
 });
+
+// ── pasada 2 con Deepgram real (2026-11-13) ──
+describe("Deepgram escribe «por ciento» como «por 100»", () => {
+  it("margen 12 por 100 / descuento de 5 por 100: es porcentaje y no se pega al cliente", () => {
+    const a = normalizeDictation("Cotiza 20 ADR 778 en 295, 80 r 22.5, para Cruz del Sur, margen 12 por 100.");
+    expect(a.customer).toBe("Cruz del Sur");
+    expect(a.text).toContain("margen 12%");
+    const b = normalizeDictation("Cotízame 4 Fenixway Flama 89 en 275, 80 r 22.5, a 290, para RANSA, a 30 días, con descuento de 5 por 100.");
+    expect(b.customer).toBe("RANSA");
+    expect(b.text).toContain("dscto 5%");
+    expect(b.text).toContain("plazo: 30 días");
+  });
+
+  it("«ADR 778» dictado con espacio recibe la marca del diseño ADR778 (única)", () => {
+    const d = normalizeDictation("Cotiza 20 ADR 778 en 295 80 r 22.5", { designs: [{ brand: "Aonaite", model: "ADR778" }, { brand: "Fenixway", model: "Flama 77" }] });
+    expect(d.items[0]).toBe("Aonaite ADR 778 295/80R22.5 x20");
+  });
+});

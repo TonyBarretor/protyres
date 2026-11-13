@@ -166,3 +166,31 @@ describe("vocabulario", () => {
     expect(src).toMatch(/create unique index if not exists vocabulary_term_lower_idx on vocabulary \(lower\(term\)\)/);
   });
 });
+
+// ── prueba con Deepgram real (2026-11-13): con 9 empresas asignadas Deepgram rechazó la lista entera (400 "Keyterm limit
+// exceeded. The maximum number of tokens across all keyterms is 500"): la estimación de 3 caracteres por token era corta ──
+describe("keyterms: límite real de Deepgram", () => {
+  const COMPANIES = ["ZBUSS S.A.C.", "TRANSPORTES HAGEMSA S.A.C.", "SERVOSA CARGO S.A.C.", "TRANSPORTES CRUZ DEL SUR S.A.C.", "MOVIL BUS S.A.C", "TRANSPORTES ZETRAMSA S.A.C.", "SHALOM EMPRESARIAL S.A.C.", "RANSA COMERCIAL S.A.C", "TRANSPORTES PECHE'S S.A.C."];
+
+  it("la lista que Deepgram rechazó (≈870 caracteres) ya no cabe en el presupuesto", () => {
+    const k = buildKeyterms({ companies: COMPANIES });
+    // Deepgram contó > 500 tokens con 869 caracteres en 100 términos: la lista debe quedar bastante por debajo
+    expect(k.join(" ").length).toBeLessThanOrEqual(650);
+    for (const c of ["ZBUSS", "TRANSPORTES PECHE'S", "Fenixway"]) expect(k).toContain(c);
+  });
+
+  it("si Deepgram igual rechaza por el límite, reintenta con menos keyterms en vez de fallar", async () => {
+    const urls: string[] = [];
+    const fetchImpl = (async (url: string | URL | Request) => {
+      urls.push(String(url));
+      if (urls.length === 1) return new Response(JSON.stringify({ err_msg: "Bad Request: Keyterm limit exceeded. The maximum number of tokens across all keyterms is 500." }), { status: 400 });
+      return new Response(JSON.stringify({ results: { channels: [{ alternatives: [{ transcript: "hola", confidence: 0.9 }] }] } }), { status: 200 });
+    }) as typeof fetch;
+    const terms = Array.from({ length: 40 }, (_, i) => `Termino ${i}`);
+    const r = await transcribe(Buffer.from("x"), "audio/ogg", { apiKey: "k", keyterms: terms, fetchImpl });
+    expect(r.text).toBe("hola");
+    expect(urls).toHaveLength(2);
+    expect((urls[1].match(/keyterm=/g) ?? []).length).toBe(20);
+    expect(urls[1]).toContain("keyterm=Termino+0"); // se quedan los primeros (más prioritarios)
+  });
+});

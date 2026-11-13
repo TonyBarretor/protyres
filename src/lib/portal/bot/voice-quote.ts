@@ -18,7 +18,9 @@ import { checkSizes, displaySize, normalizeDictation, normalizeSpoken, normalize
 import { applyVocabulary } from "../voice/vocabulary";
 import { askAgain } from "./pause";
 import { registerPausable, registerPendingHandler, replyButtons, type PortalContext } from "./registry";
-import { fetchVoice, logTranscript } from "./report";
+import { fetchVoice, logTranscript, sellerCompanies } from "./report";
+import { matchSpokenName } from "../voice/fuzzy";
+import { shortName } from "./companies";
 import { explicitQuoteStart, strongTyreQuote } from "./router";
 import { clearPending, setPending, type PendingStep } from "./state";
 
@@ -68,9 +70,107 @@ export async function startVoiceQuote(ctx: PortalContext, transcript: string): P
   await logTranscript(ctx, transcript);
   await ctx.reply(heardLine(transcript));
   const catalog = await catalogOf(ctx);
-  const d = normalizeDictation(applyVocabulary(transcript, await learned(ctx)), { designs: catalog?.designs });
+  const d = normalizeDictation(applyVocabulary(transcript, await learned(ctx)), { designs: catalog?.designs, brands: catalog?.brands });
+  const notes = d.fixes.length ? [`🔤 Corregí lo que oí: ${d.fixes.map((f) => `«${f.from}» → ${f.to}`).join(", ")}.`] : [];
+  if (!d.customer) {
+    if (notes.length) await ctx.reply(notes.join("\n"));
+    return continueVoiceQuote(ctx, d.text, transcript);
+  }
+  // el cliente dictado contra las empresas del vendedor y los clientes de cotizaciones anteriores (nunca a ciegas)
+  const known = await knownCustomers(ctx, catalog?.customers ?? []);
+  const exact = known.find((k) => foldName(k.name) === foldName(d.customer));
+  const m = exact ? null : matchSpokenName(d.customer, known);
+  if (m?.kind === "clear" && m.best) {
+    notes.push(`👤 Cliente: entendí «${d.customer}» → *${m.best.name}*`);
+    await ctx.reply(notes.join("\n"));
+    return continueVoiceQuote(ctx, withCustomer(d.text, d.customer, m.best.name), transcript);
+  }
+  if (m?.kind === "doubt") {
+    if (notes.length) await ctx.reply(notes.join("\n"));
+    const options = m.candidates.slice(0, 2).map((c) => c.name);
+    const step: Omit<VoiceCustomerStep, "createdAt"> = { kind: VOICE_CUSTOMER, text: d.text, transcript, spoken: d.customer, options, captureText: true };
+    await setPending(ctx.store, ctx.from, step, ctx.now);
+    await replyButtons(ctx, customerQuestion(d.customer, options), customerButtons(d.customer, options));
+    return;
+  }
+  if (!exact) notes.push(`⚠️ «${d.customer}» no está entre tus empresas ni los clientes conocidos: lo dejo tal cual. Si no es así, corrígelo (p. ej. *para ZBUSS*).`);
+  if (notes.length) await ctx.reply(notes.join("\n"));
   await continueVoiceQuote(ctx, d.text, transcript);
 }
+
+// ── cliente dictado (prueba con Deepgram real, 2026-11-13: "ZBUSS" llegó como "Septa BUSS") ──
+
+export const VOICE_CUSTOMER = "voice_customer";
+
+/** Esperando que el vendedor elija el cliente dictado entre las parecidas (o lo deje tal cual). */
+export interface VoiceCustomerStep extends PendingStep {
+  kind: typeof VOICE_CUSTOMER;
+  /** El texto normalizado para el cotizador, con el cliente como se dictó. */
+  text: string;
+  transcript: string;
+  /** El cliente como se dictó. */
+  spoken: string;
+  /** Razones sociales candidatas (máx. 2: el tercer botón es "Dejar «…»"). */
+  options: string[];
+  captureText: true;
+}
+
+const foldName = (s: string) =>
+  s
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+
+async function knownCustomers(ctx: PortalContext, quoted: string[]): Promise<{ id: string; name: string }[]> {
+  const mine = await sellerCompanies(ctx.store, ctx.user.id).catch(() => []);
+  const out = new Map<string, { id: string; name: string }>();
+  for (const c of mine) out.set(foldName(c.razonSocial), { id: `c${c.id}`, name: c.razonSocial });
+  for (const q of quoted) if (!out.has(foldName(q))) out.set(foldName(q), { id: `q:${q}`, name: q });
+  return [...out.values()];
+}
+
+/** Cambia la línea "para <dictado>" por "para <cliente>". */
+export function withCustomer(text: string, spoken: string, name: string): string {
+  return text
+    .split("\n")
+    .map((l) => (l === `para ${spoken}` ? `para ${name}` : l))
+    .join("\n");
+}
+
+const clip20 = (s: string) => (s.length > 20 ? `${s.slice(0, 19).trimEnd()}…` : s);
+const keepTitle = (spoken: string) => clip20(`Dejar «${spoken.length > 11 ? `${spoken.slice(0, 10).trimEnd()}…` : spoken}»`);
+const customerQuestion = (spoken: string, options: string[]) =>
+  `¿Para qué cliente es? Entendí «${spoken}», que se parece a ${options.map((o) => `*${o}*`).join(" y a ")}.`;
+function customerButtons(spoken: string, options: string[]) {
+  return [...options.map((o, i) => ({ id: `cliente ${i + 1}`, title: clip20(shortName(o)) })), { id: "cliente tal cual", title: keepTitle(spoken) }];
+}
+
+/** Respuesta a "¿para qué cliente es?": el botón (cliente N / tal cual), el número o el nombre de una de las opciones. */
+registerPendingHandler(VOICE_CUSTOMER, async (ctx, step, rawText) => {
+  const s = step as VoiceCustomerStep;
+  const t = foldName(rawText).replace(/^cliente\s+/, "");
+  let name: string | null = null;
+  if (/^(?:tal cual|dejar(?:lo)?(?: asi| tal cual)?|ninguno|ninguna)$/.test(t)) name = s.spoken;
+  else if (/^\d$/.test(t) && s.options[parseInt(t, 10) - 1]) name = s.options[parseInt(t, 10) - 1];
+  else name = s.options.find((o) => foldName(o) === t || foldName(shortName(o)) === t) ?? null;
+  if (!name) return false;
+  await clearPending(ctx.store, ctx.from);
+  await continueVoiceQuote(ctx, name === s.spoken ? s.text : withCustomer(s.text, s.spoken, name), s.transcript);
+  return true;
+});
+
+registerPausable(VOICE_CUSTOMER, {
+  async describe(_ctx, step) {
+    const s = step as VoiceCustomerStep;
+    return { companyId: null, label: `cotización por voz para «${s.spoken}»`, missing: "falta elegir el cliente" };
+  },
+  async resume(ctx, step, prefix) {
+    const s = step as VoiceCustomerStep;
+    await askAgain(ctx, step, prefix, customerQuestion(s.spoken, s.options), customerButtons(s.spoken, s.options));
+  },
+});
 
 /** Valida las medidas del texto contra el catálogo: si están, al cotizador; si no, pregunta y espera en `voice_size`. */
 async function continueVoiceQuote(ctx: PortalContext, text: string, transcript: string): Promise<void> {
@@ -175,7 +275,7 @@ export async function voiceCorrection(ctx: PortalContext, transcript: string): P
   // con medida: otro pedido (el cotizador pregunta si es un cambio, otra llanta o una cotización nueva)
   if (findTyreSizes(c.text).length) {
     const catalog = await catalogOf(ctx);
-    const d = normalizeDictation(c.text, { designs: catalog?.designs });
+    const d = normalizeDictation(c.text, { designs: catalog?.designs, brands: catalog?.brands });
     await continueVoiceQuote(ctx, d.text, transcript);
     return;
   }

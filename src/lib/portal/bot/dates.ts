@@ -273,3 +273,23 @@ export function formatCitaDate(d: Date, allDay = false): string {
   const hm = `${String(local.getUTCHours()).padStart(2, "0")}:${String(local.getUTCMinutes()).padStart(2, "0")}`;
   return `${WEEKDAY_LABEL[local.getUTCDay()]} ${dd}/${mm}${allDay ? "" : ` ${hm}`}`;
 }
+
+/**
+ * Días aproximados que se dicen en un reporte (no en una cita, que pide día y hora exactos): "la próxima semana" / "la
+ * semana que viene" / "la otra semana" = el lunes siguiente; "fin de mes" / "a fines de mes" = el último día del mes en
+ * curso (Lima). Medianoche de Lima; null si no hay ninguno.
+ */
+export function parseVagueDay(input: string, now: Date): Date | null {
+  const t = foldSameLength(input.normalize("NFC"));
+  const today = limaStartOfDay(now);
+  if (/(?<![a-z])(?:(?:la\s+)?(?:proxima|siguiente|otra)\s+semana|(?:la\s+)?semana\s+que\s+viene)(?![a-z])/.test(t)) {
+    const dow = new Date(today.getTime() - 5 * 60 * 60 * 1000).getUTCDay();
+    return addDays(today, ((8 - dow) % 7) || 7);
+  }
+  if (/(?<![a-z])(?:a\s+)?(?:fin|fines|finales)\s+de(?:l)?\s+mes(?![a-z])/.test(t)) {
+    const [y, m] = limaDateKey(now).split("-").map(Number);
+    const last = new Date(Date.UTC(y, m, 0)).getUTCDate();
+    return parseLimaLocal(`${y}-${String(m).padStart(2, "0")}-${String(last).padStart(2, "0")}T00:00`);
+  }
+  return null;
+}

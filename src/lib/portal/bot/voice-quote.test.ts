@@ -128,6 +128,12 @@ const DICTADO = "Cotízame ocho Flama 77 en 295 80 22.5 a 254 para Transportes B
 const ESCRITO = "Fenixway Flama 77 295/80R22.5 x8 precio 254\npara Transportes Beta\nplazo: 45 días";
 
 describe("cotización por voz: mismo flujo que el texto", () => {
+  // "Transportes Beta" es un cliente conocido (cotización anterior, sin ítems): el cliente dictado coincide tal cual y no
+  // hay aviso de cliente desconocido (ese caso: "ninguna parecida: sigue con lo dicho, pero avisa")
+  beforeEach(async () => {
+    await prices.saveQuote({ number: "COT-0900", date: "2026-10-01", validUntil: "2026-10-08", validityDays: 7, currency: "USD", customer: { company: "Transportes Beta" }, items: [], subtotal: 0, taxPct: 18, taxLabel: "IGV", tax: 0, total: 0 } as never);
+  });
+
   it("🎙 Escuché (literal, una línea) y luego el mismo Entendí y las mismas opciones que el texto escrito; sin PDF hasta el ok", async () => {
     const typed = await say(text(ESCRITO, STRANGER));
     const out = await say(voice(DICTADO));
@@ -344,5 +350,76 @@ describe("cotizador: un pedido de contrato por voz tampoco arma el PDF sin ok", 
     expect(bodies(spoken).join("\n")).toContain("Responde *ok* para armar el PDF");
     const ok = await run(text("ok"));
     expect(docs(ok).length).toBe(docs(typed).length);
+  });
+});
+
+// ── prueba con Deepgram real (2026-11-13): cliente y marca mal oídos ──
+describe("cotización por voz: el cliente dictado contra empresas y clientes conocidos", () => {
+  const own = async (razonSocial: string, ruc: string) => {
+    const frank = (await portal.getUserByWhatsapp(FRANK))!;
+    const r = await portal.upsertCompanies([{ ruc, razonSocial, sector: "pasajeros", departamento: "LIMA", unidades: 20, llantasPiso: 120 }]);
+    await portal.setOwner(r.ids[ruc], frank.id);
+  };
+  const said = (cliente: string) => `Cotízame ocho Flama 77 en 295 80 22.5 a 254 para ${cliente}, a 45 días.`;
+
+  it("«Septa BUSS» -> ZBUSS S.A.C. (claro): lo usa y lo dice", async () => {
+    await own("ZBUSS S.A.C.", "20602221505");
+    await own("TRANSPORTES ANDES DEL PERU S.A.C.", "20999000011");
+    const out = bodies(await say(voice(said("Septa BUSS")))).join("\n");
+    expect(out).toContain("👤 Cliente: entendí «Septa BUSS» → *ZBUSS S.A.C.*");
+    expect(out).toContain("Entendí:");
+    expect(out).toContain("ZBUSS S.A.C.");
+    expect(out).not.toMatch(/Septa BUSS\s*·|· Septa BUSS/);
+    expect(await step()).toBe("choose");
+  });
+
+  it("dos parecidas: pregunta con botones y sigue con la elegida", async () => {
+    await own("ZBUSS S.A.C.", "20602221505");
+    await own("TRANSPORTES ZETA BUS EXPRESS S.A.C.", "20999000099");
+    const out = bodies(await say(voice(said("Zeta Bus")))).join("\n");
+    expect(out).toContain("¿Para qué cliente es?");
+    expect(await step()).toBe("idle"); // aún no cotiza
+    const titles = titlesOf(client.interactives().at(-1)!);
+    expect(titles).toHaveLength(3);
+    expect(titles.at(-1)).toMatch(/^Dejar «/);
+    const picked = bodies(await say(press(titles.find((t) => /ZBUSS/.test(t))!))).join("\n");
+    expect(picked).toContain("Entendí:");
+    expect(picked).toContain("ZBUSS S.A.C.");
+    expect(await step()).toBe("choose");
+  });
+
+  it("ninguna parecida: sigue con lo dicho, pero avisa", async () => {
+    await own("ZBUSS S.A.C.", "20602221505");
+    const out = bodies(await say(voice(said("Transportes Gamma")))).join("\n");
+    expect(out).toContain("⚠️ «Transportes Gamma» no está entre tus empresas ni los clientes conocidos");
+    expect(out).toContain("Entendí:");
+  });
+
+  it("cliente conocido de cotizaciones anteriores («Mobil Bus» -> MOVIL BUS S.A.C.)", async () => {
+    await prices.saveQuote({ number: "COT-0001", date: "2026-11-01", validUntil: "2026-11-08", validityDays: 7, currency: "USD", customer: { company: "MOVIL BUS S.A.C." }, items: [], subtotal: 0, taxPct: 18, taxLabel: "IGV", tax: 0, total: 0 } as never);
+    const out = bodies(await say(voice(said("Mobil Bus")))).join("\n");
+    expect(out).toContain("👤 Cliente: entendí «Mobil Bus» → *MOVIL BUS S.A.C.*");
+  });
+});
+
+describe("cotización por voz: marca mal oída contra el catálogo", () => {
+  it("«Fénix Uey Flama 77» -> Fenixway Flama 77 (y lo dice)", async () => {
+    const out = bodies(await say(voice("Cotízame ocho Fénix Uey Flama 77 en 295 80 22.5 a 254"))).join("\n");
+    expect(out).toContain("Entendí:\nFenixway 295/80R22.5 FLAMA 77 x8 precio 254");
+    expect(out).toContain("«Fénix Uey» → Fenixway");
+  });
+});
+
+describe("reporte por voz: marca mal oída contra el catálogo", () => {
+  it("«Fénix Uey» en un reporte dictado queda como Fenixway en lo que se guarda", async () => {
+    const frank = (await portal.getUserByWhatsapp(FRANK))!;
+    const r = await portal.upsertCompanies([{ ruc: "20602221505", razonSocial: "ZBUSS S.A.C.", sector: "pasajeros", departamento: "LIMA", unidades: 85, llantasPiso: 500 }]);
+    await portal.setOwner(r.ids["20602221505"], frank.id);
+    await say(voice("Visité ZBUSS, me atendió Carlos Quispe, el jefe de flota. Quieren probar Fénix Uey en direccional."));
+    await say("sí");
+    const [act] = await portal.listActivities({ companyId: r.ids["20602221505"] });
+    const original = String((act?.data as { textoOriginal?: string } | null)?.textoOriginal ?? "");
+    expect(original).toContain("quieren probar Fenixway en direccional".replace(/^q/, "Q"));
+    expect(original).not.toContain("Fénix Uey");
   });
 });

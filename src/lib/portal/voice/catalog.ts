@@ -13,6 +13,8 @@ export interface VoiceCatalog {
   designs: { brand: string; model: string }[];
   /** Medidas canónicas ("295/80R22.5"), lo propio primero y luego las más presentes. */
   sizes: string[];
+  /** Clientes de cotizaciones anteriores (empresa), de la más reciente a la más antigua (para el cliente dictado). */
+  customers?: string[];
 }
 
 type Row = Pick<PriceRow, "brand" | "model" | "size" | "isTyre" | "kind">;
@@ -50,7 +52,16 @@ export const VOICE_CATALOG_TTL_MS = 10 * 60 * 1000;
 /** El catálogo del store del cotizador, con caché de VOICE_CATALOG_TTL_MS (solo se lee cuando llega una nota de voz). */
 export async function voiceCatalogFromStore(store: PriceStore, now = Date.now()): Promise<VoiceCatalog> {
   if (cache && cache.store === store && now - cache.at < VOICE_CATALOG_TTL_MS) return cache.catalog;
-  const catalog = voiceCatalogFromRows(await store.allRows());
+  const [rows, quotes] = await Promise.all([store.allRows(), store.listQuotes(300).catch(() => [])]);
+  const seen = new Set<string>();
+  const customers: string[] = [];
+  for (const q of quotes) {
+    const name = q.customer?.company?.trim();
+    if (!name || seen.has(name.toLowerCase())) continue;
+    seen.add(name.toLowerCase());
+    customers.push(name);
+  }
+  const catalog = { ...voiceCatalogFromRows(rows), customers };
   cache = { at: now, store, catalog };
   return catalog;
 }

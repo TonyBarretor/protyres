@@ -277,3 +277,116 @@ describe("draftToRecords", () => {
     expect(() => draftToRecords(draftOf({ ...GOOD, empresa: null }), { userId: 7, now: later, opportunity: null, contacts: [] })).toThrow(/empresa/);
   });
 });
+
+// ── prueba con Deepgram real (2026-11-13): contacto y fechas por reglas ──
+import { detectContactName, detectDates, extractByRules } from "./extract";
+
+describe("reglas: contacto con nombre y cargo", () => {
+  it("«me atendió Carlos Quispe, el jefe de flota» lleva nombre y cargo", () => {
+    const said = "Visité ZBUSS hoy en la mañana. Me atendió Carlos Quispe, el jefe de flota. Tienen 82 ómnibus.";
+    expect(detectContactName(said)).toBe("Carlos Quispe");
+    const r = extractByRules(said, { now: new Date("2026-11-13T15:00:00Z"), vendedor: { id: 1, nombre: "Frank" }, companies: [{ id: 9, razonSocial: "ZBUSS S.A.C.", ruc: "20602221505" }] });
+    expect(r.contacto).toEqual({ nombre: "Carlos Quispe", cargo: "Jefe de flota" });
+  });
+
+  it("otras formas: me recibió, nos atendió, hablé con, la señora", () => {
+    expect(detectContactName("me recibió Rosa Huamán, gerente general")).toBe("Rosa Huamán");
+    expect(detectContactName("Nos atendió el ingeniero Luis Ramos")).toBe("Luis Ramos");
+    expect(detectContactName("hablé con la señora Ana Torres")).toBe("Ana Torres");
+    expect(detectContactName("me atendió el jefe de flota")).toBeNull();
+  });
+});
+
+describe("reglas: fechas relativas en America/Lima", () => {
+  // viernes 13/11/2026 10:00 en Lima
+  const NOW_FRI = new Date("2026-11-13T15:00:00Z");
+  const next = (text: string, now = NOW_FRI) => detectDates(text, now).proximaAccion?.fecha ?? null;
+
+  it("«hoy en la mañana … volver a llamar el lunes» -> ocurrió hoy, próxima acción el lunes 16/11", () => {
+    const d = detectDates("Visité ZBUSS hoy en la mañana. Quedamos en volver a llamar el lunes.", NOW_FRI);
+    expect(d.proximaAccion).toEqual({ texto: "Llamar", fecha: "2026-11-16T09:00:00-05:00" });
+    expect(d.ocurrioEn?.slice(0, 10)).toBe("2026-11-13");
+  });
+
+  it("cada día de la semana es el próximo (hoy viernes -> el viernes de la otra semana)", () => {
+    const want: Record<string, string> = { lunes: "16", martes: "17", miércoles: "18", jueves: "19", viernes: "20", sábado: "14", domingo: "15" };
+    for (const [dia, dd] of Object.entries(want)) expect(next(`quedamos en llamar el ${dia}`)?.slice(0, 10), dia).toBe(`2026-11-${dd}`);
+  });
+
+  it("mañana, pasado mañana, la próxima semana, fin de mes", () => {
+    expect(next("quedamos en volver mañana")?.slice(0, 10)).toBe("2026-11-14");
+    expect(next("quedamos en volver pasado mañana")?.slice(0, 10)).toBe("2026-11-15");
+    expect(next("quedamos en llamar la próxima semana")?.slice(0, 10)).toBe("2026-11-16");
+    expect(next("quedamos en llamar la semana que viene")?.slice(0, 10)).toBe("2026-11-16");
+    expect(next("quedamos en enviar la cotización a fin de mes")?.slice(0, 10)).toBe("2026-11-30");
+    expect(next("quedamos en enviar la cotización a fin de mes", new Date("2026-12-31T20:00:00Z"))?.slice(0, 10)).toBe("2026-12-31");
+  });
+
+  it("zona Lima: el viernes a las 23:00 de Lima ya es sábado en UTC, «mañana» sigue siendo el sábado", () => {
+    expect(next("quedamos en llamar mañana", new Date("2026-11-14T04:00:00Z"))?.slice(0, 10)).toBe("2026-11-14");
+    expect(next("quedamos en llamar el lunes", new Date("2026-11-14T04:00:00Z"))?.slice(0, 10)).toBe("2026-11-16");
+  });
+
+  it("«visité hoy» temprano (8:00, antes de las 9:00 por defecto) es cuándo ocurrió, no una próxima acción", () => {
+    const d = detectDates("Visité ZBUSS hoy.", new Date("2026-11-13T13:00:00Z"));
+    expect(d.proximaAccion).toBeNull();
+    expect(d.ocurrioEn).toBe("2026-11-13T08:00:00-05:00");
+  });
+
+  it("«en la mañana» es la mañana de ese día, no «mañana»", () => {
+    const d = detectDates("Visité ZBUSS hoy en la mañana.", NOW_FRI);
+    expect(d.proximaAccion).toBeNull();
+    expect(d.ocurrioEn?.slice(0, 10)).toBe("2026-11-13");
+  });
+});
+
+describe("modelo que falla (clave inválida): no en silencio", () => {
+  it("cae a reglas y dice por qué (llmError)", async () => {
+    const create = vi.fn(async () => {
+      throw Object.assign(new Error('401 {"type":"error","error":{"type":"authentication_error","message":"invalid x-api-key"}}'), { status: 401 });
+    });
+    const r = await extractReport("visité a zbuss", CTX, { client: { messages: { create } } as unknown as LlmClient });
+    expect(r.via).toBe("rules");
+    expect(r.llmError).toMatch(/401.*invalid x-api-key/);
+  });
+
+  it("sin clave: via reglas sin error (no es una falla)", async () => {
+    const r = await extractReport("visité a zbuss", CTX, { client: null });
+    expect(r.via).toBe("rules");
+    expect(r.llmError).toBeUndefined();
+  });
+});
+
+// ── pasada 2 con Deepgram real (2026-11-13) ──
+import { matchCompanies } from "./match";
+
+describe("empresa en el reporte dictado", () => {
+  const C = [
+    { id: 1, razonSocial: "ZBUSS S.A.C.", ruc: "20602221505" },
+    { id: 2, razonSocial: "TRANSPORTES PECHE'S S.A.C.", ruc: "20454948450" },
+    { id: 3, razonSocial: "SHALOM EMPRESARIAL S.A.C.", ruc: "20512528458" },
+  ];
+  it("apóstrofo: «transportes PECHES» -> TRANSPORTES PECHE'S", () => {
+    expect(matchCompanies("Llamé a transportes PECHES. Me atendió Carmen Ríos.", C).map((c) => c.id)).toEqual([2]);
+  });
+  it("por cómo suena, solo si es claro: «Visité ZBUS el martes» -> ZBUSS", () => {
+    expect(matchCompanies("Visité ZBUS el martes. Hablé con Carlos Quispe.", C).map((c) => c.id)).toEqual([1]);
+    expect(matchCompanies("Visité a un cliente nuevo el martes.", C)).toEqual([]);
+  });
+});
+
+describe("fechas en pasado y próxima acción «volver»", () => {
+  const NOW_FRI = new Date("2026-11-13T15:00:00Z");
+  it("«Visité ZBUSS el martes» (dicho el viernes) ocurrió el martes pasado 10/11, no es próxima acción", () => {
+    const d = detectDates("Visité ZBUSS el martes. Hablé con Carlos Quispe.", NOW_FRI);
+    expect(d.ocurrioEn?.slice(0, 10)).toBe("2026-11-10");
+    expect(d.proximaAccion).toBeNull();
+    const d2 = detectDates("Visité ZBUSS el martes. Quedamos en volver el jueves.", NOW_FRI);
+    expect(d2.ocurrioEn?.slice(0, 10)).toBe("2026-11-10");
+    expect(d2.proximaAccion?.fecha?.slice(0, 10)).toBe("2026-11-19");
+  });
+  it("«quedamos en volver a fin de mes» -> Visitar", () => {
+    expect(detectDates("Quedamos en volver a fin de mes.", NOW_FRI).proximaAccion?.texto).toBe("Visitar");
+    expect(detectDates("Quedamos en volver a llamar el lunes.", NOW_FRI).proximaAccion?.texto).toBe("Llamar");
+  });
+});

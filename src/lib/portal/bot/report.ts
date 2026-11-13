@@ -17,6 +17,7 @@
  * Dependencias inyectables (tests y simulador) con configureReportBot: cliente de Anthropic, fetch de Deepgram, descarga
  * de medios y registro de mensajes. La descarga inyectada con configureReportBot manda sobre ctx.downloadMedia (el simulador no tiene Graph API).
  */
+import { fixCatalogTerms } from "../voice/fuzzy";
 import { getStore } from "../../store";
 import type { MessageLogEntry } from "../../store/types";
 import { GraphWhatsAppClient, graphConfigFromEnv } from "../../whatsapp/client";
@@ -251,8 +252,14 @@ export async function interpretReport(ctx: PortalContext, rawText: string, opts:
     await ctx.reply("Cuéntame el reporte: con qué empresa, si fue visita o llamada, con quién y qué quedó pendiente.");
     return;
   }
+  // por voz: marcas y diseños mal oídos, por parecido contra el catálogo ("Fénix Suite" -> "Fenixway")
+  if (canal === "voz" && ctx.voiceCatalog) {
+    const catalog = await ctx.voiceCatalog().catch(() => null);
+    if (catalog) text = fixCatalogTerms(text, { brands: catalog.brands, designs: catalog.designs }).text;
+  }
   const ectx = await extractContext(ctx);
   const res = await extractReport(text, ectx, { client: deps.llm });
+  if (res.llmError) ctx.log(`portal: el modelo no armó el reporte (${res.llmError}); uso reglas. Revisa ANTHROPIC_API_KEY con: npm run llm:check`);
   let draft = makeDraft(res.report, { companies: ectx.companies, canal, texto: res.text, messageAt: opts.occurredAt, via: res.via });
   // con reglas la confianza siempre es baja: si el tipo se reconoció ("visité", "llamé") no se pregunta
   if (res.via === "rules" && !res.report.faltantes.includes("tipo")) draft.answered = [...draft.answered, "tipo"];

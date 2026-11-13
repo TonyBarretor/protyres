@@ -9,9 +9,9 @@
 import type Anthropic from "@anthropic-ai/sdk";
 import { z } from "zod";
 import { getAnthropic, llmModel } from "../../llm/client";
-import { parseSpanishDateTime } from "../bot/dates";
+import { parseSpanishDateTime, parseVagueDay } from "../bot/dates";
 import { STAGES, STAGE_IDS, type StageId } from "../stages";
-import { formatLimaDateTime } from "../ui/time";
+import { formatLimaDateTime, limaDateKey } from "../ui/time";
 import { applyVocabulary } from "../voice/vocabulary";
 import { displayName, matchCompanies, type CompanyRef } from "./match";
 
@@ -110,6 +110,8 @@ export interface ExtractResult {
   via: "llm" | "rules";
   /** Texto ya pasado por el vocabulario. */
   text: string;
+  /** Había modelo pero falló (clave inválida, red, respuesta inválida): por qué se usaron reglas. */
+  llmError?: string;
 }
 
 const TOOL_NAME = "registrar_reporte";
@@ -196,15 +198,18 @@ function normalizeCompany(report: ExtractedReport, companies: CompanyRef[]): Ext
 export async function extractReport(text: string, ctx: ExtractContext, deps: ExtractDeps = {}): Promise<ExtractResult> {
   const clean = applyVocabulary(text.trim(), ctx.vocabulary ?? []);
   const client = resolveClient(deps);
+  let llmError: string | undefined;
   if (client) {
     try {
       const r = await askModel(client, deps.model ?? llmModel(), systemPrompt(ctx), clean);
       if (r) return { report: normalizeCompany(r, ctx.companies), via: "llm", text: clean };
-    } catch {
-      // error de red / API: se sigue con reglas
+      llmError = "el modelo no devolvió un reporte válido";
+    } catch (err) {
+      // error de red / API (p. ej. 401 clave inválida): se sigue con reglas, pero se dice por qué
+      llmError = String((err as Error)?.message ?? err).slice(0, 300);
     }
   }
-  return { report: extractByRules(clean, ctx), via: "rules", text: clean };
+  return { report: extractByRules(clean, ctx), via: "rules", text: clean, ...(llmError ? { llmError } : {}) };
 }
 
 /**
@@ -265,18 +270,31 @@ export function detectCargo(text: string): string | null {
   return c[0].toUpperCase() + c.slice(1).toLowerCase();
 }
 
-/** "con Juan Pérez", "hablé con la señora Rosa" -> nombre propio (palabras con mayúscula). */
+/**
+ * Nombre propio del contacto (palabras con mayúscula) tras "con", "me/nos atendió", "me/nos recibió", "atendido por":
+ * "con Juan Pérez", "hablé con la señora Rosa", "me atendió Carlos Quispe, el jefe de flota". Gana el primero del texto.
+ */
 export function detectContactName(text: string): string | null {
-  const m = /\bcon\s+(?:el\s+|la\s+)?(?:se[ñn]or(?:a|ita)?\s+|sr\.?\s+|sra\.?\s+|ing\.?\s+|ingenier[oa]\s+)?([A-ZÁÉÍÓÚÑ][a-záéíóúñ]+(?:\s+[A-ZÁÉÍÓÚÑ][a-záéíóúñ]+){0,2})/.exec(text);
+  const re = /(?:\bcon|\b[Mm]e\s+atendi[oó]|\b[Nn]os\s+atendi[oó]|\b[Mm]e\s+recibi[oó]|\b[Nn]os\s+recibi[oó]|\batendid[oa]\s+por)\s+(?:el\s+|la\s+)?(?:se[ñn]or(?:a|ita)?\s+|sr\.?\s+|sra\.?\s+|ing\.?\s+|ingenier[oa]\s+)?([A-ZÁÉÍÓÚÑ][a-záéíóúñ]+(?:\s+[A-ZÁÉÍÓÚÑ][a-záéíóúñ]+){0,2})/g;
+  const m = re.exec(text);
   return m ? m[1] : null;
 }
 
+const PAST_VERB = /\b(visite|visitamos|fui|fuimos|estuve|estuvimos|llame|llamamos|hable|hablamos|me\s+reuni|nos\s+reunimos|pase\s+por|me\s+atendio|nos\s+atendio)\b/;
+const WEEKDAY_RE = /\b(lunes|martes|miercoles|jueves|viernes|sabado|domingo)\b/;
+/** "visité ZBUSS el martes": verbo en pasado y luego el día, sin "que"/"dice"/"para"/coma entre ellos. */
+function pastWeekday(t: string): boolean {
+  const v = PAST_VERB.exec(t);
+  const w = WEEKDAY_RE.exec(t);
+  if (!v || !w || w.index < v.index) return false;
+  return !/[,;]|\b(que|dice|dijo|pide|pidio|para|quiere|quieren|quedamos)\b/.test(t.slice(v.index + v[0].length, w.index));
+}
 const FUTURE_HINT = /\b(proxim[oa]|quedamos|qued[eé]|volver|regresar|llamar(?:le|los)?|visitar(?:le|los)?|cita|reunion|mandar|enviar|cotizar|pasar[eé]|ir[eé]|llamo\s+el|voy\s+a)\b/;
 
 function nextActionText(t: string): string {
   if (/\bcotiz/.test(t)) return "Enviar cotización";
   if (/\bllam/.test(t)) return "Llamar";
-  if (/\b(visit|cita|reunion|pasar)/.test(t)) return "Visitar";
+  if (/\b(visit|cita|reunion|pasar|volver|regresar)/.test(t)) return "Visitar";
   return "Seguimiento";
 }
 
@@ -285,20 +303,41 @@ export interface RuleDates {
   proximaAccion: { texto: string; fecha: string | null } | null;
 }
 
-/** Fechas por reglas: "ayer" -> ocurrió ayer; una fecha futura con verbo de seguimiento -> próxima acción; pasada -> ocurrió. */
+/**
+ * Fechas por reglas, por oración: "ayer" -> ocurrió ayer; la fecha de una oración con verbo de seguimiento ("quedamos en
+ * volver a llamar el lunes") -> próxima acción; la de una oración sin él ("visité ZBUSS hoy en la mañana") -> ocurrió, si
+ * no es futura. Días aproximados ("la próxima semana", "fin de mes") también valen para la próxima acción. Día sin hora:
+ * 9:00 de Lima.
+ */
 export function detectDates(text: string, now: Date): RuleDates {
   const t = fold(text);
   let ocurrioEn: string | null = null;
   let proximaAccion: RuleDates["proximaAccion"] = null;
   if (/\bayer\b/.test(t)) ocurrioEn = limaIso(new Date(now.getTime() - 24 * 60 * 60 * 1000));
   else if (/\banteayer\b/.test(t)) ocurrioEn = limaIso(new Date(now.getTime() - 48 * 60 * 60 * 1000));
-  const parsed = parseSpanishDateTime(text, now);
-  // día sin hora ("el lunes"): 9:00 de Lima en vez de medianoche
-  const m = parsed?.allDay ? { ...parsed, date: new Date(parsed.date.getTime() + 9 * 60 * 60 * 1000) } : parsed;
-  if (m) {
-    if (m.date.getTime() > now.getTime() || FUTURE_HINT.test(t)) proximaAccion = { texto: nextActionText(t), fecha: limaIso(m.date) };
-    else if (!ocurrioEn) ocurrioEn = limaIso(m.date);
-  } else if (FUTURE_HINT.test(t) && /\b(proxim[oa]|quedamos|volver|llamar|visitar|cotizar|enviar|mandar)\b/.test(t)) {
+  const nine = (d: Date) => new Date(d.getTime() + 9 * 60 * 60 * 1000);
+  const sentences = text.split(/(?<=[.;!?\n])\s*/).map((x) => x.trim()).filter(Boolean);
+  let futureSeen = false;
+  for (const sentence of sentences) {
+    const st = fold(sentence);
+    const future = FUTURE_HINT.test(st);
+    const parsed = parseSpanishDateTime(sentence, now);
+    const vague = parsed ? null : parseVagueDay(sentence, now);
+    let date = parsed ? (parsed.allDay ? nine(parsed.date) : parsed.date) : vague ? nine(vague) : null;
+    // "Visité ZBUSS el martes" dicho un viernes: en pasado, el día de semana es el último que pasó, no el próximo
+    // (solo si el día va con el verbo en pasado: "llamé a Andino, dice que lo visite el lunes" es futuro)
+    if (date && parsed && !future && pastWeekday(st) && date.getTime() > now.getTime()) date = new Date(date.getTime() - 7 * 24 * 60 * 60 * 1000);
+    if (future) futureSeen = true;
+    if (!date) continue;
+    // "visité hoy" a las 8:00: hoy (9:00 por defecto) no es una próxima acción sino cuándo ocurrió
+    if (!future && parsed?.allDay && limaDateKey(parsed.date) === limaDateKey(now)) {
+      if (!ocurrioEn) ocurrioEn = limaIso(date.getTime() > now.getTime() ? now : date);
+      continue;
+    }
+    if (!proximaAccion && (future || date.getTime() > now.getTime())) proximaAccion = { texto: nextActionText(st), fecha: limaIso(date) };
+    else if (!future && !ocurrioEn && date.getTime() <= now.getTime()) ocurrioEn = limaIso(date);
+  }
+  if (!proximaAccion && futureSeen && /\b(proxim[oa]|quedamos|volver|llamar|visitar|cotizar|enviar|mandar)\b/.test(t)) {
     proximaAccion = { texto: nextActionText(t), fecha: null };
   }
   return { ocurrioEn, proximaAccion };
