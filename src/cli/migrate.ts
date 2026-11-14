@@ -419,6 +419,30 @@ const STATEMENTS = [
     created_at timestamptz not null default now()
   )`,
   `create index if not exists quote_shadow_created_idx on quote_shadow (created_at)`,
+  // Corrida F, punto 9: cada transcripción de voz con lo que el bot entendió (medida, cantidad, marca, diseño, cliente,
+  // preguntas). Para revisar los fallos del piloto con `npm run voice:review -- --db`; dato de cliente, solo consola.
+  `create table if not exists voice_transcripts (
+    id serial primary key,
+    phone text not null,
+    user_id integer,
+    context text not null,
+    transcript text not null,
+    understood jsonb not null default '{}'::jsonb,
+    outcome text not null,
+    created_at timestamptz not null default now()
+  )`,
+  `create index if not exists voice_transcripts_created_idx on voice_transcripts (created_at)`,
+  // Corrida F, puntos 1 y 2 (Prospectos): búsqueda tolerante por razón social. razon_norm = minúsculas, sin tildes, sin
+  // espacios ni signos (misma regla que companyNameKey() en src/lib/portal/store/shared.ts): "Z-BUSS S.A.C." -> "zbusssac".
+  // Columna generada: se llena sola al importar; añadirla reescribe companies (~5 mil filas, instantáneo).
+  `alter table companies add column if not exists razon_norm text generated always as (regexp_replace(translate(lower(razon_social), 'áàäâãéèëêíìïîóòöôõúùüûñç', 'aaaaaeeeeiiiiooooouuuunc'), '[^a-z0-9]+', '', 'g')) stored`,
+  // pg_trgm viene en Supabase (pg_available_extensions); en el esquema extensions, como recomienda Supabase.
+  `create extension if not exists pg_trgm with schema extensions`,
+  `create index if not exists companies_razon_norm_trgm_idx on companies using gin (razon_norm extensions.gin_trgm_ops)`,
+  // Filtro y lista de marcas de vehículo (upper(trim(marca)), igual que la consulta) y medidas probables por empresa en la
+  // lista. Sin "concurrently": fleet_vehicles solo la escribe el import del MTC y el índice se crea en ~1 s sin bloquear lecturas.
+  `create index if not exists fleet_vehicles_marca_norm_idx on fleet_vehicles ((upper(trim(marca))), company_id)`,
+  `create index if not exists fleet_vehicles_company_medida_idx on fleet_vehicles (company_id, medida_probable)`,
 ];
 
 /** Desde aquí empiezan las sentencias del portal: antes de ejecutarlas se pasa la guardia (migrate-guard.ts). */
@@ -451,8 +475,10 @@ async function main() {
     const [{ rows }] = await sql`select count(*)::int as rows from prices`;
     const [{ files }] = await sql`select count(*)::int as files from quote_files`;
     const [{ contracts }] = await sql`select count(*)::int as contracts from contract_prices`;
-    const [{ msgs }] = await sql`select count(*)::int as msgs from messages`;
-    console.log(`\nListo. Filas de precios: ${rows} (con foto: ${photos}). Archivos de cotizaciones enviadas: ${files}. Precios de contrato cambiados desde WhatsApp: ${contracts}. Mensajes registrados: ${msgs}. Si las fotos están en 0, vuelve a ingerir la lista de Steel.`);
+    // con la fecha del último: un 0 recién creada la tabla (o sin tráfico desde entonces) no es lo mismo que un registro roto
+    const [{ msgs, lastMsg }] = await sql`select count(*)::int as msgs, max(created_at) as "lastMsg" from messages`;
+    const lastMsgText = lastMsg ? ` (último: ${new Date(lastMsg as string).toLocaleString("es-PE", { timeZone: "America/Lima" })})` : " (aún ninguno: se llena con el primer mensaje que llegue al webhook)";
+    console.log(`\nListo. Filas de precios: ${rows} (con foto: ${photos}). Archivos de cotizaciones enviadas: ${files}. Precios de contrato cambiados desde WhatsApp: ${contracts}. Mensajes registrados: ${msgs}${lastMsgText}. Si las fotos están en 0, vuelve a ingerir la lista de Steel.`);
     const portalTables = ["companies", "fleet_vehicles", "sales", "users", "contacts", "opportunities", "activities", "appointments"];
     const portalCounts: string[] = [];
     for (const t of portalTables) {

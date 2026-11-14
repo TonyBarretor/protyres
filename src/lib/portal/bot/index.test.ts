@@ -66,7 +66,9 @@ describe("bot command 'portal'", () => {
     delete process.env.PORTAL_SESSION_SECRET;
     await bot.handle(text(FRANK, "PORTAL"));
     const reply = client.texts().at(-1) ?? "";
-    expect(reply).toContain("PORTAL_SESSION_SECRET");
+    // corrida F, punto 3: el nombre de la variable va al log del bot, no al chat
+    expect(reply).toBe("El portal aún no está configurado: contacta al administrador.");
+    expect(reply).not.toContain("PORTAL_SESSION_SECRET");
     expect(reply).not.toContain("http");
   });
 

@@ -28,8 +28,8 @@ export default async function VentasPage() {
 
       {counts.demo > 0 && (
         <p className="pt-notice">
-          <DemoTag /> Hay <strong>{fmtInt(counts.demo)} ventas de demostración</strong>. Toda cifra que las incluya lleva la etiqueta DEMO. Para borrarlas, en el
-          servidor: <code>npm run portal:clear-demo</code> (las ventas reales no se tocan).
+          <DemoTag /> Hay <strong>{fmtInt(counts.demo)} ventas de demostración</strong>. Toda cifra que las incluya lleva la etiqueta DEMO. Para borrarlas,
+          contacta al administrador (las ventas reales no se tocan).
         </p>
       )}
 

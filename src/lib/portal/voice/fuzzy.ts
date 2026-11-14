@@ -208,6 +208,8 @@ function catalogTerms(c: CatalogTerms): Term[] {
   return terms;
 }
 
+const compact = (s: string) => fold(s).replace(/[\s-]+/g, "");
+
 /**
  * Corrige marcas y diseños mal oídos ("Fénix Suite" -> "Fenixway", "Balor 99" -> "Valor 99"). Lo que ya coincide (sin
  * contar mayúsculas ni tildes) no se toca. Devuelve el texto y los cambios (para decirlos).
@@ -233,6 +235,21 @@ export function fixCatalogTerms(text: string, catalog: CatalogTerms): { text: st
     }
     if (exact) {
       i += exact - 1;
+      continue;
+    }
+    // marca partida o junta ("fenix way" -> Fenixway, "westlake" -> Westlake, "doublecoin" -> Double Coin), en minúsculas
+    // también: es la misma palabra sin espacios (corrida F, punto 9)
+    let joined: { n: number; t: Term; phrase: string; start: number; end: number } | null = null;
+    for (let n = 3; n >= 1 && !joined; n--) {
+      const w = window(i, n);
+      if (!w) continue;
+      const c = compact(w.phrase);
+      const t = c.length >= 5 ? terms.find((x) => x.num === null && compact(x.out) === c && (n > 1 || x.words > 1)) : undefined;
+      if (t) joined = { n, t, phrase: w.phrase, start: w.win[0].start, end: w.win[n - 1].end };
+    }
+    if (joined) {
+      changes.push({ from: joined.phrase, to: joined.t.out, start: joined.start, end: joined.end });
+      i += joined.n - 1;
       continue;
     }
     let hit: { n: number; t: Term; phrase: string; start: number; end: number; score: number } | null = null;

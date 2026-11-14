@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { SettingsSchema, type Settings } from "../../settings";
 import { JsonStore } from "../../store/json-store";
 import { FakeWhatsAppClient } from "../../whatsapp/client";
-import { BotHandler } from "../../whatsapp/handler";
+import { AUDIO_REPLY, BotHandler } from "../../whatsapp/handler";
 import type { InboundMessage } from "../../whatsapp/webhook";
 import { JsonPortalStore } from "../store";
 import type { FleetVehicleInput, PortalStore } from "../store/types";
@@ -252,7 +252,8 @@ describe("comandos del portal por WhatsApp", () => {
     await bot.handle(text(STRANGER, "llamé al gerente de expreso norteño"));
     expect(last()).not.toContain(REPORT_PLACEHOLDER);
     await bot.handle(audio(STRANGER));
-    expect(last()).toBe("Por ahora no leo audios ni videos. Reenvíame el texto, PDF, Excel o una foto.");
+    // corrida F, punto 4: el mensaje viejo ("Por ahora no leo audios ni videos…") se reescribió; para audio, uno propio
+    expect(last()).toBe(AUDIO_REPLY);
   });
 });
 

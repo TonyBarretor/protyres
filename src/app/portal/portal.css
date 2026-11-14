@@ -244,6 +244,7 @@ body:has(.pt-shell) {
 .pt-tag-inf { background: #f3eefe; color: #5b3bb5; }
 .pt-tag-demo { background: var(--accent); color: var(--ink); }
 .pt-tag-client { background: #ecfdf3; color: var(--ok); }
+.pt-tag-prospect { background: #f4f5f7; color: var(--muted); }
 
 /* ── Prospectos ── */
 .pt-page-head { display: flex; align-items: baseline; justify-content: space-between; gap: 1rem; flex-wrap: wrap; margin-bottom: 1rem; }
@@ -293,6 +294,11 @@ body:has(.pt-shell) {
 .pt-kv { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.3rem 0.8rem; font-size: 0.86rem; }
 .pt-kv dt { color: var(--muted); font-size: 0.75rem; }
 .pt-kv dd { margin: 0; font-variant-numeric: tabular-nums; }
+.pt-kv .pt-kv-wide { grid-column: 1 / -1; }
+/* Medidas probables en Prospectos: una por línea, sin cortar la medida. */
+.pt-medidas { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.1rem; }
+.pt-medidas li { white-space: nowrap; }
+.pt-kv .pt-medidas { display: flex; flex-wrap: wrap; gap: 0.15rem 0.9rem; }
 
 .pt-pager { display: flex; justify-content: space-between; align-items: center; gap: 0.5rem; margin-top: 1rem; flex-wrap: wrap; }
 
@@ -342,7 +348,8 @@ body:has(.pt-shell) {
   .pt-shell { font-size: 15px; }
   .pt-main { padding: 1rem 0.75rem 3rem; }
   .pt-top-inner { gap: 0.4rem 0.75rem; padding: 0.5rem 0.75rem; }
-  .pt-nav { order: 3; flex-basis: 100%; }
+  /* en el celular las pestañas bajan a otra línea: con scroll lateral oculto, "Subir ventas" quedaba cortada */
+  .pt-nav { order: 3; flex-basis: 100%; flex-wrap: wrap; overflow-x: visible; }
   .pt-filters-grid .pt-q { grid-column: auto; }
   .pt-filters-grid { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
   .pt-filters-grid .pt-q,

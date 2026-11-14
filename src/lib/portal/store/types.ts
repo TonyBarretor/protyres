@@ -95,7 +95,10 @@ export type FleetKey = Pick<FleetVehicle, "placa" | "origen">;
 export type CompanyOrder = "unidades" | "llantas" | "participacion";
 
 export interface CompanySearch {
-  /** Texto libre: parte de la razón social (sin tildes ni mayúsculas) o inicio del RUC. */
+  /**
+   * Texto libre: razón social sin tildes, mayúsculas, espacios ni signos ("z buss" = "ZBUSS"; varias palabras deben estar
+   * todas) o inicio del RUC. Ver searchTerms() en shared.ts.
+   */
   q?: string;
   departamento?: string[];
   sector?: Sector[];
@@ -112,6 +115,14 @@ export interface CompanySearch {
   /** Inicio de la ventana de participación; por defecto 12 meses antes de `now`. */
   since?: Date | IsoDate;
   now?: Date;
+  /** true: cada fila trae `medidas` (lista de Prospectos). */
+  withMedidas?: boolean;
+}
+
+/** Medida probable (inferida, config/tyre-inference.json) y cuántas unidades de la flota la llevan. */
+export interface MedidaCount {
+  medida: string;
+  unidades: number;
 }
 
 export interface CompanyRow extends Company {
@@ -119,6 +130,8 @@ export interface CompanyRow extends Company {
   participacion: number;
   /** true si alguna venta demo entra en la cifra (la UI muestra "DEMO"). */
   participacionDemo: boolean;
+  /** Con `withMedidas`: hasta 3 medidas probables de su flota, de más a menos unidades. */
+  medidas?: MedidaCount[];
 }
 
 export interface CompanySearchResult {
@@ -566,6 +579,58 @@ export interface VocabularyRepo {
   addVocabulary(input: VocabularyInput): Promise<VocabularyEntry>;
 }
 
+// ── Registro de transcripciones de voz (corrida F, punto 9: revisar los fallos del piloto con `npm run voice:review`) ──
+
+/** Lo que el bot entendió de una nota de voz (para revisar desde consola; nunca en pantalla del portal). */
+export interface VoiceUnderstood {
+  /** Medidas canónicas que quedaron ("295/80R22.5"). */
+  sizes: string[];
+  quantities: number[];
+  brand: string | null;
+  design: string | null;
+  customer: string | null;
+  /** Lo que el bot tuvo que preguntar o no entendió ("medida «7 50 16»: 7.5R16 / 7.5-16", "sin medida"). */
+  questions: string[];
+  /** Lo corregido por parecido ("Fenix Way" -> Fenixway, "2 9 5 80 R 22.5" -> 295/80R22.5). */
+  fixes: { from: string; to: string }[];
+  /** El texto que se pasó al cotizador (si se llegó a armar). */
+  text?: string | null;
+}
+
+/** ok = pasó al cotizador; pregunta = el bot preguntó (medida o cliente); fallo = no entendió la medida. */
+export type VoiceOutcome = "ok" | "pregunta" | "fallo";
+
+export interface VoiceTranscriptInput {
+  phone: string;
+  userId: number | null;
+  /** cotizacion · medida (respuesta a "¿qué medida es?") · correccion · seguimiento (tras elegir cliente o medida). */
+  context: string;
+  transcript: string;
+  understood: VoiceUnderstood;
+  outcome: VoiceOutcome;
+  createdAt?: Date;
+}
+
+export interface VoiceTranscript extends Required<Omit<VoiceTranscriptInput, "createdAt">> {
+  id: number;
+  createdAt: Date;
+}
+
+export interface VoiceTranscriptFilter {
+  limit?: number;
+  since?: Date;
+  until?: Date;
+  phone?: string;
+  userId?: number;
+  outcomes?: VoiceOutcome[];
+}
+
+export interface VoiceTranscriptRepo {
+  logVoiceTranscript(input: VoiceTranscriptInput): Promise<void>;
+  /** Más reciente primero. */
+  listVoiceTranscripts(filter?: VoiceTranscriptFilter): Promise<VoiceTranscript[]>;
+}
+
 // ── Órdenes de compra y memoria del pedido por cliente (fase B, `oc`) ──
 
 /**
@@ -821,7 +886,7 @@ export interface RateLimitRepo {
   pruneRateLimitHits(before: Date): Promise<number>;
 }
 
-export interface PortalStore extends CompanyRepo, FleetRepo, SalesRepo, UserRepo, ContactRepo, OpportunityRepo, ActivityRepo, AppointmentRepo, PortalConversationRepo, VocabularyRepo, PurchaseOrderRepo, CreditRepo, SurveyRepo, RateLimitRepo {
+export interface PortalStore extends CompanyRepo, FleetRepo, SalesRepo, UserRepo, ContactRepo, OpportunityRepo, ActivityRepo, AppointmentRepo, PortalConversationRepo, VocabularyRepo, VoiceTranscriptRepo, PurchaseOrderRepo, CreditRepo, SurveyRepo, RateLimitRepo {
   /** Escribe lo pendiente (JSON); no-op en Postgres. Los CLI la llaman antes de salir. */
   flush(): Promise<void>;
   close(): Promise<void>;

@@ -8,7 +8,8 @@
  *   - whatsappEnv: variable (o lista de variables, se usa la primera con valor); si trae varios números separados por
  *     coma (ADMIN_NUMBERS) se toma el primero.
  *   - whatsappSalesperson: prefijo del nombre en `salespeople` de config/pilot.json ("Frank").
- * Sin la clave se usa DEFAULT_PORTAL_USERS.
+ * Sin la clave se usa DEFAULT_PORTAL_USERS. Si dos usuarios comparten número queda el de mayor rol (ROLE_RANK) y se
+ * avisa. Lo usan `npm run portal:seed-users` (solo usuarios) y `npm run portal:import-mtc` (al final del import).
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -40,8 +41,11 @@ export interface SeedUsersConfig {
 }
 
 export interface SeedUsersResult {
+  /** Usuarios escritos (vacío con dryRun). */
   users: PortalUser[];
   warnings: string[];
+  /** Qué se hizo (o haría) con cada usuario configurado. */
+  entries: SeedEntry[];
 }
 
 function readJson(file: string): Record<string, unknown> | null {
@@ -84,28 +88,85 @@ function numberFor(seed: PortalUserSeed, cfg: SeedUsersConfig, env: Record<strin
   return { number: null, from: "(sin origen de número)" };
 }
 
+/** Rango para resolver números repetidos: si dos usuarios configurados comparten número, queda el de mayor rol. */
+export const ROLE_RANK: Record<PortalUserSeed["rol"], number> = { admin: 4, supervisor: 3, vendedor: 2, tecnico: 1 };
+
+/** "****340": los avisos y la salida del CLI nunca muestran el número completo. */
+export function maskNumber(n: string | null | undefined): string {
+  const d = digits(n ?? "");
+  return d ? `****${d.slice(-3)}` : "(sin número)";
+}
+
+export interface PlannedUser {
+  nombre: string;
+  rol: PortalUserSeed["rol"];
+  whatsapp: string;
+  /** De dónde salió el número (variable, salespeople, whatsapp). */
+  from: string;
+}
+
 /**
- * Crea o actualiza los usuarios configurados. Idempotente (clave: número de WhatsApp).
- * `config` por defecto: loadSeedUsersConfig(); `env` por defecto: process.env.
+ * Qué usuarios quedarían según la configuración, sin tocar el store: resuelve cada número, avisa de los que faltan y,
+ * si dos comparten número, deja el de mayor rol (admin > supervisor > vendedor > tecnico; a igual rol, el primero de la
+ * lista). El orden de salida es el de la configuración.
  */
-export async function seedUsers(store: PortalStore, config: SeedUsersConfig = loadSeedUsersConfig()): Promise<SeedUsersResult> {
+export function planUsers(config: SeedUsersConfig = loadSeedUsersConfig()): { users: PlannedUser[]; warnings: string[] } {
   const env = config.env ?? process.env;
   const seeds = config.users ?? DEFAULT_PORTAL_USERS;
-  const result: SeedUsersResult = { users: [], warnings: [] };
-  const taken = new Map<string, string>();
+  const warnings: string[] = [];
+  const resolved: PlannedUser[] = [];
   for (const seed of seeds) {
     const { number, from } = numberFor(seed, config, env);
     if (!number) {
-      result.warnings.push(`No se creó a ${seed.nombre} (${seed.rol}): falta su número de WhatsApp (${from}).`);
+      warnings.push(`Falta el número de WhatsApp de ${seed.nombre} (${seed.rol}): no se crea (sin número en ${from}).`);
       continue;
     }
-    const prev = taken.get(number);
-    if (prev) {
-      result.warnings.push(`No se creó a ${seed.nombre} (${seed.rol}): el número ${number} ya es de ${prev}.`);
-      continue;
+    resolved.push({ nombre: seed.nombre, rol: seed.rol, whatsapp: number, from });
+  }
+  const winner = new Map<string, PlannedUser>();
+  for (const u of resolved) {
+    const prev = winner.get(u.whatsapp);
+    if (!prev || ROLE_RANK[u.rol] > ROLE_RANK[prev.rol]) winner.set(u.whatsapp, u);
+  }
+  for (const [number, win] of winner) {
+    const losers = resolved.filter((u) => u.whatsapp === number && u !== win);
+    if (!losers.length) continue;
+    const all = resolved.filter((u) => u.whatsapp === number).map((u) => `${u.nombre} (${u.rol})`);
+    warnings.push(`El número ${maskNumber(number)} está en ${all.join(" y ")}: queda ${win.nombre} (${win.rol}), el de mayor rol; no se crea a ${losers.map((u) => u.nombre).join(", ")}. Revisa la configuración.`);
+  }
+  return { users: resolved.filter((u) => winner.get(u.whatsapp) === u), warnings };
+}
+
+export interface SeedEntry extends PlannedUser {
+  /** crear: no hay nadie con ese número; actualizar: existe con otro nombre/rol; igual: nada que cambiar. */
+  action: "crear" | "actualizar" | "igual";
+  before?: { id: number; nombre: string; rol: PortalUser["rol"]; activo: boolean };
+}
+
+/**
+ * Crea o actualiza los usuarios configurados. Idempotente (clave: número de WhatsApp). Nunca borra: los usuarios del
+ * store que ya no están en la configuración solo se avisan. Con `dryRun` no escribe (users queda vacío; entries dice
+ * qué haría). `config` por defecto: loadSeedUsersConfig(); `env` por defecto: process.env.
+ */
+export async function seedUsers(store: PortalStore, config: SeedUsersConfig = loadSeedUsersConfig(), opts: { dryRun?: boolean } = {}): Promise<SeedUsersResult> {
+  const plan = planUsers(config);
+  const result: SeedUsersResult = { users: [], warnings: [...plan.warnings], entries: [] };
+  for (const p of plan.users) {
+    const prev = await store.getUserByWhatsapp(p.whatsapp);
+    const before = prev ? { id: prev.id, nombre: prev.nombre, rol: prev.rol, activo: prev.activo } : undefined;
+    const action = !prev ? "crear" : prev.nombre === p.nombre && prev.rol === p.rol ? "igual" : "actualizar";
+    result.entries.push({ ...p, action, before });
+    if (prev && prev.nombre !== p.nombre) {
+      result.warnings.push(
+        `El registro #${prev.id} (${maskNumber(p.whatsapp)}) pasa de ${prev.nombre} · ${prev.rol} a ${p.nombre} · ${p.rol}: lo que tenga asignado (empresas, oportunidades, actividades) queda a nombre de ${p.nombre}.`,
+      );
     }
-    taken.set(number, seed.nombre);
-    result.users.push(await store.upsertUser({ nombre: seed.nombre, whatsapp: number, rol: seed.rol }));
+    if (!opts.dryRun) result.users.push(await store.upsertUser({ nombre: p.nombre, whatsapp: p.whatsapp, rol: p.rol }));
+  }
+  const configured = new Set(plan.users.map((u) => u.whatsapp));
+  for (const u of await store.listUsers()) {
+    if (u.whatsapp && configured.has(digits(u.whatsapp))) continue;
+    result.warnings.push(`${u.nombre} (${u.rol}, ${maskNumber(u.whatsapp)}${u.activo ? "" : ", inactivo"}) está en la base y no está en la configuración: no se borra.`);
   }
   return result;
 }

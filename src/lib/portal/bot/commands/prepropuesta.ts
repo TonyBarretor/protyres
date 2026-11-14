@@ -9,6 +9,7 @@ import { generatePrepropuesta, logPrepropuesta, PrepropuestaError } from "../../
 import type { Company } from "../../store/types";
 import { fmtInt } from "../../ui/labels";
 import { resolveCompany } from "../companies";
+import { userErrorText } from "../../../guard/user-text";
 import { registerCompanyAction, registerPortalCommand, type PortalContext } from "../registry";
 
 export const PREPROPUESTA_USAGE = "Escríbelo así: *prepropuesta ZBUSS* (o con el RUC).";
@@ -23,7 +24,7 @@ async function sendPrepropuesta(ctx: PortalContext, company: Company): Promise<v
     gen = await generatePrepropuesta(ctx.store, company.id, ctx.user, ctx.now);
   } catch (err) {
     if (err instanceof PrepropuestaError) {
-      await ctx.reply(`⚠️ No pude generar la pre-propuesta de *${company.razonSocial}*. ${err.message}`);
+      await ctx.reply(`⚠️ No pude generar la pre-propuesta de *${company.razonSocial}*. ${userErrorText(err.message)}`);
       return;
     }
     throw err;

@@ -4,6 +4,7 @@
 import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import { drizzle, type PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
+import { serverlessPgOptions } from "./pg-options";
 import * as schema from "../../db/schema";
 import type { PriceRow, PriceSource } from "../ingest/types";
 import type { Quote } from "../quote/types";
@@ -78,7 +79,7 @@ export class PgStore implements PriceStore {
   ) {}
 
   static async connect(url: string): Promise<PgStore> {
-    const client = postgres(url, { prepare: false, max: 5 }); // prepare:false works with Supabase's pooler
+    const client = postgres(url, serverlessPgOptions({ max: 5 })); // pooler de Supabase: sin sentencias preparadas ni pipelining (pg-options.ts)
     const db = drizzle(client, { schema });
     return new PgStore(db, client);
   }

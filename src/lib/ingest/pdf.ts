@@ -48,7 +48,7 @@ export async function ingestPdf(buffer: Buffer, opts: PdfIngestOptions): Promise
   }
 
   if (!hasText) {
-    warnings.push(`PDF has no text layer (${pages} page(s)); it is probably scanned. Set ANTHROPIC_API_KEY to read it with the LLM, or ask the provider for the Excel.`);
+    warnings.push(`El PDF no tiene texto (${pages} página(s)); parece escaneado y el modelo de lenguaje no está activo para leerlo. Pide el Excel al proveedor.`);
     return {
       rows: [],
       warnings,

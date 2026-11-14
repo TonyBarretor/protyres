@@ -17,10 +17,13 @@
  *     "precio doscientos cincuenta y nueve" -> "precio 259", "cámbialo a Valor 99" -> "modelo Valor 99", "margen diez" ->
  *     "margen 10", "a sesenta días" -> "plazo: 60 días"). Un "ok"/"sí" dictado es { kind: "confirm" }: por voz nunca se
  *     arma el PDF (se pide escribir *ok*).
+ *  2b. (corrida F, punto 9) antes de lo anterior, la zona de la medida se resuelve contra el catálogo (voice/sizes.ts):
+ *     "295 80, ER 22.5" y "2 9 5 80 R 22.5" -> 295/80R22.5; varias posibles -> se pregunta; la cantidad no se pega.
  *  5. checkSizes: cada medida contra las del catálogo; si no está, las candidatas (misma medida con otra construcción,
  *     aro con ".5" que no se dijo, o ancho ±10 mm con el mismo perfil y aro). Nunca elige: quien llama pregunta.
  */
 import { fixCatalogTerms } from "./fuzzy";
+import { resolveSpokenSizes, type AmbiguousSize, type SizeResolution } from "./sizes";
 import { fold } from "../../tyre/brands";
 import { findTyreSizes, parseTyreSize, sizeLoose } from "../../tyre/spec";
 
@@ -236,7 +239,7 @@ export function normalizeSpokenSizes(text: string): string {
 /** Muletillas que no aportan al pedido. */
 const FILLERS = /(?<![\p{L}\d])(?:e+h+|e+m+|m{2,}|este|o sea|bueno|pues|oye|mira|ya|okey|ok|gracias|por favor|porfa)(?![\p{L}\d])[,.]?/giu;
 /** Palabra explícita de cotización al inicio (se quita: el texto ya va al cotizador). */
-const QUOTE_HEAD = /^\s*(?:(?:hola|buenas?(?:\s+(?:tardes|d[ií]as|noches))?)[,\s]+)?(?:me\s+(?:puedes\s+|podr[ií]as\s+)?)?(?:c[oó]t[ií]za(?:me|nos|le)?|cotizar|me\s+cotizas|(?:necesito|quiero|hazme|haz)\s+(?:una\s+)?cotizaci[oó]n|cotizaci[oó]n)\s*(?:de|para|por)?\s*[:,]?\s*/i;
+const QUOTE_HEAD = /^\s*(?:(?:hola|buenas?(?:\s+(?:tardes|d[ií]as|noches))?)[,\s]+)?(?:me\s+(?:puedes\s+|podr[ií]as\s+)?)?(?:c[oó]t[ií]za(?:me|nos|le)?|c[oó]t[ií]zo|cotizar|me\s+cotizas|(?:necesito|quiero|hazme|haz)\s+(?:una\s+)?cotizaci[oó]n|cotizaci[oó]n)\s*(?:de|para|por)?\s*[:,]?\s*/i;
 
 const PCT = String.raw`(\d{1,2}(?:\.\d)?)\s*(?:%|por\s*ciento)?`;
 const TERM_PATTERNS: { re: RegExp; out: (m: RegExpMatchArray) => string }[] = [
@@ -251,7 +254,7 @@ const TERM_PATTERNS: { re: RegExp; out: (m: RegExpMatchArray) => string }[] = [
 
 /** Precio dictado: "a 254", "precio 254", "a 254 dólares", "a US$ 254". `§n§` son medidas ya apartadas. */
 const PRICE_RE = /(?:\b(?:a|en|precio(?:\s+de)?|a\s+precio\s+de|al\s+precio\s+de)\s+)(?:us\$|\$|s\/\.?|usd)?\s*(\d{2,6}(?:\.\d{1,2})?)(?:\s*(?:d[oó]lares|soles|usd))?(?![\d./§%]|\s*(?:d[ií]as|%|por\s*ciento))/i;
-const QTY_RES = [/\bx\s*(\d{1,3})\b/i, /\b(\d{1,3})\s*(?:llantas?|neum[aá]ticos?|unidades|unidad|unid|und)\b/i, /^\s*(\d{1,3})\b(?!\s*(?:%|d[ií]as|§))/];
+const QTY_RES = [/\bx\s*(\d{1,3})\b/i, /\b(\d{1,3})\s*(?:llantas?|neum[aá]ticos?|unidades|unidad|unid|und)\b/i, /^\s*(\d{1,3})\b(?!\s*(?:%|d[ií]as))/];
 /** Cliente: "para ZBUSS", "cliente Transportes Beta" hasta una coma, "con …", "a N", "precio" o el final. */
 const CUSTOMER_RE = /(?:^|[\s,])(?:para|cliente)\s+(?:la\s+empresa\s+|el\s+cliente\s+|la\s+)?(?!(?:direcci[oó]n|direccional|tracci[oó]n|posterior|delanter|mixt|el\s+eje)\b)([^,;\n]+?)(?=\s*(?:[,;.\n]|$|\bcon\b|\ba\s+\d|\bprecio\b|§))/i;
 
@@ -264,8 +267,12 @@ export interface DictatedQuote {
   items: string[];
   /** El cliente tal como se dictó ("" si no se dijo); en `text` va en su línea "para …". */
   customer: string;
-  /** Marcas o diseños mal oídos corregidos contra el catálogo ("Fénix Suite" -> "Fenixway"). */
+  /** Marcas, diseños o medidas mal oídos corregidos contra el catálogo ("Fénix Suite" -> "Fenixway", "2 9 5 80 R 22.5" -> 295/80R22.5). */
   fixes: { from: string; to: string }[];
+  /** Medidas dictadas que pueden ser varias del catálogo (se pregunta; en `text` va la primera opción). */
+  sizeChoices: AmbiguousSize[];
+  /** Zonas con forma de medida que no coinciden con ninguna del catálogo ("275 80 R 22"). */
+  unheardSizes: string[];
 }
 
 export interface DictationCatalog {
@@ -273,13 +280,27 @@ export interface DictationCatalog {
   designs?: { brand: string; model: string }[];
   /** Marcas del catálogo (para corregir por parecido lo mal oído: voice/fuzzy.ts). */
   brands?: string[];
+  /** Medidas canónicas del catálogo (para leer la medida dictada: voice/sizes.ts). Sin ellas, solo lo plausible. */
+  sizes?: string[];
 }
 
 const clean = (s: string) => s.replace(/\s+/g, " ").replace(/\s+([,.;])/g, "$1").replace(/^[\s,.;:]+|[\s,.;:]+$/g, "");
 
+/** La lectura de una zona de medida sin catálogo (para saber si la del catálogo cambió algo y decirlo). */
+const plainRead = (zone: string) => findTyreSizes(normalizeSpokenSizes(zone)).map((s) => s.canonical);
+
+/** normalizeSpoken con el detalle de las medidas (resueltas contra `catalogSizes`, ambiguas, sin coincidencia). */
+export function normalizeSpokenDetailed(text: string, catalogSizes?: string[] | null): { text: string; sizes: SizeResolution } {
+  const digits = spokenToDigits((text ?? "").replace(/[“”"']/g, "")).replace(FILLERS, " ");
+  const sizes = resolveSpokenSizes(digits, catalogSizes, plainRead);
+  // las medidas ya resueltas van apartadas (⟦n⟧): la lectura de siempre solo mira lo demás
+  const out = normalizeSpokenSizes(sizes.marked).replace(/⟦(\d+)⟧/g, (_, k: string) => sizes.marks[parseInt(k, 10)] ?? "");
+  return { text: clean(out), sizes };
+}
+
 /** Lo dictado, con números y medidas normalizados y sin muletillas (base de normalizeDictation y de las correcciones). */
-export function normalizeSpoken(text: string): string {
-  return clean(normalizeSpokenSizes(spokenToDigits((text ?? "").replace(/[“”"']/g, ""))).replace(FILLERS, " "));
+export function normalizeSpoken(text: string, catalogSizes?: string[] | null): string {
+  return normalizeSpokenDetailed(text, catalogSizes).text;
 }
 
 /** La marca de un diseño dicho sin marca, si en el catálogo es de una sola marca. */
@@ -299,7 +320,8 @@ function withBrand(desc: string, catalog: DictationCatalog): string {
 export function normalizeDictation(transcript: string, catalog: DictationCatalog = {}): DictatedQuote {
   // marcas y diseños mal oídos, por parecido contra el catálogo (antes de normalizar: compara palabras como se dijeron)
   const fixed = catalog.designs?.length || catalog.brands?.length ? fixCatalogTerms(transcript, { brands: catalog.brands ?? [], designs: catalog.designs ?? [] }) : { text: transcript, changes: [] };
-  let t = normalizeSpoken(fixed.text).replace(QUOTE_HEAD, "");
+  const spoken = normalizeSpokenDetailed(fixed.text, catalog.sizes);
+  let t = spoken.text.replace(QUOTE_HEAD, "");
   // condiciones
   const terms: string[] = [];
   for (const p of TERM_PATTERNS) {
@@ -374,7 +396,16 @@ export function normalizeDictation(transcript: string, catalog: DictationCatalog
     return clean([desc, marks.join(" "), qty ? `x${qty}` : "", price ? `precio ${price}` : ""].filter(Boolean).join(" "));
   });
   const lines = [...items.filter(Boolean), ...(customer ? [`para ${customer}`] : []), ...terms];
-  return { text: lines.join("\n"), sizes, items: items.filter(Boolean), customer, fixes: fixed.changes };
+  const sizeFixes = spoken.sizes.resolved.filter((r) => !r.plain).map((r) => ({ from: r.from, to: displaySize(r.to) }));
+  return {
+    text: lines.join("\n"),
+    sizes,
+    items: items.filter(Boolean),
+    customer,
+    fixes: [...fixed.changes, ...sizeFixes],
+    sizeChoices: spoken.sizes.ambiguous,
+    unheardSizes: spoken.sizes.unmatched,
+  };
 }
 
 // ── 4. correcciones dictadas ──

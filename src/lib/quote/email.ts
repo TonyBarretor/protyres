@@ -125,7 +125,7 @@ export async function sendQuoteEmail(quote: Quote, pdfOrAttachments: Buffer | Em
         // try the next location
       }
     }
-    return { sent: false, error: "sin RESEND_API_KEY y sin carpeta donde guardar el borrador" };
+    return { sent: false, error: "el envío de correos no está activo (contacta al administrador)" };
   }
   const { Resend } = await import("resend");
   const resend = new Resend(process.env.RESEND_API_KEY);

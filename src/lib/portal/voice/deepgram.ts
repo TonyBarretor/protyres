@@ -11,6 +11,15 @@
  * (ver vocabulary.ts, que recorta la lista).
  *
  * Respuesta: results.channels[0].alternatives[0].{transcript, confidence} y metadata.duration (segundos).
+ *
+ * Formato de números (corrida F, punto 9; probado con 64 audios de 7 voces de macOS, nova-3/es, el 14/11): se comparó
+ * smart_format+punctuate (lo actual), smart_format sin punctuate, numerals+punctuate, solo numerals y smart_format+numerals.
+ * Las cinco dieron las MISMAS cifras en todos los audios ("295 80 r 22.5", "2 9 5 80 AR 22.5", "11 R 22 y medio",
+ * "295 barra 80 r 22 coma 5"): nova-3 en español ya escribe los números en cifras. Lo que cambia es el resto: sin
+ * smart_format todo llega en minúsculas y sin puntuación, y se pierde la mayúscula que usan la corrección de marcas
+ * (fuzzy.ts) y el cliente dictado ("para ZBUSS"). Queda smart_format=true (punctuate=true es redundante según la
+ * documentación de Deepgram, pero explícito no cambia nada). Las comas que mete smart_format entre números ("215, 75 r
+ * 17.5") y la R en sus formas ("r", "AR", "ER") las absorbe la lectura de la medida contra el catálogo (sizes.ts).
  */
 
 export const DEEPGRAM_LISTEN_URL = "https://api.deepgram.com/v1/listen";

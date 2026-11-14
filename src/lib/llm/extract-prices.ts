@@ -71,7 +71,7 @@ export async function extractPricesWithLLM(
   opts: IngestOptions & { source: PriceSource },
 ): Promise<LLMExtractResult> {
   const warnings: string[] = [];
-  if (!llmAvailable()) return { rows: [], rowsSeen: 0, warnings: ["LLM not configured (ANTHROPIC_API_KEY missing)"] };
+  if (!llmAvailable()) return { rows: [], rowsSeen: 0, warnings: ["el modelo de lenguaje no está activo"] };
   const content: ContentBlock[] = [];
   if (input.pdf) content.push({ type: "document", source: { type: "base64", media_type: "application/pdf", data: input.pdf.toString("base64") } });
   if (input.image) content.push({ type: "image", source: { type: "base64", media_type: input.image.mediaType, data: input.image.data.toString("base64") } });

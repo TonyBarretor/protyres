@@ -7,7 +7,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { CLOSED_STAGES, isClosedStage, stageProbability } from "../stages";
-import { dedupeBy, defaultSince, digits, foldText, groupFleet, normMarca, pageOf, toIsoDate, type FleetAggRow } from "./shared";
+import { companyNameKey, dedupeBy, defaultSince, digits, groupFleet, nameMatches, normMarca, pageOf, searchRucPrefix, searchTerms, toIsoDate, topMedidas, type FleetAggRow } from "./shared";
 import type {
   Activity,
   ActivityFilter,
@@ -57,6 +57,9 @@ import type {
   UserInput,
   VocabularyEntry,
   VocabularyInput,
+  VoiceTranscript,
+  VoiceTranscriptFilter,
+  VoiceTranscriptInput,
 } from "./types";
 import type { StageId } from "../stages";
 import { surveyCounts } from "./survey-shared";
@@ -90,6 +93,8 @@ interface FileData {
   surveyAnswers?: SurveyAnswer[];
   portalConversations?: PortalConversation[];
   vocabulary?: VocabularyEntry[];
+  /** Transcripciones de voz con lo entendido (corrida F, punto 9), las últimas MAX_VOICE_TRANSCRIPTS. */
+  voiceTranscripts?: VoiceTranscript[];
   purchaseOrders?: PurchaseOrder[];
   orderProfiles?: CompanyOrderProfile[];
   /** Crédito (C4): la fila con el PDF en base64 (`pdfData`) y su historial. */
@@ -113,6 +118,7 @@ const DATE_FIELDS: Record<string, string[]> = {
   surveyAnswers: ["createdAt"],
   portalConversations: ["updatedAt"],
   vocabulary: ["createdAt"],
+  voiceTranscripts: ["createdAt"],
   purchaseOrders: ["createdAt"],
   orderProfiles: ["updatedAt"],
   credit: ["consultadoAt", "updatedAt"],
@@ -120,6 +126,8 @@ const DATE_FIELDS: Record<string, string[]> = {
 };
 
 const DEBOUNCE_MS = 300;
+/** Transcripciones de voz que guarda el store JSON (el de Postgres las guarda todas). */
+const MAX_VOICE_TRANSCRIPTS = 2000;
 
 const fleetKey = (placa: string, origen: string) => `${origen}|${placa}`;
 const normPlaca = (p: string) => p.trim().toUpperCase().replace(/\s+/g, "");
@@ -149,6 +157,7 @@ export class JsonPortalStore implements PortalStore {
   private surveySeq = { surveys: 0, answers: 0 };
   private portalConversations = new Map<string, PortalConversation>();
   private vocabulary: VocabularyEntry[] = [];
+  private voiceTranscripts: VoiceTranscript[] = [];
   private purchaseOrders = new Map<number, PurchaseOrder>();
   private orderProfiles = new Map<number, CompanyOrderProfile>();
   /** Crédito (C4). Ids del historial con contador propio (máximo cargado + 1). */
@@ -231,6 +240,7 @@ export class JsonPortalStore implements PortalStore {
     this.surveySeq.answers = Math.max(0, ...[...this.surveyAnswers.values()].map((a) => a.id));
     for (const c of revive("portalConversations", raw.portalConversations)) this.portalConversations.set(c.phone, c);
     this.vocabulary = revive("vocabulary", raw.vocabulary);
+    this.voiceTranscripts = revive("voiceTranscripts", raw.voiceTranscripts);
     for (const o of revive("purchaseOrders", raw.purchaseOrders)) this.purchaseOrders.set(o.id, o);
     for (const p of revive("orderProfiles", raw.orderProfiles)) this.orderProfiles.set(p.companyId, p);
     for (const c of revive("credit", raw.credit)) this.credit.set(c.companyId, c);
@@ -257,6 +267,7 @@ export class JsonPortalStore implements PortalStore {
       surveyAnswers: [...this.surveyAnswers.values()],
       portalConversations: [...this.portalConversations.values()],
       vocabulary: this.vocabulary,
+      voiceTranscripts: this.voiceTranscripts,
       purchaseOrders: [...this.purchaseOrders.values()],
       orderProfiles: [...this.orderProfiles.values()],
       credit: [...this.credit.values()],
@@ -424,15 +435,15 @@ export class JsonPortalStore implements PortalStore {
 
   async searchCompanies(opts: CompanySearch = {}): Promise<CompanySearchResult> {
     const since = opts.since !== undefined ? toIsoDate(opts.since) : defaultSince(opts.now);
-    const q = foldText(opts.q);
-    const qDigits = /^\d+$/.test(q) ? q : "";
+    const terms = searchTerms(opts.q);
+    const qDigits = searchRucPrefix(opts.q);
     const deps = opts.departamento?.length ? new Set(opts.departamento) : null;
     const sectors = opts.sector?.length ? new Set<string>(opts.sector) : null;
     const marcas = opts.marcas?.length ? opts.marcas.map(normMarca) : null;
     const marcaIdx = marcas ? this.marcasByCompany() : null;
     const matches: Company[] = [];
     for (const c of this.companies.values()) {
-      if (q && !(foldText(c.razonSocial).includes(q) || (qDigits && c.ruc.startsWith(qDigits)))) continue;
+      if (terms.compact && !(nameMatches(companyNameKey(c.razonSocial), terms) || (qDigits && c.ruc.startsWith(qDigits)))) continue;
       if (deps && !(c.departamento && deps.has(c.departamento))) continue;
       if (sectors && !(c.sector && sectors.has(c.sector))) continue;
       if (opts.minUnits !== undefined && c.unidades < opts.minUnits) continue;
@@ -454,7 +465,18 @@ export class JsonPortalStore implements PortalStore {
     const val = (r: CompanyRow) => (orderBy === "llantas" ? r.llantasPiso : orderBy === "participacion" ? r.participacion : r.unidades);
     rows.sort((a, b) => val(b) - val(a) || a.razonSocial.localeCompare(b.razonSocial) || a.id - b.id);
     const { pageSize, offset } = pageOf(opts.page, opts.pageSize);
-    return { rows: rows.slice(offset, offset + pageSize), total: rows.length };
+    const page = rows.slice(offset, offset + pageSize);
+    if (opts.withMedidas) {
+      for (const r of page) {
+        const counts = new Map<string, number>();
+        for (const key of this.fleetByCompany.get(r.id) ?? []) {
+          const m = this.fleet.get(key)?.medidaProbable;
+          if (m) counts.set(m, (counts.get(m) ?? 0) + 1);
+        }
+        r.medidas = topMedidas(counts);
+      }
+    }
+    return { rows: page, total: rows.length };
   }
 
   async listMarcas(): Promise<MarcaCount[]> {
@@ -1094,6 +1116,31 @@ export class JsonPortalStore implements PortalStore {
     this.vocabulary.push(row);
     this.changed();
     return copy(row);
+  }
+
+  // ── registro de transcripciones de voz (corrida F, punto 9) ──
+
+  async logVoiceTranscript(input: VoiceTranscriptInput): Promise<void> {
+    const id = this.voiceTranscripts.reduce((m, v) => Math.max(m, v.id), 0) + 1;
+    const row: VoiceTranscript = { id, phone: input.phone, userId: input.userId ?? null, context: input.context, transcript: input.transcript, understood: JSON.parse(JSON.stringify(input.understood)), outcome: input.outcome, createdAt: input.createdAt ?? new Date() };
+    this.voiceTranscripts.push(row);
+    if (this.voiceTranscripts.length > MAX_VOICE_TRANSCRIPTS) this.voiceTranscripts.splice(0, this.voiceTranscripts.length - MAX_VOICE_TRANSCRIPTS);
+    this.changed();
+  }
+
+  async listVoiceTranscripts(filter: VoiceTranscriptFilter = {}): Promise<VoiceTranscript[]> {
+    const rows = this.voiceTranscripts.filter(
+      (v) =>
+        (!filter.since || time(v.createdAt) >= time(filter.since)) &&
+        (!filter.until || time(v.createdAt) < time(filter.until)) &&
+        (!filter.phone || v.phone === filter.phone) &&
+        (filter.userId === undefined || v.userId === filter.userId) &&
+        (!filter.outcomes?.length || filter.outcomes.includes(v.outcome)),
+    );
+    return rows
+      .sort((a, b) => time(b.createdAt) - time(a.createdAt) || b.id - a.id)
+      .slice(0, filter.limit ?? 50)
+      .map((v) => ({ ...v, understood: JSON.parse(JSON.stringify(v.understood)) }));
   }
 
   // ── órdenes de compra y memoria del pedido ──

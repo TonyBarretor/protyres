@@ -14,6 +14,11 @@ const inter = Inter({ subsets: ["latin"], display: "swap", variable: "--font-int
 const spaceGrotesk = Space_Grotesk({ subsets: ["latin"], display: "swap", variable: "--font-space-grotesk", weight: ["500", "600", "700"] });
 
 export const metadata = { title: "Portal 360 Tyres", robots: { index: false, follow: false } };
+/**
+ * Tope de cada pantalla del portal en Vercel (antes, el de la plataforma: 300 s). Cada pantalla responde en < 2 s contra la
+ * base real; si algo se traba, la función corta a los 30 s y no queda colgada (corrida F, punto 1).
+ */
+export const maxDuration = 30;
 export const viewport = { width: "device-width", initialScale: 1, themeColor: "#16181c" };
 
 export default async function PortalLayout({ children }: { children: ReactNode }) {

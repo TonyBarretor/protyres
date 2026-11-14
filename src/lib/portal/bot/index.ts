@@ -45,8 +45,8 @@ import { isCancel, isQuoterCommand, mediaAccepted, parsePortalCommand, routeInte
 import { withTimeout } from "../quotes/link";
 import type { VoiceCatalog } from "../voice/catalog";
 import { deepgramKeyFromEnv } from "../voice/deepgram";
-import { fetchVoice, logTranscript } from "./report";
-import { heardLine, spokenForRouting, startVoiceQuote, VOICE_QUOTE_FAILED, voiceCorrection } from "./voice-quote";
+import { fetchVoice, logTranscript, VOICE_EMPTY, VOICE_TOO_SHORT } from "./report";
+import { heardLine, spokenForRouting, startVoiceQuote, voiceInQuote } from "./voice-quote";
 import { clearNotices, clearPending, noticesOf, pausedOf, pendingOf, rawPendingOf, setPending, type IntentChoiceStep, type PendingStep } from "./state";
 import { fold } from "../../tyre/brands";
 
@@ -109,6 +109,9 @@ export const NOT_REGISTERED = "Tu número no está registrado en el portal. Pide
  * avisos): si la base tarda más, se registra y sigue el cotizador. Los comandos explícitos esperan lo que haga falta.
  */
 export const PORTAL_ROUTE_TIMEOUT_MS = 4000;
+/** Una nota de voz espera más al store (no tiene a dónde ir: el cotizador no lee audios). */
+export const VOICE_ROUTE_TIMEOUT_MS = 15_000;
+export const VOICE_STORE_BUSY = "No pude atender tu nota de voz ahora (el sistema está lento). Mándala de nuevo en un momento o escríbeme el texto, por favor.";
 const routeTimeout = (input: PortalRouteInput) => input.timeoutMs ?? PORTAL_ROUTE_TIMEOUT_MS;
 
 /** Un botón del portal que ya no responde a ninguna pregunta (venció, ya se respondió o se canceló). */
@@ -190,6 +193,11 @@ registerPendingDrop(ROUTE_CHOICE, async (dctx, step, reason) => {
 
 /** El paso real detrás de una pregunta de enrutamiento. */
 const unwrap = (step: PendingStep | null): PendingStep | null => (step?.kind === ROUTE_CHOICE ? ((step as RouteChoiceStep).prev ?? null) : step);
+
+/** Respuesta de la voz (apagada, sin clave, tope, vacía, fallida) con una cotización abierta: habla del cambio, no del reporte. */
+export function inQuoteVoiceReply(reply: string): string {
+  return reply.replace(/el reporte en texto/, "el cambio en texto");
+}
 
 const clip = (s: string, max = 60) => (s.length > max ? `${s.slice(0, max - 1).trimEnd()}…` : s);
 
@@ -298,10 +306,9 @@ export async function routePortal(input: PortalRouteInput): Promise<boolean> {
   // flujo (un "sí" de un botón viejo nunca debe confirmar una cotización); si ya no responde a nada, se dice
   const portalButton = msg.type === "interactive" && isPortalId(msg.interactiveId) && !!text;
 
-  // nada de esto puede ser del portal: va al cotizador (antes, los avisos pendientes si los hay). Una nota de voz con el
-  // cotizador a mitad de un flujo también es del cotizador (router, regla 6).
-  const voiceFix = isAudio && quoteStep === "choose" && !!input.voiceQuote;
-  if (msg.forwarded || (!cmd && !cancel && !portalButton && (isAudio ? quoteStep !== "idle" && !voiceFix : hasMedia || quoteStep !== "idle" || !text))) {
+  // nada de esto puede ser del portal: va al cotizador (antes, los avisos pendientes si los hay). Una nota de voz siempre
+  // se mira (corrida F, punto 4): el cotizador no lee audios, así que un usuario del portal nunca debe caer allí.
+  if (msg.forwarded || (!cmd && !cancel && !portalButton && !isAudio && (hasMedia || quoteStep !== "idle" || !text))) {
     // excepción: un adjunto sin leyenda justo después de `oc` (paso pendiente con acceptsMedia) es del portal
     if (!(await mediaForPendingStep(input, { forwarded: !!msg.forwarded, hasMedia: hasMedia && !isAudio, quoteStep, text }))) {
       await deliverNoticesOnly(input);
@@ -320,9 +327,15 @@ export async function routePortal(input: PortalRouteInput): Promise<boolean> {
   };
   let d: Decision;
   try {
-    d = cmd || portalButton ? await decide() : await withTimeout(decide(), routeTimeout(input));
+    d = cmd || portalButton ? await decide() : await withTimeout(decide(), isAudio ? (input.timeoutMs ?? VOICE_ROUTE_TIMEOUT_MS) : routeTimeout(input));
   } catch (err) {
     if (cmd || portalButton) throw err;
+    if (isAudio) {
+      // el cotizador no lee audios: con la base lenta o caída se dice eso, no "no leo audios"
+      log(`portal: store no disponible o lento con una nota de voz: ${(err as Error).message}`);
+      await input.reply(VOICE_STORE_BUSY);
+      return true;
+    }
     log(`portal: store no disponible o lento, sigue el cotizador: ${(err as Error).message}`);
     return false;
   }
@@ -460,6 +473,27 @@ export async function routePortal(input: PortalRouteInput): Promise<boolean> {
     return handled;
   };
 
+  // nota de voz con el cotizador a mitad de un flujo (corrida F, punto 4; antes iba al cotizador y recibía "no leo audios"):
+  // se transcribe y es una corrección de la cotización a la vista, la respuesta a la pregunta del cotizador o, si suena a
+  // otra cosa (un reporte), queda en pausa con la transcripción. Un "ok" dictado nunca confirma ni envía. Si la voz está
+  // apagada, sin clave, pasada del tope o vacía, se dice eso.
+  if (isAudio && quoteStep !== "idle") {
+    const heard = msg.media ? await fetchVoice(ctx, { id: msg.media.id, mimeType: msg.media.mimeType }) : { ok: false as const, reply: VOICE_EMPTY };
+    if (!heard.ok) {
+      await input.reply(inQuoteVoiceReply(heard.reply));
+      return finish(true, "voz", "transcripción fallida");
+    }
+    const r = await voiceInQuote(ctx, heard.text, quoteStep);
+    if (r.pause) {
+      const p = await pauseStep(dctx, { ...r.pause, createdAt: now.toISOString() } as PendingStep).catch((err: Error) => {
+        log(`portal: no pude dejar en pausa la nota de voz: ${err.message}`);
+        return null;
+      });
+      if (p) pausedNow.push(p.ref);
+    }
+    return finish(true, "voz", r.what);
+  }
+
   // continuar / descartar / guardar un proceso en pausa (botones del recordatorio, o escrito con el cotizador en idle)
   const resume = !cmd && !hasMedia && (quoteStep === "idle" || portalButton) ? parseResume(text) : null;
   if (resume) {
@@ -574,16 +608,17 @@ export async function routePortal(input: PortalRouteInput): Promise<boolean> {
   // pregunta con los dos botones; lo demás sigue como antes con la misma transcripción (no se vuelve a Deepgram): sin
   // paso, reporte (también lo ambiguo, p. ej. "visité X, usan 295/80R22.5": una nota de voz era y sigue siendo reporte);
   // con paso, la respuesta; un comando dictado, ese comando.
-  if (isAudio && msg.media && (voiceFix || quoteStep === "idle") && deepgramKeyFromEnv(ctx.env)) {
+  if (isAudio && msg.media && quoteStep === "idle" && deepgramKeyFromEnv(ctx.env)) {
     const heard = await fetchVoice(ctx, { id: msg.media.id, mimeType: msg.media.mimeType });
-    if (voiceFix) {
-      if (!heard.ok) await input.reply(VOICE_QUOTE_FAILED);
-      else await voiceCorrection(ctx, heard.text);
-      return finish(true, "voz", heard.ok ? "corrección por voz" : "transcripción fallida");
-    }
     if (heard.ok) {
       const spoken = await spokenForRouting(ctx, heard.text);
       const vd = routeIntent({ text: spoken, state: "idle", isPortalUser: true, pendingPortalStep: live, mentionsKnownCompany: false, now });
+      if (vd.intent === "passthrough" && !live && fold(spoken).split(" ").filter(Boolean).length <= 2) {
+        // una nota muy corta sin nada que hacer ("eh", "sí", "hola"; la prueba real fue de 1 s): se pide repetirla
+        await logTranscript(ctx, heard.text);
+        await ctx.reply(`${heardLine(heard.text)}\n${VOICE_TOO_SHORT}`);
+        return finish(true, "voz", "muy corta");
+      }
       if (vd.rule === "fuera_de_tema") {
         // fuera de tema dictado: la línea fija, sin reporte ni modelo (la transcripción queda registrada)
         await logTranscript(ctx, heard.text);

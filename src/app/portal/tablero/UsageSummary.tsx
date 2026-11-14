@@ -77,7 +77,7 @@ export function UsageSummary({ data }: { data: UsageReport | null }) {
   return (
     <section className="pt-card" aria-labelledby="consumo-title">
       <h2 id="consumo-title">Consumo del asistente</h2>
-      <p className="pt-small pt-muted">Solo lo ve el administrador. Costos estimados (config/portal.json, limits.prices); detalle con npm run llm:usage.</p>
+      <p className="pt-small pt-muted">Solo lo ve el administrador. Costos estimados con los precios configurados del modelo y de la voz.</p>
       <div className="tb-grid2">
         <Period p={data.today} />
         <Period p={data.week} />

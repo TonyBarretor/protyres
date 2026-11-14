@@ -42,7 +42,9 @@ import { clearPending, setPending, type ReportDraftStep } from "./state";
 
 export const VOICE_OFF = "La voz aún no está activa. Escríbeme el reporte en texto, por favor.";
 export const VOICE_FAILED = "No pude transcribir tu nota de voz. Escríbeme el reporte en texto, por favor.";
-export const VOICE_EMPTY = "No entendí nada en la nota de voz (¿salió en silencio?). Escríbeme el reporte en texto, por favor.";
+export const VOICE_EMPTY = "No te escuché bien (¿salió muy corta o en silencio?). Repítela, por favor, o escríbemelo.";
+/** Transcripción de una o dos palabras sin nada que hacer con ella (corrida F, punto 4). */
+export const VOICE_TOO_SHORT = "No te escuché bien: repítelo con un poco más de detalle, por favor (o escríbemelo).";
 export const VOICE_DISABLED_REPLY = "La voz está apagada por ahora. Escríbeme el texto, por favor.";
 export const VOICE_TOO_LONG = (maxSec: number) => `Tu nota de voz dura más de ${Math.round(maxSec / 60)} minutos y no la transcribo. Mándame una más corta o escríbeme el texto, por favor.`;
 export const VOICE_DOWNLOAD_FAILED = "No pude descargar tu nota de voz de WhatsApp. Escríbeme el reporte en texto, por favor.";

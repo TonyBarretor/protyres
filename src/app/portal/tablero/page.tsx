@@ -132,7 +132,7 @@ export default async function TableroPage({ searchParams }: { searchParams: Prom
 
       {anyDemo && (
         <p className="pt-notice tb-demo-note">
-          <DemoTag /> Las cifras marcadas incluyen ventas de demostración. Se borran con <code>npm run portal:clear-demo</code> al cargar las ventas reales.
+          <DemoTag /> Las cifras marcadas incluyen ventas de demostración. Para borrarlas al cargar las ventas reales, contacta al administrador.
         </p>
       )}
 

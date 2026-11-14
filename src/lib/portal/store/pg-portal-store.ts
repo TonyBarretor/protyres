@@ -3,8 +3,9 @@
  * El import masivo usa inserciones por lotes (`sql(rows, cols)`) con `on conflict`.
  */
 import postgres from "postgres";
+import { serverlessPgOptions } from "../../store/pg-options";
 import { isClosedStage, stageProbability, type StageId } from "../stages";
-import { dedupeBy, defaultSince, digits, foldText, groupFleet, normMarca, pageOf, toIsoDate, type FleetAggRow } from "./shared";
+import { dedupeBy, defaultSince, digits, groupFleet, normMarca, pageOf, searchRucPrefix, searchTerms, toIsoDate, topMedidas, ttlCache, type FleetAggRow } from "./shared";
 import type {
   Activity,
   ActivityFilter,
@@ -59,6 +60,11 @@ import type {
   UserRole,
   VocabularyEntry,
   VocabularyInput,
+  VoiceOutcome,
+  VoiceTranscript,
+  VoiceTranscriptFilter,
+  VoiceTranscriptInput,
+  VoiceUnderstood,
 } from "./types";
 
 import { resolveCreditSave } from "../credit/changes";
@@ -72,6 +78,8 @@ type Row = Record<string, unknown>;
 type Fragment = postgres.PendingQuery<postgres.Row[]>;
 
 const BATCH = 1000;
+/** Ver listMarcas / listDepartamentos. */
+const LIST_CACHE_MS = 10 * 60_000;
 
 const num = (v: unknown): number | null => (v === null || v === undefined ? null : Number(v));
 const str = (v: unknown): string | null => (v === null || v === undefined ? null : String(v));
@@ -253,17 +261,14 @@ function where(sql: Sql, conds: Fragment[]): Fragment {
   return conds.slice(1).reduce((acc, c) => sql`${acc} and ${c}`, conds[0]);
 }
 
-/** Mismo plegado que foldText(): minúsculas y sin tildes. */
-const FOLD_FROM = "áàäâãéèëêíìïîóòöôõúùüûñç";
-const FOLD_TO = "aaaaaeeeeiiiiooooouuuunc";
 
 export class PgPortalStore implements PortalStore {
   private constructor(private sql: Sql) {}
 
   static connect(url: string): PgPortalStore {
-    // prepare:false: pooler de Supabase. connect_timeout: si la base no contesta en 10 s, falla (el bot sigue con el
-    // cotizador); idle_timeout libera conexiones ociosas de la función; max 3 por instancia.
-    return new PgPortalStore(postgres(url, { prepare: false, max: 3, connect_timeout: 10, idle_timeout: 20, onnotice: () => undefined }));
+    // Pooler de Supabase en modo transacción: sin sentencias preparadas y sin pipelining (una consulta encolada en una
+    // conexión ocupada no volvía nunca: Prospectos colgado 300 s, corrida F). Ver src/lib/store/pg-options.ts.
+    return new PgPortalStore(postgres(url, serverlessPgOptions({ max: 5 })));
   }
 
   async flush(): Promise<void> {}
@@ -367,11 +372,14 @@ export class PgPortalStore implements PortalStore {
     const sql = this.sql;
     const since = opts.since !== undefined ? toIsoDate(opts.since) : defaultSince(opts.now);
     const conds: Fragment[] = [];
-    const q = foldText(opts.q);
-    if (q) {
-      const like = `%${q.replace(/[\\%_]/g, (m) => `\\${m}`)}%`;
-      const byName = sql`translate(lower(c.razon_social), ${FOLD_FROM}, ${FOLD_TO}) like ${like}`;
-      conds.push(/^\d+$/.test(q) ? sql`(${byName} or c.ruc like ${`${q}%`})` : byName);
+    // razon_norm: columna generada con la misma regla que companyNameKey() (src/cli/migrate.ts), con índice trigram
+    const terms = searchTerms(opts.q);
+    if (terms.compact) {
+      const like = (w: string) => sql`c.razon_norm like ${`%${w}%`}`; // la clave solo tiene [a-z0-9]: nada que escapar
+      const words = terms.words.length > 1 ? sql`(${terms.words.slice(1).reduce((acc, w) => sql`${acc} and ${like(w)}`, like(terms.words[0]))})` : null;
+      const byName = words ? sql`(${like(terms.compact)} or ${words})` : like(terms.compact);
+      const ruc = searchRucPrefix(opts.q);
+      conds.push(ruc ? sql`(${byName} or c.ruc like ${`${ruc}%`})` : byName);
     }
     if (opts.departamento?.length) conds.push(sql`c.departamento in ${sql(opts.departamento)}`);
     if (opts.sector?.length) conds.push(sql`c.sector in ${sql(opts.sector)}`);
@@ -399,13 +407,39 @@ export class PgPortalStore implements PortalStore {
       const [{ n }] = await sql`select count(*)::int as n from companies c where ${where(sql, conds)}`;
       total = Number(n);
     }
-    return {
-      rows: rows.map((r): CompanyRow => ({ ...toCompany(r), participacion: Number(r.participacion), participacionDemo: Boolean(r.participacion_demo) })),
-      total,
-    };
+    const out = rows.map((r): CompanyRow => ({ ...toCompany(r), participacion: Number(r.participacion), participacionDemo: Boolean(r.participacion_demo) }));
+    if (opts.withMedidas && out.length) {
+      // solo las empresas de la página, con el índice (company_id, medida_probable): no recorre la flota entera
+      const med = await sql`
+        select company_id, medida_probable as medida, count(*)::int as n from fleet_vehicles
+        where company_id in ${sql(out.map((r) => r.id))} and medida_probable is not null
+        group by 1, 2`;
+      const counts = new Map<number, Map<string, number>>();
+      for (const m of med) {
+        const id = Number(m.company_id);
+        const byMedida = counts.get(id) ?? new Map<string, number>();
+        byMedida.set(String(m.medida), Number(m.n));
+        counts.set(id, byMedida);
+      }
+      for (const r of out) r.medidas = topMedidas(counts.get(r.id) ?? new Map());
+    }
+    return { rows: out, total };
   }
 
-  async listMarcas(): Promise<MarcaCount[]> {
+  // Marcas y departamentos solo cambian con el import del MTC (otro proceso): se reutilizan 10 min por instancia.
+  // listMarcas recorre los ~150 mil vehículos (~180 ms aun con índice); antes se calculaba en cada carga de Prospectos.
+  private marcasCache = ttlCache(() => this.queryMarcas(), LIST_CACHE_MS);
+  private departamentosCache = ttlCache(() => this.queryDepartamentos(), LIST_CACHE_MS);
+
+  listMarcas(): Promise<MarcaCount[]> {
+    return this.marcasCache();
+  }
+
+  listDepartamentos(): Promise<DepartamentoCount[]> {
+    return this.departamentosCache();
+  }
+
+  private async queryMarcas(): Promise<MarcaCount[]> {
     const rows = await this.sql`
       select upper(trim(marca)) as marca, count(*)::int as vehiculos, count(distinct company_id)::int as empresas
       from fleet_vehicles where marca is not null and trim(marca) <> ''
@@ -413,7 +447,7 @@ export class PgPortalStore implements PortalStore {
     return rows.map((r) => ({ marca: String(r.marca).replace(/\s+/g, " "), vehiculos: Number(r.vehiculos), empresas: Number(r.empresas) }));
   }
 
-  async listDepartamentos(): Promise<DepartamentoCount[]> {
+  private async queryDepartamentos(): Promise<DepartamentoCount[]> {
     const rows = await this.sql`
       select departamento, count(*)::int as empresas from companies where departamento is not null and departamento <> ''
       group by departamento order by empresas desc, departamento asc`;
@@ -988,6 +1022,29 @@ export class PgPortalStore implements PortalStore {
     return toVocabulary(r);
   }
 
+  // ── registro de transcripciones de voz (corrida F, punto 9) ──
+
+  async logVoiceTranscript(input: VoiceTranscriptInput): Promise<void> {
+    await this.sql`
+      insert into voice_transcripts (phone, user_id, context, transcript, understood, outcome, created_at)
+      values (${input.phone}, ${input.userId ?? null}, ${input.context}, ${input.transcript}, ${this.sql.json(input.understood as unknown as postgres.JSONValue)}::jsonb, ${input.outcome}, ${input.createdAt ?? new Date()})`;
+  }
+
+  async listVoiceTranscripts(filter: VoiceTranscriptFilter = {}): Promise<VoiceTranscript[]> {
+    const sql = this.sql;
+    const rows = await sql`
+      select * from voice_transcripts
+      where true
+        ${filter.since ? sql`and created_at >= ${filter.since}` : sql``}
+        ${filter.until ? sql`and created_at < ${filter.until}` : sql``}
+        ${filter.phone ? sql`and phone = ${filter.phone}` : sql``}
+        ${filter.userId !== undefined ? sql`and user_id = ${filter.userId}` : sql``}
+        ${filter.outcomes?.length ? sql`and outcome in ${sql(filter.outcomes)}` : sql``}
+      order by created_at desc, id desc
+      limit ${filter.limit ?? 50}`;
+    return rows.map(toVoiceTranscript);
+  }
+
   // ── órdenes de compra y memoria del pedido ──
 
   async addPurchaseOrder(input: PurchaseOrderInput): Promise<PurchaseOrder> {
@@ -1169,6 +1226,11 @@ function toPurchaseOrder(r: Row): PurchaseOrder {
 function toOrderProfile(r: Row): CompanyOrderProfile {
   const data = typeof r.data === "string" ? (JSON.parse(r.data) as Record<string, unknown>) : ((r.data as Record<string, unknown> | null) ?? {});
   return { companyId: Number(r.company_id), data, updatedAt: date(r.updated_at)! };
+}
+
+function toVoiceTranscript(r: Row): VoiceTranscript {
+  const u = (typeof r.understood === "string" ? JSON.parse(r.understood) : r.understood) as VoiceUnderstood;
+  return { id: Number(r.id), phone: String(r.phone), userId: num(r.user_id), context: String(r.context), transcript: String(r.transcript), understood: u, outcome: String(r.outcome) as VoiceOutcome, createdAt: date(r.created_at)! };
 }
 
 function toVocabulary(r: Row): VocabularyEntry {

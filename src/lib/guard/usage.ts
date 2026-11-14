@@ -218,7 +218,7 @@ async function capReached(purpose: string, cap: CapHit, notice: string | null): 
     if (!(await sink.markProcessed(`guard:tope:${cap.scope}:${cap.metric}:${who}:${limaDateKey(now)}`))) return;
     const quien = cap.scope === "usuario" ? `del usuario ${phone}` : "del bot (global)";
     await ctx.notifyAdmin(
-      `⚠️ *Tope de consumo alcanzado* ${quien}: ${METRIC_LABEL[cap.metric]} ${fmtNum(cap.used)} de ${fmtNum(cap.limit)} hoy. ${cap.metric === "audioMinutes" ? "La voz queda apagada" : "El bot sigue solo con reglas"} hasta mañana. Detalle: npm run llm:usage o el tablero.`,
+      `⚠️ *Tope de consumo alcanzado* ${quien}: ${METRIC_LABEL[cap.metric]} ${fmtNum(cap.used)} de ${fmtNum(cap.limit)} hoy. ${cap.metric === "audioMinutes" ? "La voz queda apagada" : "El bot sigue solo con reglas"} hasta mañana. Detalle en el Tablero del portal.`,
     );
   } catch (err) {
     ctx.log?.(`consumo: no pude avisar al administrador: ${(err as Error).message}`);

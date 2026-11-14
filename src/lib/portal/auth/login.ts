@@ -53,6 +53,7 @@ export function loginGet(req: Request, opts: LoginOptions = {}): Promise<Respons
     const blocked = await limited(req, token, opts);
     if (blocked) return blocked;
     if (!hasValidSignature(token, opts.env ?? process.env)) return expiredLinkPage();
+    if (opts.limits) console.log(`[portal] enlace de entrada abierto (GET, no se gasta): ${browserHint(req)}`);
     return confirmLoginPage(token);
   });
 }
@@ -84,19 +85,31 @@ export async function readBodyLimited(req: Request, max: number): Promise<Uint8A
   return out;
 }
 
-/** Token del formulario (o de ?t=); "too_large" si el cuerpo pasa del máximo. */
-async function tokenFromBody(req: Request): Promise<string | null | "too_large"> {
+/** Token del formulario (o de ?t=) y cómo se envió (`via`: auto = el JS de la página, boton = el usuario); "too_large" si el cuerpo pasa del máximo. */
+async function tokenFromBody(req: Request): Promise<{ token: string | null; via: string } | "too_large"> {
   const fromQuery = new URL(req.url).searchParams.get("t");
   const body = await readBodyLimited(req, publicInputsConfig().maxLoginBodyBytes);
   if (body === null) return "too_large";
   try {
     const form = await new Response(body as BodyInit, { headers: { "content-type": req.headers.get("content-type") ?? "" } }).formData();
     const t = form.get("t");
-    if (typeof t === "string" && t) return t;
+    const via = String(form.get("via") ?? "").slice(0, 10) || "?";
+    if (typeof t === "string" && t) return { token: t, via };
   } catch {
     // sin cuerpo de formulario: se usa ?t=
   }
-  return fromQuery;
+  return { token: fromQuery, via: "?" };
+}
+
+/**
+ * Diagnóstico de la entrada (corrida F, punto 6): navegador (user-agent recortado) y cabeceras Fetch Metadata, sin el
+ * token. Sirve para ver en los registros si la vista previa de WhatsApp abrió el enlace y si el envío fue automático.
+ */
+export function browserHint(req: Request): string {
+  const h = req.headers;
+  const ua = (h.get("user-agent") ?? "sin user-agent").replace(/[\r\n]+/g, " ").slice(0, 160);
+  const meta = ["sec-fetch-site", "sec-fetch-mode", "sec-fetch-dest", "sec-fetch-user"].map((k) => h.get(k)).filter(Boolean).join("/");
+  return meta ? `${ua} [${meta}]` : ua;
 }
 
 /** Host de la petición: el que vio el proxy (Vercel pone x-forwarded-host), si no Host, si no el de la URL. */
@@ -119,8 +132,9 @@ export function isSameOrigin(req: Request): boolean {
 export function loginPost(req: Request, store: PortalStore | (() => Promise<PortalStore>), opts: LoginOptions = {}): Promise<Response> {
   return guard(async () => {
     if (!isSameOrigin(req)) return forbiddenOriginPage();
-    const token = await tokenFromBody(req);
-    if (token === "too_large") return payloadTooLargePage();
+    const sent = await tokenFromBody(req);
+    if (sent === "too_large") return payloadTooLargePage();
+    const token = sent.token;
     if (!token || !plausibleToken(token)) return expiredLinkPage();
     const blocked = await limited(req, token, opts);
     if (blocked) return blocked;
@@ -132,6 +146,7 @@ export function loginPost(req: Request, store: PortalStore | (() => Promise<Port
       await s.flush();
       return expiredLinkPage();
     }
+    if (opts.limits) console.log(`[portal] entrada de ${user.nombre} (envío ${sent.via === "auto" ? "automático" : sent.via === "boton" ? "con el botón" : sent.via}): ${browserHint(req)}`);
     const session = await createSession(s, user.id, opts);
     await s.flush(); // store JSON: que el consumo y la sesión queden escritos antes de responder
     const res = NextResponse.redirect(new URL(HOME_PATH, req.url), 303);

@@ -304,7 +304,10 @@ describe("revisión B: nota de voz con el cotizador a mitad de flujo", () => {
     return out;
   }
 
-  it("cotización en review_quote -> audio -> sí: el cotizador responde como a cualquier número; el portal no arma borrador", async () => {
+  // corrida F, punto 4: antes la nota de voz iba al cotizador ("no leo audios") sin transcribirse; ahora se transcribe y,
+  // como suena a reporte, queda EN PAUSA. Lo que protegía la revisión B se mantiene: no hay borrador y el "sí" siguiente
+  // lo atiende el cotizador igual que para cualquier número.
+  it("cotización en review_quote -> audio -> sí: la nota queda en pausa, sin borrador; el 'sí' sigue al cotizador como a cualquier número", async () => {
     process.env.DEEPGRAM_API_KEY = "dg-test-key";
     const dg = fakeDeepgram("Visité Zeta Bus, me atendió el jefe de flota, quedamos en llamar el lunes");
     configureReportBot({ llm: null, deepgramFetch: dg.fetchImpl, downloadMedia: (id) => client.downloadMedia(id), logMessage: (e) => prices.logMessage(e) });
@@ -314,11 +317,14 @@ describe("revisión B: nota de voz con el cotizador a mitad de flujo", () => {
     const stranger = await run(STRANGER);
     const frank = await run(FRANK);
     expect((await prices.getConversation(STRANGER))?.step ?? "idle").toBe((await prices.getConversation(FRANK))?.step ?? "idle");
-    // desde la nota de voz, mismas respuestas que un número que no es del portal
-    expect(frank.slice(2)).toEqual(stranger.slice(2));
-    expect(frank.flat().join("\n")).not.toContain("🎙️ Entendí");
+    // la nota de voz: transcrita y en pausa (el número que no es del portal recibe su línea fija)
+    expect(frank[2].join("\n")).toContain("🎙 Escuché: Visité Zeta Bus");
+    expect(frank[2].join("\n")).toContain("la dejé en pausa");
+    expect(frank[2].join("\n")).not.toMatch(/no leo audios/i);
+    // el "sí" siguiente: mismas respuestas que un número que no es del portal
+    expect(frank.slice(3)).toEqual(stranger.slice(3));
     expect(frank.flat().join("\n")).not.toContain("Reporte de visita");
-    expect(dg.urls).toHaveLength(0); // ni siquiera se transcribió
+    expect(dg.urls).toHaveLength(1);
     expect(await getPending(portal, FRANK, new Date())).toBeNull();
     expect(await portal.listActivities({ companyId: ids[RUC_ZETA] })).toHaveLength(0);
   });

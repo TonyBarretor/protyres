@@ -12,8 +12,10 @@
  *     un pedido de verdad (medida de llanta, o señales de pedido en más de 3 palabras): entonces el cotizador y quien llama
  *     descarta el paso pendiente. Respuestas cortas ("2", "sí", "cotización", "reporte") son del portal.
  *  6. Audio de un usuario del portal con el cotizador en idle -> report (el bloque de voz lo transcribe), o portal_flow si
- *     hay un paso pendiente (que acepta voz); con el cotizador a mitad de un flujo -> passthrough (el cotizador responde
- *     como siempre: un "sí" posterior no puede confirmar un borrador que el vendedor no vio). De otro número -> passthrough.
+ *     hay un paso pendiente (que acepta voz); con el cotizador a mitad de un flujo -> passthrough aquí, pero routePortal
+ *     la atiende antes (corrida F, punto 4: nunca "no leo audios"): corrección de la cotización a la vista, respuesta a la
+ *     pregunta del cotizador o, si suena a reporte, en pausa (un "sí" posterior no confirma un borrador que el vendedor no
+ *     vio: no se arma ninguno). De otro número -> passthrough.
  *     Otros adjuntos -> passthrough (salvo comando con adjunto, p. ej. `oc` con la orden de compra, o un paso con
  *     `acceptsMedia` dentro de su `mediaUntil` y sin leyenda de otra cosa: ver mediaAccepted).
  *  7. idle, usuario del portal: señales fuertes de cotización (medida, "x4", correo, dscto, margen, "cotizar"...) sin

@@ -17,6 +17,62 @@ export function foldText(s: string | null | undefined): string {
     .trim();
 }
 
+/**
+ * Clave de búsqueda de una razón social (corrida F): foldText y sin espacios ni signos, "Z-BUSS S.A.C." -> "zbusssac".
+ * En Postgres es la columna generada companies.razon_norm (misma regla: src/cli/migrate.ts).
+ */
+export function companyNameKey(s: string | null | undefined): string {
+  return foldText(s).replace(/[^a-z0-9]+/g, "");
+}
+
+/**
+ * Texto buscado -> palabras (cada una con companyNameKey) y todas juntas. Una empresa coincide si su clave contiene
+ * todas las palabras o el texto junto: "z buss", "zbuss" y "Z-Buss" encuentran "ZBUSS E.I.R.L." y "Z BUSS S.A.C.".
+ * Una letra suelta va pegada a la palabra siguiente (o a la anterior si es la última): sola coincidiría con casi todo
+ * ("z" + "buss" encontraba "BUS SERVICE AUTOMOTRIZ").
+ */
+export function searchTerms(q: string | null | undefined): { compact: string; words: string[] } {
+  const tokens = foldText(q)
+    .split(/\s+/)
+    .map(companyNameKey)
+    .filter(Boolean);
+  const words: string[] = [];
+  let pending = "";
+  for (const t of tokens) {
+    const w = pending + t;
+    if (w.length === 1) pending = w;
+    else {
+      words.push(w);
+      pending = "";
+    }
+  }
+  if (pending) {
+    if (words.length) words[words.length - 1] += pending;
+    else words.push(pending);
+  }
+  return { compact: tokens.join(""), words: [...new Set(words)] };
+}
+
+/** RUC buscado: solo dígitos (se aceptan espacios, puntos y guiones entre ellos); "" si el texto no es un número. */
+export function searchRucPrefix(q: string | null | undefined): string {
+  const t = (q ?? "").trim();
+  return /^[\d][\d\s.\-]*$/.test(t) ? digits(t) : "";
+}
+
+/** true si la clave de la razón social coincide con el texto buscado (ver searchTerms). */
+export function nameMatches(nameKey: string, terms: { compact: string; words: string[] }): boolean {
+  if (!terms.compact) return true;
+  return nameKey.includes(terms.compact) || terms.words.every((w) => nameKey.includes(w));
+}
+
+/** Medidas probables más frecuentes de una flota (de más a menos unidades; empate: orden alfabético). */
+export function topMedidas(counts: Map<string, number>, limit = 3): { medida: string; unidades: number }[] {
+  return [...counts.entries()]
+    .map(([medida, unidades]) => ({ medida, unidades }))
+    .sort((a, b) => b.unidades - a.unidades || a.medida.localeCompare(b.medida))
+    .slice(0, limit);
+}
+
 /** Marca de vehículo comparable: mayúsculas, sin espacios sobrantes. */
 export function normMarca(s: string | null | undefined): string {
   return (s ?? "").trim().replace(/\s+/g, " ").toUpperCase();
@@ -118,4 +174,23 @@ export function dedupeBy<T>(rows: T[], key: (r: T) => string): T[] {
   const m = new Map<string, T>();
   for (const r of rows) m.set(key(r), r);
   return [...m.values()];
+}
+
+/**
+ * Valor calculado que se reutiliza durante `ttlMs` (por instancia). Las peticiones simultáneas comparten la misma
+ * promesa; un fallo no se guarda. Lo usa PgPortalStore para listas que solo cambian con el import del MTC.
+ */
+export function ttlCache<T>(load: () => Promise<T>, ttlMs: number, now: () => number = Date.now): () => Promise<T> {
+  let entry: { at: number; value: Promise<T> } | null = null;
+  return () => {
+    const t = now();
+    if (entry && t - entry.at <= ttlMs) return entry.value;
+    const value = load();
+    const mine = { at: t, value };
+    entry = mine;
+    value.catch(() => {
+      if (entry === mine) entry = null;
+    });
+    return value;
+  };
 }

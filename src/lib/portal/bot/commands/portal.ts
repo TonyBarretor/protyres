@@ -3,7 +3,8 @@ import { LOGIN_TOKEN_TTL_MS } from "../../auth/constants";
 import { PortalAuthConfigError, createLoginLink } from "../../auth/tokens";
 import { registerPortalCommand } from "../registry";
 
-export const noConfigReply = (detail: string): string => `El portal aún no está configurado: ${detail} Avísale a Tony.`;
+/** Sin secreto u otra configuración: el detalle (con el nombre de la variable) va al log, no al chat (corrida F, punto 3). */
+export const noConfigReply = (_detail?: string): string => "El portal aún no está configurado: contacta al administrador.";
 
 registerPortalCommand("portal", async (ctx) => {
   try {
@@ -14,6 +15,7 @@ registerPortalCommand("portal", async (ctx) => {
   } catch (err) {
     if (!(err instanceof PortalAuthConfigError)) throw err;
     ctx.log(`portal: ${err.message}`);
+    ctx.log(`portal: sin configuración para el enlace: ${err.message}`);
     await ctx.reply(noConfigReply(err.message));
   }
 });

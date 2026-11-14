@@ -8,7 +8,7 @@ export function TempChip({ t }: { t: Temperatura | null | undefined }) {
 
 export function DemoTag() {
   return (
-    <span className="pt-tag pt-tag-demo" title="Incluye ventas de demostración (npm run portal:clear-demo las borra)">
+    <span className="pt-tag pt-tag-demo" title="Incluye ventas de demostración (para borrarlas, contacta al administrador)">
       DEMO
     </span>
   );

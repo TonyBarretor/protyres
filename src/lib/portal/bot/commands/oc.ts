@@ -38,7 +38,7 @@ import type { Quote } from "../../../quote/types";
 import { loadSettings, type Settings } from "../../../settings";
 import { getStore } from "../../../store";
 import type { PriceStore } from "../../../store/types";
-import { ORDER_ITEMS_EXAMPLE, parseOrderItems } from "../../order/items";
+import { ORDER_ITEMS_EXAMPLE, parseOrderItems, type ModelChoice } from "../../order/items";
 import { buildPedidoXlsx, formatPedidoFileName, pedidoDescription, pedidoFromQuote, pedidoTooManyItems, pedidoUnitPrice, plazoDiasFromTerm, PEDIDO_MAX_ITEMS, type PedidoData, type PedidoItem } from "../../order/pedido-xlsx";
 import {
   agenciaText,
@@ -57,6 +57,7 @@ import {
 } from "../../order/questions";
 import { canEditCompany } from "../../auth/permissions";
 import { ACT_QUOTE, setCompanyCreditTerms, shortQuoteNumber } from "../../quotes/link";
+import { fold } from "../../../tyre/brands";
 import { findTyreSizes } from "../../../tyre/spec";
 import { stageLabel } from "../../stages";
 import type { Company, Opportunity } from "../../store/types";
@@ -97,7 +98,7 @@ const settings = (): Settings => deps.settings ?? loadSettings();
 
 // ── paso pendiente ──
 
-type Phase = "quote" | "items" | "questions";
+type Phase = "quote" | "items" | "model" | "questions";
 
 interface Media {
   id: string;
@@ -130,6 +131,13 @@ export interface OcStep extends PendingStep {
   answers: OrderAnswers;
   qctx: QuestionContext | null;
   field: OrderField | null;
+  /**
+   * Fase `model` (corrida F, punto 7): los ítems escritos, los que piden un modelo que no existe en esa medida (se
+   * pregunta el primero) y lo ya elegido (índice de línea -> id de la fila, o "manual" = tal como se escribió).
+   */
+  itemsText?: string | null;
+  choices?: ModelChoice[] | null;
+  picks?: Record<number, string> | null;
 }
 
 interface OcArgs {
@@ -296,9 +304,42 @@ function quotePrompt(s: Pick<OcStep, "quoteNumber" | "quoteItems" | "currency">)
   return `Uso la cotización *${shortQuoteNumber(s.quoteNumber ?? "")}* (${shortItems(items)} · ${money(itemsTotal(items), s.currency)} inc. IGV) — responde *sí*, o *no* para escribir otros ítems.`;
 }
 
+// ── modelo que no existe en esa medida (corrida F, punto 7) ──
+
+const clip20 = (t: string) => (t.length > 20 ? `${t.slice(0, 19).trimEnd()}…` : t);
+export const MODEL_KEEP_ID = "tal cual";
+
+/** "¿Cuál va en el pedido?" para el primer ítem sin su modelo: lo pedido, las opciones con precio y qué responder. */
+export function modelPrompt(s: Pick<OcStep, "choices" | "currency">): string {
+  const c = s.choices?.[0];
+  if (!c) return "";
+  const opts = c.options.map((o, i) => `${i + 1}. ${o.label} — ${money(o.unitWithTax, s.currency)} c/u inc. IGV`);
+  const keep = c.canKeep ? `\nO *Dejar como escribí*: ${c.model} con tu precio, como ítem manual.` : "";
+  const price = c.canKeep ? " Si eliges otro modelo, se mantiene el precio que escribiste." : "";
+  return `⚠️ No tengo *${c.model}* en esa medida (${c.asked}). No lo cambio sin preguntarte; los más cercanos:\n${opts.join("\n")}${keep}\n¿Cuál va en el pedido?${price} (O escríbeme los ítems de nuevo.)`;
+}
+
+function modelButtons(c: ModelChoice): QuickAnswer[] {
+  const b = c.options.map((o, i) => ({ id: `modelo ${i + 1}`, title: clip20(o.short || o.label) }));
+  if (c.canKeep) b.push({ id: MODEL_KEEP_ID, title: "Dejar como escribí" });
+  return b;
+}
+
+/** La respuesta a "¿cuál va en el pedido?": id de la fila, "manual" o null (no es respuesta). */
+export function modelAnswer(text: string, c: ModelChoice): string | null {
+  const t = fold(text).replace(/^(?:el|la|modelo|opcion|usa|usar)\s+/, "").trim();
+  if (!t) return null;
+  if (c.canKeep && /^(?:tal cual|dejar(?: como escribi| asi| tal cual)?|como (?:lo )?escribi|manual|el mio|el que escribi)$/.test(t)) return "manual";
+  const n = /^(\d)$/.exec(t);
+  if (n) return c.options[parseInt(n[1], 10) - 1]?.id ?? null;
+  const hit = c.options.filter((o) => fold(o.short || o.label) === t || fold(o.label) === t || fold(o.label).endsWith(` ${t}`));
+  return hit.length === 1 ? hit[0].id : null;
+}
+
 /** Botones de la pregunta en curso: *Sí* y *No* para usar la cotización; los de order/questions.ts en las preguntas. */
 function currentButtons(s: OcStep): QuickAnswer[] {
   if (s.phase === "quote") return [{ id: "sí", title: "Sí" }, { id: "no", title: "No" }];
+  if (s.phase === "model" && s.choices?.[0]) return modelButtons(s.choices[0]);
   if (s.phase === "questions" && s.qctx) {
     const q = nextOrderQuestion(s.answers, s.qctx);
     return q ? questionButtons(q) : [];
@@ -317,13 +358,14 @@ async function ask(ctx: PortalContext, s: OcStep, body: string): Promise<void> {
 function currentPrompt(s: OcStep): string {
   if (s.phase === "quote") return quotePrompt(s);
   if (s.phase === "items") return itemsPrompt();
+  if (s.phase === "model") return modelPrompt(s);
   return (s.qctx && nextOrderQuestion(s.answers, s.qctx)?.text) ?? "";
 }
 
 async function save(ctx: PortalContext, s: OcStep): Promise<void> {
   const { createdAt: _c, ...rest } = s;
   // las banderas del router siguen a la fase: solo los ítems capturan cualquier texto
-  await setPending(ctx.store, ctx.from, { ...rest, captureText: s.phase === "items", keepText: s.phase !== "items", createdAt: ctx.now.toISOString() }, ctx.now);
+  await setPending(ctx.store, ctx.from, { ...rest, captureText: s.phase === "items" || s.phase === "model", keepText: s.phase !== "items" && s.phase !== "model", createdAt: ctx.now.toISOString() }, ctx.now);
 }
 
 const notYours = (c: Company) => `*${c.razonSocial}* no es tuya. Primero: *asignarme ${c.ruc}* (o pide al supervisor).`;
@@ -347,6 +389,7 @@ const FIELD_MISSING: Record<OrderField, string> = {
 export function orderMissing(s: OcStep): string {
   if (s.phase === "quote") return "falta confirmar la cotización";
   if (s.phase === "items") return "faltan los ítems";
+  if (s.phase === "model") return "falta elegir el modelo";
   const q = s.qctx ? nextOrderQuestion(s.answers, s.qctx) : null;
   return q ? FIELD_MISSING[q.field] : "falta generar el pedido";
 }
@@ -628,20 +671,33 @@ registerPendingHandler(OC_STEP, async (ctx, step, rawText) => {
     s.phase = "items";
   }
 
+  // modelo que no existe en esa medida: la opción elegida (botón, número o nombre), o los ítems escritos de nuevo
+  if (s.phase === "model") {
+    const c = s.choices?.[0];
+    const pick = c ? modelAnswer(text, c) : null;
+    if (c && pick) {
+      s.picks = { ...(s.picks ?? {}), [c.line]: pick };
+      s.choices = s.choices!.slice(1);
+      if (s.choices.length) {
+        await save(ctx, s);
+        await ask(ctx, s, modelPrompt(s));
+        return true;
+      }
+      return itemsFrom(ctx, s, company, s.itemsText ?? "", s.picks);
+    }
+    if (!findTyreSizes(text).length) {
+      await ask(ctx, s, `No entendí «${text.length > 40 ? `${text.slice(0, 39)}…` : text}» como una de las opciones.\n\n${modelPrompt(s)}`);
+      return true;
+    }
+    s.phase = "items"; // escribió los ítems de nuevo
+  }
+
   if (s.phase === "items") {
     if (!text) {
       await ctx.reply(itemsPrompt());
       return true;
     }
-    const res = await parseOrderItems(text, { priceStore: await priceStore(), settings: settings(), today: limaDateKey(ctx.now) });
-    if (!res.ok) {
-      await save(ctx, s);
-      await ctx.reply(res.error);
-      return true;
-    }
-    s.currency = res.currency;
-    await enterQuestions(ctx, s, company, res.items, `Entendí:\n${itemLines(res.items, res.currency)}\nTotal: ${money(itemsTotal(res.items), res.currency)} inc. IGV`);
-    return true;
+    return itemsFrom(ctx, s, company, text, {});
   }
 
   // preguntas
@@ -661,6 +717,36 @@ registerPendingHandler(OC_STEP, async (ctx, step, rawText) => {
   await askNext(ctx, s, company);
   return true;
 });
+
+/** Arma los ítems del texto con las elecciones hechas; si algún modelo no existe en esa medida, lo pregunta (fase model). */
+async function itemsFrom(ctx: PortalContext, s: OcStep, company: Company, text: string, picks: Record<number, string>): Promise<boolean> {
+  const res = await parseOrderItems(text, { priceStore: await priceStore(), settings: settings(), today: limaDateKey(ctx.now), picks });
+  if (!res.ok && res.choices) {
+    s.phase = "model";
+    s.itemsText = text;
+    s.choices = res.choices;
+    s.picks = picks;
+    s.currency = res.currency;
+    await save(ctx, s);
+    await ask(ctx, s, modelPrompt(s));
+    return true;
+  }
+  if (!res.ok) {
+    s.phase = "items";
+    s.itemsText = null;
+    s.choices = null;
+    s.picks = null;
+    await save(ctx, s);
+    await ctx.reply(res.error);
+    return true;
+  }
+  s.currency = res.currency;
+  s.itemsText = null;
+  s.choices = null;
+  s.picks = null;
+  await enterQuestions(ctx, s, company, res.items, `Entendí:\n${itemLines(res.items, res.currency)}\nTotal: ${money(itemsTotal(res.items), res.currency)} inc. IGV`);
+  return true;
+}
 
 // ── pedido ──
 

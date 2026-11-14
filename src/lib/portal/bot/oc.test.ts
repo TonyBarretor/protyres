@@ -707,3 +707,78 @@ describe("revisión B: oc y el cotizador, permisos, plazo y cancelar", () => {
     expect(await portal.listPurchaseOrders({ companyId: roca.id })).toHaveLength(2);
   });
 });
+
+describe("oc: modelo que no existe en esa medida (corrida F, punto 7)", () => {
+  // caso real: "Fenixway Flama 77 295/80R22.5" quedó como FLAMA 89 (bastaba un parecido de 0,6)
+  beforeEach(async () => {
+    await prices.upsertRows([
+      row({ id: "own-flama89-295", provider: "360 Tyres", kind: "own", brand: "Fenixway", model: "Flama 89", size: "295/80R22.5", cost: 495.6 }),
+      row({ id: "prov-flama77-315b", provider: "Llantas del Sur", kind: "provider", brand: "Fenixway", model: "Flama 77", size: "315/80R22.5", cost: 210 }),
+    ]);
+  });
+  function press(title: string): InboundMessage {
+    const last = client.interactives().at(-1);
+    const b = last?.type === "button" ? last.buttons.find((x) => x.title === title) : undefined;
+    if (!b) throw new Error(`no hay botón «${title}» (último: ${JSON.stringify(last)})`);
+    const payload = { entry: [{ changes: [{ field: "messages", value: { messages: [{ id: `wamid.oc${++seq}`, from: FRANK, timestamp: "1", type: "interactive", interactive: { type: "button_reply", button_reply: { id: b.id, title } } }] } }] }] };
+    return parseWebhook(payload).messages[0];
+  }
+  const buttonsOf = (out: OutboundMessage[]) => {
+    const m = [...out].reverse().find((x) => x.kind === "interactive");
+    return m?.interactive?.type === "button" ? m.interactive.buttons.map((b) => b.title) : [];
+  };
+
+  it("no sustituye en silencio: se detiene, muestra las opciones con precio y pregunta con botones; sin Excel hasta elegir", async () => {
+    await say("oc roca 7788");
+    let out = await say("8 x Fenixway Flama 77 295/80R22.5");
+    const t = lastText(out);
+    expect(t).toContain("No tengo *FLAMA 77* en esa medida (8 × Fenixway FLAMA 77 295/80R22.5)");
+    expect(t).toContain("1. Fenixway Flama 89 18PR — US$ 495.60 c/u inc. IGV");
+    expect(t).not.toContain("Entendí:");
+    expect(buttonsOf(out)).toEqual(["Flama 89", "Valor 87"]);
+    expect(buttonsOf(out).every((x) => x.length <= 20)).toBe(true);
+    expect(out.some((m) => m.kind === "document")).toBe(false);
+    const step = (await getPending(portal, FRANK, new Date())) as OcStep;
+    expect(step.phase).toBe("model");
+    expect(step.captureText).toBe(true);
+
+    out = await say(press("Flama 89"));
+    expect(lastText(out)).toContain("Entendí:");
+    expect(lastText(out)).toContain("8 × 295/80R22.5 18PR FENIXWAY FLAMA 89 — US$ 495.60 c/u");
+    expect(((await getPending(portal, FRANK, new Date())) as OcStep).phase).toBe("questions");
+  });
+
+  it("con precio escrito: *Dejar como escribí* lo deja como ítem manual con ese precio; elegir otro modelo mantiene el precio", async () => {
+    await say("oc roca");
+    let out = await say("8 x Fenixway Flama 77 295/80R22.5 a 254");
+    expect(buttonsOf(out)).toEqual(["Flama 89", "Valor 87", "Dejar como escribí"]);
+    expect(lastText(out)).toContain("se mantiene el precio que escribiste");
+    out = await say(press("Dejar como escribí"));
+    expect(lastText(out)).toContain("Entendí:");
+    expect(lastText(out)).toMatch(/8 × .*FLAMA 77.* — US\$ 299\.72 c\/u/i);
+
+    await say("cancelar");
+    await say("oc roca");
+    await say("8 x Fenixway Flama 77 295/80R22.5 a 254");
+    out = await say("1"); // escrito: la opción 1
+    expect(lastText(out)).toContain("8 × 295/80R22.5 18PR FENIXWAY FLAMA 89 — US$ 299.72 c/u");
+  });
+
+  it("modelo exacto o sin modelo pedido: sigue como hoy, sin preguntar", async () => {
+    await say("oc roca");
+    let out = await say("8 x Fenixway Flama 77 315/80R22.5 a 254");
+    expect(lastText(out)).toContain("Entendí:");
+    await say("cancelar");
+    await say("oc roca");
+    out = await say("4 x Fenixway 295/80R22.5");
+    expect(lastText(out)).toContain("Entendí:");
+    expect(buttonsOf(out)).not.toContain("Flama 89");
+  });
+
+  it("los ítems escritos de nuevo reemplazan la pregunta", async () => {
+    await say("oc roca");
+    await say("8 x Fenixway Flama 77 295/80R22.5");
+    const out = await say("8 x Fenixway Valor 87 295/80R22.5");
+    expect(lastText(out)).toContain("8 × 295/80R22.5 18PR FENIXWAY VALOR 87 — US$ 472.00 c/u");
+  });
+});

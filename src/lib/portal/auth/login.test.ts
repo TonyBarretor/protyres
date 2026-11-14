@@ -92,6 +92,10 @@ describe("/portal/login", () => {
   it("without secret: clear configuration page", async () => {
     const res = await loginGet(new Request(`${BASE}?t=a.b`), { env: {} });
     expect(res.status).toBe(503);
-    expect(await res.text()).toContain("PORTAL_SESSION_SECRET");
+    // corrida F, punto 3: el nombre de la variable va a la consola del servidor, no a la pantalla
+    const html = await res.text();
+    expect(html).toContain("Portal no configurado");
+    expect(html).toContain("Contacta al administrador");
+    expect(html).not.toContain("PORTAL_SESSION_SECRET");
   });
 });

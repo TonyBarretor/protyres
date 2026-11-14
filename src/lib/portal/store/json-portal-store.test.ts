@@ -330,4 +330,45 @@ describe("seedUsers", () => {
     await seedUsers(store, { salespeople, env: { ADMIN_NUMBERS: "18605180534", PORTAL_SUPERVISOR_NUMBER: "51911222333" } });
     expect(await store.listUsers()).toHaveLength(3); // idempotente
   });
+
+  it("dos usuarios con el mismo número: gana el de mayor rol (admin) aunque venga después, y se avisa", async () => {
+    const store = JsonPortalStore.memory();
+    const env = { PORTAL_SUPERVISOR_NUMBER: "51900000777", PORTAL_ADMIN_NUMBER: "51900000777", PORTAL_TECH_LEAD_NUMBER: "51900000888" };
+    const users = [
+      { nombre: "Juan Bustios", rol: "supervisor" as const, whatsappEnv: "PORTAL_SUPERVISOR_NUMBER" },
+      { nombre: "Tony Barreto", rol: "admin" as const, whatsappEnv: "PORTAL_ADMIN_NUMBER" },
+      { nombre: "Danyer Saavedra", rol: "tecnico" as const, whatsappEnv: "PORTAL_TECH_LEAD_NUMBER" },
+      { nombre: "Otro Vendedor", rol: "vendedor" as const, whatsapp: "51900000888" },
+    ];
+    const r = await seedUsers(store, { users, env });
+    expect(r.users.map((u) => [u.nombre, u.rol])).toEqual([
+      ["Tony Barreto", "admin"],
+      ["Otro Vendedor", "vendedor"],
+    ]);
+    expect(r.warnings.join("\n")).toMatch(/Juan Bustios \(supervisor\).*Tony Barreto \(admin\).*queda Tony Barreto/);
+    expect(r.warnings.join("\n")).toMatch(/Danyer Saavedra \(tecnico\).*Otro Vendedor \(vendedor\).*queda Otro Vendedor/);
+    expect(r.warnings.join("\n")).not.toContain("51900000777"); // números enmascarados en los avisos
+    expect((await store.getUserByWhatsapp("51900000777"))?.rol).toBe("admin");
+  });
+
+  it("un registro que ya existía con ese número se actualiza (y se avisa del cambio de nombre); los que sobran solo se avisan", async () => {
+    const store = JsonPortalStore.memory();
+    const juan = await store.upsertUser({ nombre: "Juan Bustios", whatsapp: "51900000777", rol: "supervisor" });
+    await store.upsertUser({ nombre: "Ex Vendedor", whatsapp: "51900000999", rol: "vendedor" });
+    const users = [{ nombre: "Tony Barreto", rol: "admin" as const, whatsappEnv: "PORTAL_ADMIN_NUMBER" }];
+    const env = { PORTAL_ADMIN_NUMBER: "51900000777" };
+
+    const dry = await seedUsers(store, { users, env }, { dryRun: true });
+    expect(dry.users).toEqual([]);
+    expect(dry.entries.map((e) => [e.nombre, e.rol, e.action, e.before?.nombre])).toEqual([["Tony Barreto", "admin", "actualizar", "Juan Bustios"]]);
+    expect((await store.getUserByWhatsapp("51900000777"))?.nombre).toBe("Juan Bustios"); // --dry-run no escribe
+    expect(dry.warnings.join("\n")).toMatch(/#\d+.*Juan Bustios · supervisor.*Tony Barreto · admin/);
+    expect(dry.warnings.join("\n")).toMatch(/Ex Vendedor.*no está en la configuración.*no se borra/);
+
+    const r = await seedUsers(store, { users, env });
+    expect(r.users.map((u) => [u.id, u.nombre, u.rol])).toEqual([[juan.id, "Tony Barreto", "admin"]]);
+    expect(await store.listUsers()).toHaveLength(2); // no borra a nadie
+    const again = await seedUsers(store, { users, env }, { dryRun: true });
+    expect(again.entries[0].action).toBe("igual");
+  });
 });

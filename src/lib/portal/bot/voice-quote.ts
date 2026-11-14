@@ -9,20 +9,23 @@
  *  - startVoiceQuote: responde `🎙 Escuché: <literal>` en una línea, normaliza, valida la medida contra el catálogo y pasa
  *    el texto al cotizador. Sin medida, o con una que no está en el catálogo, pregunta (botones con las candidatas, máx. 3)
  *    y espera en el paso `voice_size` (captureText: la respuesta es una medida). Nunca elige una medida.
- *  - voiceCorrection: con la cotización por voz a la vista (cotizador en `choose`), una nota de voz es una corrección:
+ *  - voiceInQuote: con una cotización a la vista (cotizador en `choose`, `review_quote`, `need_email`), una nota de voz es una corrección:
  *    "no, eran doce" -> `cantidad 12`, "precio 259" -> `precio 259`, "cámbialo a Valor 99" -> `modelo Valor 99` (el
  *    cotizador elige esa opción). Un "ok" dictado no arma el PDF: se pide escribirlo.
  */
+import { fold } from "../../tyre/brands";
 import { findTyreSizes } from "../../tyre/spec";
-import { checkSizes, displaySize, normalizeDictation, normalizeSpoken, normalizeVoiceCorrection } from "../voice/dictation";
+import { checkSizes, displaySize, normalizeDictation, normalizeSpoken, normalizeVoiceCorrection, spokenToDigits, type DictatedQuote } from "../voice/dictation";
+import { isSizeOnly, resolveSpokenSizes, type AmbiguousSize } from "../voice/sizes";
+import { recordVoice, understoodOf } from "./voice-log";
 import { applyVocabulary } from "../voice/vocabulary";
 import { askAgain } from "./pause";
 import { registerPausable, registerPendingHandler, replyButtons, type PortalContext } from "./registry";
 import { fetchVoice, logTranscript, sellerCompanies } from "./report";
 import { matchSpokenName } from "../voice/fuzzy";
 import { shortName } from "./companies";
-import { explicitQuoteStart, strongTyreQuote } from "./router";
-import { clearPending, setPending, type PendingStep } from "./state";
+import { explicitQuoteStart, routeIntent, strongTyreQuote } from "./router";
+import { clearPending, setPending, type IntentChoiceStep, type PendingStep } from "./state";
 
 export const VOICE_SIZE = "voice_size";
 
@@ -37,6 +40,10 @@ export interface VoiceSizeStep extends PendingStep {
   transcript: string;
   /** La respuesta es una medida: el paso se queda con el texto (router, regla 9). */
   captureText: true;
+  /** Medidas del catálogo entre las que se pregunta (lo dictado podía ser varias; corrida F, punto 9). */
+  options?: string[];
+  /** Lo dictado que podía ser varias medidas. */
+  spokenSize?: string;
 }
 
 export const VOICE_OK_TYPED = "Por voz no armo el PDF: revisa el resumen y escribe *ok* para armarlo (o sigue corrigiendo).";
@@ -70,11 +77,12 @@ export async function startVoiceQuote(ctx: PortalContext, transcript: string): P
   await logTranscript(ctx, transcript);
   await ctx.reply(heardLine(transcript));
   const catalog = await catalogOf(ctx);
-  const d = normalizeDictation(applyVocabulary(transcript, await learned(ctx)), { designs: catalog?.designs, brands: catalog?.brands });
+  const d = normalizeDictation(applyVocabulary(transcript, await learned(ctx)), { designs: catalog?.designs, brands: catalog?.brands, sizes: catalog?.sizes });
   const notes = d.fixes.length ? [`🔤 Corregí lo que oí: ${d.fixes.map((f) => `«${f.from}» → ${f.to}`).join(", ")}.`] : [];
+  const extra: SizeExtra = { choices: d.sizeChoices, unheard: d.unheardSizes, dictated: d };
   if (!d.customer) {
     if (notes.length) await ctx.reply(notes.join("\n"));
-    return continueVoiceQuote(ctx, d.text, transcript);
+    return continueVoiceQuote(ctx, d.text, transcript, extra);
   }
   // el cliente dictado contra las empresas del vendedor y los clientes de cotizaciones anteriores (nunca a ciegas)
   const known = await knownCustomers(ctx, catalog?.customers ?? []);
@@ -83,19 +91,20 @@ export async function startVoiceQuote(ctx: PortalContext, transcript: string): P
   if (m?.kind === "clear" && m.best) {
     notes.push(`👤 Cliente: entendí «${d.customer}» → *${m.best.name}*`);
     await ctx.reply(notes.join("\n"));
-    return continueVoiceQuote(ctx, withCustomer(d.text, d.customer, m.best.name), transcript);
+    return continueVoiceQuote(ctx, withCustomer(d.text, d.customer, m.best.name), transcript, { ...extra, customer: m.best.name });
   }
   if (m?.kind === "doubt") {
     if (notes.length) await ctx.reply(notes.join("\n"));
     const options = m.candidates.slice(0, 2).map((c) => c.name);
-    const step: Omit<VoiceCustomerStep, "createdAt"> = { kind: VOICE_CUSTOMER, text: d.text, transcript, spoken: d.customer, options, captureText: true };
+    const step: Omit<VoiceCustomerStep, "createdAt"> = { kind: VOICE_CUSTOMER, text: d.text, transcript, spoken: d.customer, options, captureText: true, sizeChoices: d.sizeChoices, unheard: d.unheardSizes };
     await setPending(ctx.store, ctx.from, step, ctx.now);
     await replyButtons(ctx, customerQuestion(d.customer, options), customerButtons(d.customer, options));
+    await recordVoice(ctx, { transcript, context: "cotizacion", understood: understoodOf(d, { questions: [`cliente: ${options.join(" / ")}`] }), outcome: "pregunta" });
     return;
   }
   if (!exact) notes.push(`⚠️ «${d.customer}» no está entre tus empresas ni los clientes conocidos: lo dejo tal cual. Si no es así, corrígelo (p. ej. *para ZBUSS*).`);
   if (notes.length) await ctx.reply(notes.join("\n"));
-  await continueVoiceQuote(ctx, d.text, transcript);
+  await continueVoiceQuote(ctx, d.text, transcript, extra);
 }
 
 // ── cliente dictado (prueba con Deepgram real, 2026-11-13: "ZBUSS" llegó como "Septa BUSS") ──
@@ -113,6 +122,9 @@ export interface VoiceCustomerStep extends PendingStep {
   /** Razones sociales candidatas (máx. 2: el tercer botón es "Dejar «…»"). */
   options: string[];
   captureText: true;
+  /** Medidas dictadas que podían ser varias (se preguntan después del cliente). */
+  sizeChoices?: AmbiguousSize[];
+  unheard?: string[];
 }
 
 const foldName = (s: string) =>
@@ -157,7 +169,7 @@ registerPendingHandler(VOICE_CUSTOMER, async (ctx, step, rawText) => {
   else name = s.options.find((o) => foldName(o) === t || foldName(shortName(o)) === t) ?? null;
   if (!name) return false;
   await clearPending(ctx.store, ctx.from);
-  await continueVoiceQuote(ctx, name === s.spoken ? s.text : withCustomer(s.text, s.spoken, name), s.transcript);
+  await continueVoiceQuote(ctx, name === s.spoken ? s.text : withCustomer(s.text, s.spoken, name), s.transcript, { choices: s.sizeChoices, unheard: s.unheard, context: "seguimiento" });
   return true;
 });
 
@@ -172,24 +184,58 @@ registerPausable(VOICE_CUSTOMER, {
   },
 });
 
+/** Lo que la lectura de la medida dictada dejó pendiente (corrida F, punto 9) y lo entendido, para el registro. */
+interface SizeExtra {
+  /** Medidas dictadas que pueden ser varias del catálogo: se pregunta con botones. */
+  choices?: AmbiguousSize[];
+  /** Zonas con forma de medida que no coinciden con ninguna del catálogo (para decir qué se oyó). */
+  unheard?: string[];
+  /** El pedido dictado (para el registro de transcripciones). */
+  dictated?: DictatedQuote;
+  /** El cliente ya resuelto contra las empresas conocidas. */
+  customer?: string;
+  /** El contexto del registro ("cotizacion", "medida", "correccion"); por defecto "cotizacion". */
+  context?: string;
+}
+
+const sizeChoiceQuestion = (spoken: string, options: string[]) =>
+  `Entendí la medida «${spoken}», que puede ser ${options.map((o) => `*${displaySize(o)}*`).join(" o ")}. ¿Cuál es? (o *cancelar*)`;
+const sizeButtons = (options: string[]) => options.map((c) => ({ id: c, title: displaySize(c).slice(0, 20) }));
+
 /** Valida las medidas del texto contra el catálogo: si están, al cotizador; si no, pregunta y espera en `voice_size`. */
-async function continueVoiceQuote(ctx: PortalContext, text: string, transcript: string): Promise<void> {
+async function continueVoiceQuote(ctx: PortalContext, text: string, transcript: string, extra: SizeExtra = {}): Promise<void> {
   const sizes = findTyreSizes(text).map((s) => s.canonical);
-  const ask = async (bad: string | null, body: string, candidates: string[] = []): Promise<void> => {
-    const step: Omit<VoiceSizeStep, "createdAt"> = { kind: VOICE_SIZE, text, bad, transcript, captureText: true };
+  const understood = (questions: string[]) => (extra.dictated ? understoodOf(extra.dictated, { questions, customer: extra.customer, text }) : understoodOf(null, { questions, text }));
+  const record = (outcome: "ok" | "pregunta" | "fallo", questions: string[] = []) =>
+    recordVoice(ctx, { transcript, context: extra.context ?? "cotizacion", understood: understood(questions), outcome });
+  const ask = async (bad: string | null, body: string, candidates: string[] = [], choice?: AmbiguousSize): Promise<void> => {
+    const step: Omit<VoiceSizeStep, "createdAt"> = { kind: VOICE_SIZE, text, bad, transcript, captureText: true, ...(choice ? { options: choice.options, spokenSize: choice.from } : {}) };
     await setPending(ctx.store, ctx.from, step, ctx.now);
-    if (candidates.length) await replyButtons(ctx, body, candidates.map((c) => ({ id: c, title: displaySize(c) })));
+    if (candidates.length) await replyButtons(ctx, body, sizeButtons(candidates));
     else await ctx.reply(body);
   };
-  if (!sizes.length) return ask(null, "No entendí la medida. ¿Qué medida es? (p. ej. *295/80R22.5* o *11R22.5*; también puedes dictarla) — o *cancelar*.");
+  // lo dictado podía ser varias medidas del catálogo: se pregunta (en el texto va la primera opción, que se cambia)
+  const choice = extra.choices?.find((c) => sizes.includes(c.options[0]));
+  if (choice) {
+    await record("pregunta", [`medida «${choice.from}»: ${choice.options.join(" / ")}`]);
+    return ask(choice.options[0], sizeChoiceQuestion(choice.from, choice.options), choice.options, choice);
+  }
+  if (!sizes.length) {
+    const heard = extra.unheard?.[0];
+    await record("fallo", [heard ? `medida no reconocida «${heard}»` : "sin medida"]);
+    const head = heard ? `No encontré la medida «${heard}» en el catálogo.` : "No entendí la medida.";
+    return ask(null, `${head} ¿Qué medida es? (p. ej. *295/80R22.5* o *11R22.5*; también puedes dictarla) — o *cancelar*.`);
+  }
   const catalog = await catalogOf(ctx);
   const missing = checkSizes(sizes, catalog?.sizes ?? []);
   if (missing.length) {
     const m = missing[0];
+    await record("pregunta", [`medida ${m.size} no está en el catálogo${m.candidates.length ? `: ${m.candidates.join(" / ")}` : ""}`]);
     const which = `La medida *${displaySize(m.size)}* no está en el catálogo.`;
     if (m.candidates.length) return ask(m.size, `${which} ¿Cuál es? Elige una o escríbeme la correcta (o *cancelar*).`, m.candidates);
     return ask(m.size, `${which} Escríbeme o díctame la medida correcta (p. ej. *295/80R22.5*), o *cancelar*.`);
   }
+  await record("ok");
   await ctx.requote(asRequest(text), { voice: transcript });
 }
 
@@ -234,16 +280,44 @@ registerPendingHandler(VOICE_SIZE, async (ctx, step, rawText) => {
     await logTranscript(ctx, answer);
     await ctx.reply(heardLine(answer));
   }
+  const voiced = ctx.msg.type === "audio";
+  const catalog = await catalogOf(ctx);
+  const fixedAnswer = applyVocabulary(answer, await learned(ctx));
+  // el bot pidió solo la medida: si la respuesta es solo una medida (cifras, R, separadores), se lee entera como medida
+  // contra el catálogo ("2 9 5 80 R 22.5." -> 295/80R22.5; corrida F, punto 9). Una medida escrita bien formada, tal cual.
+  const written = findTyreSizes(fixedAnswer);
+  const digits = spokenToDigits(fixedAnswer);
+  if (isSizeOnly(digits) && !(written.length === 1 && written[0].constructionExplicit && (!catalog?.sizes.length || catalog.sizes.includes(written[0].canonical)))) {
+    const r = resolveSpokenSizes(digits, catalog?.sizes ?? null);
+    const amb = r.ambiguous[0];
+    if (amb && !r.resolved.length) {
+      await recordVoice(ctx, { transcript: answer, context: "medida", voiced, understood: understoodOf(null, { questions: [`medida «${amb.from}»: ${amb.options.join(" / ")}`] }), outcome: "pregunta" });
+      const step: Omit<VoiceSizeStep, "createdAt"> = { ...s, options: amb.options, spokenSize: amb.from };
+      await setPending(ctx.store, ctx.from, step, ctx.now);
+      await replyButtons(ctx, sizeChoiceQuestion(amb.from, amb.options), sizeButtons(amb.options));
+      return true;
+    }
+    if (r.resolved.length === 1 && !r.ambiguous.length) {
+      const got = r.resolved[0];
+      await recordVoice(ctx, { transcript: answer, context: "medida", voiced, understood: understoodOf(null, { sizes: [got.to] }), outcome: "ok" });
+      if (!got.plain && got.from.replace(/\s+/g, "") !== got.to) await ctx.reply(`🔤 Corregí lo que oí: «${got.from}» → ${displaySize(got.to)}.`);
+      await clearPending(ctx.store, ctx.from);
+      await continueVoiceQuote(ctx, withSize(s.text, s.bad, got.to), s.transcript, { context: "seguimiento" });
+      return true;
+    }
+  }
   const spoken = await spokenForRouting(ctx, answer);
   // un pedido completo nuevo ("cotízame…", o medida con cantidad/marca/precio) no es la respuesta
   if (explicitQuoteStart(spoken) || strongTyreQuote(spoken)) return false;
   const sizes = findTyreSizes(spoken);
   if (!sizes.length) {
-    await ctx.reply("No entendí la medida. Escríbela como *295/80R22.5* o *11R22.5*, o *cancelar*.");
+    await recordVoice(ctx, { transcript: answer, context: "medida", voiced, understood: understoodOf(null, { questions: ["medida no reconocida"] }), outcome: "fallo" });
+    await ctx.reply(`No entendí la medida${isSizeOnly(digits) ? ` «${oneLine(answer).replace(/[.\s]+$/, "")}»` : ""}. Escríbela como *295/80R22.5* o *11R22.5*, o *cancelar*.`);
     return true;
   }
+  await recordVoice(ctx, { transcript: answer, context: "medida", voiced, understood: understoodOf(null, { sizes: [sizes[0].canonical] }), outcome: "ok" });
   await clearPending(ctx.store, ctx.from);
-  await continueVoiceQuote(ctx, withSize(s.text, s.bad, sizes[0].canonical), s.transcript);
+  await continueVoiceQuote(ctx, withSize(s.text, s.bad, sizes[0].canonical), s.transcript, { context: "seguimiento" });
   return true;
 });
 
@@ -255,29 +329,71 @@ registerPausable(VOICE_SIZE, {
   },
   async resume(ctx, step, prefix) {
     const s = step as VoiceSizeStep;
+    if (s.options?.length) return askAgain(ctx, step, prefix, sizeChoiceQuestion(s.spokenSize ?? "", s.options), sizeButtons(s.options));
     await askAgain(ctx, step, prefix, s.bad ? `La medida *${displaySize(s.bad)}* no está en el catálogo. ¿Cuál es? (p. ej. *295/80R22.5*)` : "¿Qué medida es? (p. ej. *295/80R22.5*)");
   },
 });
 
-/** Nota de voz con la cotización por voz a la vista (cotizador en `choose`): una corrección. */
-export async function voiceCorrection(ctx: PortalContext, transcript: string): Promise<void> {
+/** Pasos del cotizador con una cotización a la vista: una nota de voz es una corrección ("eran doce", "precio 259"). */
+const CORRECTION_STEPS = new Set(["choose", "review_quote", "need_email"]);
+
+export const VOICE_CONFIRM_TYPED = "Por voz no confirmo ni envío la cotización: si está bien, escribe *ok* (o dicta el cambio que quieras).";
+export const VOICE_PAUSED_IN_QUOTE =
+  "Tienes una cotización abierta, así que no la mezclo con esta nota: la dejé en pausa. Termina la cotización (*ok*) o escribe *cancelar*, y luego toca *Continuar* para retomarla.";
+
+/** "envíala", "ok mándala", "sí, envíasela": por voz nunca se envía. */
+const SEND_WORDS = /^(?:(?:ok|okey|si|dale|listo|ya)\s+)*(?:envia|enviala|envialo|enviasela|enviaselo|enviar|enviarla|manda|mandala|mandalo|mandasela|mandar)\b/;
+
+/** Lo que hizo voiceInQuote; `pause` = la nota que quien llama deja en pausa (paso "¿cotización o reporte?" con voz). */
+export interface VoiceInQuoteResult {
+  what: string;
+  pause?: Omit<IntentChoiceStep, "createdAt">;
+}
+
+/**
+ * Nota de voz con el cotizador a mitad de un flujo (corrida F, punto 4; antes recibía "no leo audios"). Ya transcrita:
+ *  - con una cotización a la vista (`choose`, `review_quote`, `need_email`): una corrección ("eran doce" -> `cantidad 12`,
+ *    "cámbialo a Valor 99" -> `modelo Valor 99`, "precio 259"), o un pedido con medida (el cotizador pregunta si es un
+ *    cambio u otra cotización);
+ *  - en una pregunta del cotizador (aplicación, campos del perfil, proveedor de una lista, "¿nueva o cambio?"): la
+ *    respuesta dictada, como si se escribiera;
+ *  - un "ok"/"sí" dictado nunca confirma ni envía: se pide escribirlo;
+ *  - lo que suena a reporte (o no se entiende como nada de lo anterior y tiene señales de reporte) queda en pausa como
+ *    "¿cotización o reporte?" con la transcripción: no se mezcla con la cotización ni se pierde.
+ */
+export async function voiceInQuote(ctx: PortalContext, transcript: string, quoteStep: string): Promise<VoiceInQuoteResult> {
   await logTranscript(ctx, transcript);
   await ctx.reply(heardLine(transcript));
-  const c = normalizeVoiceCorrection(applyVocabulary(transcript, await learned(ctx)));
-  if (c.kind === "confirm") {
-    await ctx.reply(VOICE_OK_TYPED);
-    return;
+  const fixed = applyVocabulary(transcript, await learned(ctx));
+  const c = normalizeVoiceCorrection(fixed);
+  if (c.kind === "confirm" || SEND_WORDS.test(fold(transcript))) {
+    await ctx.reply(quoteStep === "choose" ? VOICE_OK_TYPED : VOICE_CONFIRM_TYPED);
+    return { what: "confirmación dictada" };
   }
-  if (c.kind === "text") {
+  const spoken = normalizeSpoken(fixed);
+  const asIdle = routeIntent({ text: spoken, state: "idle", isPortalUser: true, pendingPortalStep: null, mentionsKnownCompany: false, now: ctx.now });
+  const reportish = asIdle.intent === "report" || asIdle.intent === "ambiguous";
+  const correction = CORRECTION_STEPS.has(quoteStep);
+  if (correction && c.kind === "text") {
     await ctx.requote(c.text, { voice: transcript });
-    return;
+    return { what: "corrección por voz" };
   }
   // con medida: otro pedido (el cotizador pregunta si es un cambio, otra llanta o una cotización nueva)
-  if (findTyreSizes(c.text).length) {
+  if (correction && !reportish && findTyreSizes(c.text).length) {
     const catalog = await catalogOf(ctx);
-    const d = normalizeDictation(c.text, { designs: catalog?.designs, brands: catalog?.brands });
-    await continueVoiceQuote(ctx, d.text, transcript);
-    return;
+    const d = normalizeDictation(c.text, { designs: catalog?.designs, brands: catalog?.brands, sizes: catalog?.sizes });
+    await continueVoiceQuote(ctx, d.text, transcript, { choices: d.sizeChoices, unheard: d.unheardSizes, dictated: d, context: "correccion" });
+    return { what: "pedido por voz" };
+  }
+  // la respuesta a una pregunta del cotizador (aplicación, campos, proveedor, perfil esperando el pedido)
+  if (!correction && !reportish && spoken.trim()) {
+    await ctx.requote(spoken, { voice: transcript });
+    return { what: "respuesta por voz" };
+  }
+  if (reportish) {
+    await ctx.reply(VOICE_PAUSED_IN_QUOTE);
+    return { what: "en pausa", pause: { kind: "intent_choice", text: transcript, occurredAt: ctx.now.toISOString(), voice: true } };
   }
   await ctx.reply(`No entendí «${oneLine(transcript).slice(0, 80)}» como un cambio de la cotización. ${VOICE_CORRECTION_HELP}`);
+  return { what: "no entendida" };
 }

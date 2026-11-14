@@ -50,3 +50,127 @@ cancelar
 # 6. Una nota de voz de reporte sigue siendo reporte
 @voz Visité Transportes Gamma, me atendió el jefe de flota, quedamos en llamar el lunes.
 cancelar
+
+# 7. Corrida F, punto 4: nota de voz con una cotización escrita abierta (antes: "Por ahora no leo audios ni videos…")
+Fenixway Flama 77 295/80R22.5 x8 para Transportes Beta
+ok
+# una corrección dictada se aplica a la cotización en revisión
+@voz No, eran doce.
+@no-texto no leo audios
+# un reporte dictado no se mezcla con la cotización: queda en pausa
+@voz Visité Transportes Gamma, me atendió el jefe de flota.
+@espera-texto la dejé en pausa
+# con la cotización cerrada, la nota en pausa se descarta (en WhatsApp, con su botón *Descartar*)
+cancelar
+descartar
+@espera-texto Descarté
+
+# 8. Medidas dictadas con voz real (corrida F, punto 9): la zona de la medida se lee contra el catálogo.
+# Las dos transcripciones literales de la prueba del 14/11:
+@voz Cotízame 8 Fenix Way valor 99 en 295 80, ER 22.5 para ZBUSS.
+@espera-texto «295 80, ER 22.5» → 295/80R22.5
+@espera-texto 295/80R22.5
+@espera-texto x8
+@no-texto 22.5-8
+@no-texto no está en el catálogo
+cancelar
+# el bot pide solo la medida y la respuesta dictada se lee entera como medida
+@voz Cotízame cuatro Valor 99 para Transportes Beta.
+@espera-texto No entendí la medida
+@voz 2 9 5 80 R 22.5.
+@espera-texto «2 9 5 80 R 22.5» → 295/80R22.5
+@espera-texto Entendí:
+@no-texto No entendí la medida
+cancelar
+# Variantes con las formas de Deepgram (r, AR, ER, comas, dígitos sueltos, "22 y medio", "22 coma 5", barra, por, x)
+@voz Cotiza 12 Double Coin en 11 r 22 y medio.
+@espera-texto 11R22.5
+@espera-texto x12
+cancelar
+@voz Cotiza 4 West Lake en 315 80 AR 22.5 para transportes beta.
+@espera-texto 315/80R22.5
+@espera-texto x4
+@no-texto precio 315
+cancelar
+@voz Cotiza 10 Flama 77, 275, 80 r 22.5.
+@espera-texto 275/80R22.5
+@espera-texto x10
+cancelar
+@voz Cotiza 2 valor 99 en 295 barra 80 r 22 coma 5.
+@espera-texto 295/80R22.5
+@espera-texto x2
+cancelar
+@voz Cotiza 4 en 2 1 5 75 ere 17.5.
+@espera-texto 215/75R17.5
+@espera-texto x4
+cancelar
+@voz Cotiza 8 Fenixway en 295 por 80 erre 22.5.
+@espera-texto 295/80R22.5
+@no-texto precio 295
+cancelar
+@voz Cotiza 8 295 80 R 22.5.
+@espera-texto 295/80R22.5
+@espera-texto x8
+cancelar
+@voz Cotiza 20 11 R 22.5.
+@espera-texto 11R22.5
+@espera-texto x20
+cancelar
+@voz Cotiza 4 235 75 ar 17.5.
+@espera-texto 235/75R17.5
+@espera-texto x4
+cancelar
+@voz Cotiza 8 Valor 87 en 2 7 5 80 22.5.
+@espera-texto 275/80R22.5
+cancelar
+@voz Cotiza 4 en 3 1 5 80 r 22 5.
+@espera-texto 315/80R22.5
+cancelar
+@voz Cotiza 8 en 295 x 80 R 22.5.
+@espera-texto 295/80R22.5
+@no-texto precio 295
+cancelar
+@voz Cotiza 2 Triangle en 3 8 5 65 r 22.5.
+@espera-texto 385/65R22.5
+cancelar
+@voz Cotiza 10 en 425 65 ER 22.5.
+@espera-texto 425/65R22.5
+@no-texto precio 425
+cancelar
+@voz Cotiza 6 en 265, 70, r 19.5.
+@espera-texto 265/70R19.5
+cancelar
+@voz Cotiza 4 en 1 1 R 22.5.
+@espera-texto 11R22.5
+cancelar
+@voz Cotiza 6 en 1 2 erre 22.5.
+@espera-texto 12R22.5
+cancelar
+@voz Cotiza 8 en 2 9 5 80 22 y medio.
+@espera-texto 295/80R22.5
+cancelar
+@voz Cotiza 4 en 215, 75, ER 17.5.
+@espera-texto 215/75R17.5
+@no-texto precio 215
+cancelar
+@voz Cotiza 6 Flama 77 en 275 80, AR 22.5.
+@espera-texto 275/80R22.5
+cancelar
+@voz Cotiza 4 en 3 8 5 65 22.5.
+@espera-texto 385/65R22.5
+cancelar
+@voz Cotiza 12 en 11, R 22.5.
+@espera-texto 11R22.5
+@espera-texto x12
+cancelar
+@voz Cotiza 4 en 12 ER 22.5.
+@espera-texto 12R22.5
+cancelar
+@voz Cotiza 2 en 2 3 5 75 r 17.5.
+@espera-texto 235/75R17.5
+cancelar
+# Varias medidas posibles: pregunta con botones (7.50R16 o 7.50-16) y sigue con la elegida
+@voz Cotiza 4 en siete cincuenta dieciséis.
+@espera-texto que puede ser
+@btn 7.50R16 || 7.5R16
+cancelar

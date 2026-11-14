@@ -21,11 +21,13 @@
     "db:studio": "drizzle-kit studio",
     "portal:import-mtc": "tsx --tsconfig tsconfig.cli.json src/cli/portal-import-mtc.ts",
     "portal:recalc-sector": "tsx --tsconfig tsconfig.cli.json src/cli/portal-recalc-sector.ts",
+    "portal:seed-users": "tsx --tsconfig tsconfig.cli.json src/cli/portal-seed-users.ts",
     "portal:seed-demo": "tsx --tsconfig tsconfig.cli.json src/cli/portal-seed-demo.ts",
     "portal:clear-demo": "tsx --tsconfig tsconfig.cli.json src/cli/portal-clear-demo.ts",
     "llm:check": "tsx --tsconfig tsconfig.cli.json src/cli/llm-check.ts",
     "llm:usage": "tsx --tsconfig tsconfig.cli.json src/cli/llm-usage.ts",
     "quote:shadow-report": "tsx --tsconfig tsconfig.cli.json src/cli/quote-shadow-report.ts",
+    "voice:review": "tsx --tsconfig tsconfig.cli.json src/cli/portal-voice-review.ts",
     "portal:simulate": "tsx --tsconfig tsconfig.cli.json src/cli/portal-simulate.ts",
     "portal:prepropuesta": "tsx --tsconfig tsconfig.cli.json src/cli/portal-prepropuesta.ts"
   },

@@ -4,7 +4,7 @@ export default function PortalError({ reset }: { error: Error & { digest?: strin
   return (
     <div className="pt-card pt-stack">
       <h1>Algo salió mal</h1>
-      <p className="pt-muted">No se pudo cargar esta pantalla. Inténtalo de nuevo; si sigue fallando, avisa al administrador.</p>
+      <p className="pt-muted">No se pudo cargar esta pantalla: hubo un error o la base de datos tardó demasiado en responder. Inténtalo de nuevo; si sigue fallando, avisa al administrador.</p>
       <p>
         <button className="pt-btn pt-btn-dark" type="button" onClick={() => reset()}>
           Reintentar

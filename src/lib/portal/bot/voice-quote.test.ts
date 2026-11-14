@@ -427,3 +427,67 @@ describe("reporte por voz: marca mal oída contra el catálogo", () => {
     expect(original).not.toContain("Fénix Uey");
   });
 });
+
+describe("medidas dictadas con voz real (corrida F, punto 9)", () => {
+  it("«Cotízame 8 Fenix Way valor 99 en 295 80, ER 22.5 para ZBUSS.» -> 8 Fenixway Valor 99 295/80R22.5 (no «22.5-8»), y queda registrado", async () => {
+    const out = bodies(await say(voice("Cotízame 8 Fenix Way valor 99 en 295 80, ER 22.5 para ZBUSS."))).join("\n");
+    expect(out).not.toContain("22.5-8");
+    expect(out).not.toMatch(/no está en el catálogo/);
+    expect(out).toContain("🔤 Corregí lo que oí:");
+    expect(out).toContain("«295 80, ER 22.5» → 295/80R22.5");
+    expect(out).toMatch(/Entendí:\nFenixway 295\/80R22\.5 VALOR 99 x8/);
+    expect(await step()).toBe("choose");
+    const [log] = await portal.listVoiceTranscripts({ limit: 5 });
+    expect(log).toMatchObject({ phone: FRANK, context: "cotizacion", outcome: "ok", transcript: "Cotízame 8 Fenix Way valor 99 en 295 80, ER 22.5 para ZBUSS." });
+    expect(log.understood).toMatchObject({ sizes: ["295/80R22.5"], quantities: [8], brand: "Fenixway", customer: "ZBUSS" });
+    expect(log.understood.design?.toLowerCase()).toBe("valor 99");
+  });
+
+  it("el bot pide solo la medida y la respuesta dictada «2 9 5 80 R 22.5.» se lee entera como medida", async () => {
+    const asked = bodies(await say(voice("Cotízame cuatro Valor 87 para Transportes Beta.")));
+    expect(asked.join("\n")).toMatch(/No entendí la medida/);
+    const out = bodies(await say(voice("2 9 5 80 R 22.5."))).join("\n");
+    expect(out).not.toMatch(/No entendí la medida/);
+    expect(out).toContain("«2 9 5 80 R 22.5» → 295/80R22.5");
+    expect(out).toMatch(/Entendí:\nFenixway 295\/80R22\.5 VALOR 87 x4/);
+    expect(await step()).toBe("choose");
+    const logs = await portal.listVoiceTranscripts({ limit: 10 });
+    expect(logs.map((l) => [l.context, l.outcome])).toEqual([
+      ["seguimiento", "ok"],
+      ["medida", "ok"],
+      ["cotizacion", "fallo"],
+    ]);
+    expect(logs[1].understood.sizes).toEqual(["295/80R22.5"]);
+    expect(logs[2].understood.questions).toEqual(["sin medida"]);
+    // solo fallos y preguntas
+    expect((await portal.listVoiceTranscripts({ outcomes: ["fallo", "pregunta"] })).map((l) => l.context)).toEqual(["cotizacion"]);
+  });
+
+  it("varias medidas del catálogo posibles («7 50 16»): pregunta con botones y sigue con la elegida", async () => {
+    await prices.upsertRows([row("own-valor99-750r16", "Valor 99", "7.5R16", 120), row("own-valor99-750-16", "Valor 99", "7.5-16", 110)]);
+    const out = await say(voice("Cotízame cuatro Valor 99 en siete cincuenta dieciséis."));
+    expect(bodies(out).join("\n")).toContain("Entendí la medida «7 50 16», que puede ser *7.50R16* o *7.50-16*");
+    const asked = client.interactives().at(-1);
+    expect(asked?.type === "button" ? asked.buttons.map((x) => [x.id, x.title]) : null).toEqual([
+      ["pt:7.5R16", "7.50R16"],
+      ["pt:7.5-16", "7.50-16"],
+    ]);
+    expect((await getPending(portal, FRANK, new Date()))?.kind).toBe("voice_size");
+    const picked = bodies(await say(press("7.50-16"))).join("\n");
+    expect(picked).toContain("Entendí:");
+    expect(picked).toMatch(/7\.50?-16/);
+    expect(await getPending(portal, FRANK, new Date())).toBeNull();
+    const [, first] = await portal.listVoiceTranscripts({ limit: 5 });
+    expect(first).toMatchObject({ context: "cotizacion", outcome: "pregunta" });
+    expect(first.understood.questions).toEqual(["medida «7 50 16»: 7.5R16 / 7.5-16"]);
+  });
+
+  it("la misma pregunta cuando la respuesta a «¿qué medida es?» puede ser varias", async () => {
+    await prices.upsertRows([row("own-valor99-750r16", "Valor 99", "7.5R16", 120), row("own-valor99-750-16", "Valor 99", "7.5-16", 110)]);
+    await say(voice("Cotízame cuatro Valor 99 para Transportes Beta."));
+    const out = bodies(await say(voice("siete cincuenta dieciséis"))).join("\n");
+    expect(out).toContain("que puede ser *7.50R16* o *7.50-16*");
+    const picked = bodies(await say(press("7.50R16"))).join("\n");
+    expect(picked).toContain("Entendí:");
+  });
+});

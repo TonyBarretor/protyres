@@ -51,6 +51,7 @@ import type { Candidate, EmailDraft, LineCandidates, Quote, QuoteItem, QuoteRequ
 import type { WhatsAppClient } from "./client";
 import { LoggingWhatsAppClient, historyLine } from "./logging-client";
 import type { InboundMessage } from "./webhook";
+import { userErrorText } from "../guard/user-text";
 
 export interface HandlerDeps {
   client: WhatsAppClient;
@@ -356,6 +357,11 @@ function confirmAnswer(text: string): "change" | "add" | "new" | null {
 
 const STATUS_LABEL: Record<Quote["status"], string> = { draft: "borrador", sent: "enviada", cancelled: "anulada" };
 
+/** Nota de voz de quien no es usuario del portal (solo cotizador): el cotizador no transcribe (corrida F, punto 4). */
+export const AUDIO_REPLY = "Las notas de voz las atiendo solo para usuarios del portal. Escríbeme el pedido o mándame el PDF, Excel o una foto, por favor.";
+/** Un video (de cualquiera): no se mira. */
+export const VIDEO_REPLY = "Los videos no los puedo ver. Mándame el pedido en texto, PDF, Excel o una foto, por favor.";
+
 /** A profile chosen with a bare "prosegur" (or "prosegur ayacucho 1830": its unit / UB lines too) applies to the next request (for two hours). */
 function pendingProfile(state: ConversationState): { profile: string; header?: string } | undefined {
   if (state.step !== "idle" || !state.profile) return undefined;
@@ -484,7 +490,8 @@ export class BotHandler {
     try {
       // portal comercial: único enganche (src/lib/portal/bot, router.ts decide); false = sigue el cotizador sin cambios.
       // Va primero para que `cancelar` limpie también el paso del portal y una nota de voz de un usuario del portal no
-      // reciba "no leo audios"; con el cotizador a mitad de un flujo solo entran comandos explícitos del portal.
+      // reciba "no leo audios" (ni con el cotizador a mitad de un flujo: corrida F); con el cotizador a mitad de un flujo
+      // solo entran comandos explícitos del portal y notas de voz.
       const quoteStep = pendingProfile(state) ? "profile" : state.step;
       if (await routePortal({ from, text, msg, quoteStep, voiceQuote: state.step === "choose" && !!state.voice, voiceCatalog: () => voiceCatalogFromStore(this.store), reply: (body) => this.reply(from, body), replyInteractive: (m) => this.client.sendInteractive(from, m), sendDocument: (file, name, caption, mime) => this.client.sendDocument(from, file, name, caption, mime), sendTextTo: (to, body) => this.client.sendText(to, body), downloadMedia: (id) => this.client.downloadMedia(id), logMessage: (e) => this.store.logMessage(e), requote: (m) => this.handle(m), defer: (fn) => after.push(fn), store: this.deps.portalStore, log: (m) => this.log(m) })) return;
       if (["ayuda", "help", "?", "hola", "menu", "inicio"].includes(cmd)) return this.reply(from, HELP);
@@ -509,7 +516,9 @@ export class BotHandler {
         if (await this.mediaIsCustomerRequest(msg)) return this.startRequestFromMedia(from, msg);
         return this.startIngest(from, state, { media: msg.media, caption: msg.media.caption });
       }
-      if (msg.type === "audio" || msg.type === "video") return this.reply(from, "Por ahora no leo audios ni videos. Reenvíame el texto, PDF, Excel o una foto.");
+      // una nota de voz de un usuario del portal nunca llega aquí (routePortal la atiende siempre: corrida F, punto 4)
+      if (msg.type === "audio") return this.reply(from, AUDIO_REPLY);
+      if (msg.type === "video") return this.reply(from, VIDEO_REPLY);
       if (state.step === "need_provider") return this.answerProvider(from, state, text);
       const profileNext = pendingProfile(state);
       if ((msg.forwarded || state.step === "idle") && looksLikePriceMessage(text) && !looksLikeRequest(text) && !profileNext && !leadingProfile(this.settings, text)) {
@@ -592,7 +601,7 @@ export class BotHandler {
       return this.startRequest(from, text, undefined, { profile: profileNext?.profile, header: profileNext?.header, ...(voice ? { voice } : {}) });
     } catch (err) {
       this.log(`error handling ${msg.id}: ${(err as Error).stack ?? err}`);
-      await this.reply(from, `Ocurrió un error: ${(err as Error).message}. Intenta de nuevo o escribe *cancelar*.`);
+      await this.reply(from, `Ocurrió un error: ${userErrorText((err as Error).message)}. Intenta de nuevo o escribe *cancelar*.`);
     } finally {
       this.client.setQuote(from, undefined);
     }
@@ -735,7 +744,7 @@ export class BotHandler {
       else if (mt.startsWith("image/")) {
         if (!llmAvailable()) {
           await this.store.setConversation(from, null);
-          return this.reply(from, "Para leer fotos de listas necesito el LLM configurado (ANTHROPIC_API_KEY). Por ahora envíame el texto, PDF o Excel.");
+          return this.reply(from, "Para leer fotos de listas necesito el modelo de lenguaje, que no está activo (contacta al administrador). Por ahora envíame el texto, PDF o Excel.");
         }
         const r = await extractPricesWithLLM({ image: { data, mediaType: mt as "image/jpeg" } }, { ...common, source: "whatsapp" });
         result = { rows: r.rows, warnings: r.warnings, stats: { source: "whatsapp", sourceRef: common.sourceRef, provider: canonical, rowsSeen: r.rowsSeen, rowsParsed: r.rows.length, rowsSkipped: 0, method: "llm-image" } };
@@ -1908,7 +1917,7 @@ export class BotHandler {
   }
 
   private async searchPhoto(from: string, state: ConversationState, brand: string, model: string): Promise<void> {
-    if (!webSearchAvailable()) return this.reply(from, "La búsqueda de fotos en internet no está configurada (GOOGLE_CSE_KEY / GOOGLE_CSE_ID).");
+    if (!webSearchAvailable()) return this.reply(from, "La búsqueda de fotos en internet no está activa (contacta al administrador).");
     const candidates = await searchWebPhotos(brand, model);
     if (candidates.length === 0) return this.reply(from, `No encontré fotos de *${brand} ${model}* en internet. Envíamela con el texto *foto ${brand} ${model}*.`);
     await this.store.setConversation(from, { ...state, pendingPhoto: { brand, model, url: candidates[0], candidates, index: 0 }, updatedAt: now() });
@@ -2081,7 +2090,7 @@ export class BotHandler {
       await onQuoteSentToPortal({ from, quoteNumber: quote.number, store: this.deps.portalStore, log: (m) => this.log(m) }); // portal: Cotización enviada; nunca lanza
       const what = files.length > 1 ? ` (${files.map((f) => (f.contentType === XLSX_MIME ? "Excel" : "PDF")).join(" + ")})` : "";
       if (res.sent) return this.reply(from, `Enviado ✔ Cotización ${quote.number} a ${quote.emailDraft.to}${what}.`);
-      return this.reply(from, `(Modo prueba, sin RESEND_API_KEY) El correo se guardó en ${res.dryRunPath} en vez de enviarse. Cotización ${quote.number} marcada como enviada${what}.`);
+      return this.reply(from, `(Modo prueba: el envío de correos no está activo) Guardé el correo como borrador en vez de enviarlo. Cotización ${quote.number} marcada como enviada${what}.`);
     }
     await this.reply(from, `No pude enviar el correo: ${res.error}. Prueba *correo otro@dominio.com* o *cancelar*.`);
   }

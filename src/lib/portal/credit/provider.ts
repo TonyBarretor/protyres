@@ -82,6 +82,6 @@ export function getCreditBureauProvider(store: Pick<PortalStore, "getCompanyByRu
     case "":
       return new ManualCreditProvider(store);
     default:
-      throw new Error(`CREDIT_BUREAU_PROVIDER desconocido: ${name} (usa manual o equifax)`);
+      throw new Error(`Proveedor de buró de crédito desconocido: «${name}» (contacta al administrador).`); // CREDIT_BUREAU_PROVIDER: manual o equifax
   }
 }

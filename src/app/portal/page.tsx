@@ -1,11 +1,13 @@
 /**
  * Prospectos: empresas del padrón MTC con búsqueda, filtros (por searchParams, en el servidor) y paginación.
- * Tabla en escritorio; tarjetas en el celular.
+ * Tabla en escritorio; tarjetas en el celular. Cada empresa muestra unidades, llantas en piso (MTC), medidas probables con
+ * sus unidades (inferidas), participación y si es cliente, sin entrar a la ficha (corrida F, punto 2).
  */
 import Link from "next/link";
 import { requireUser } from "@/lib/portal/auth/session";
 import { getPortalStore } from "@/lib/portal/store";
-import type { CompanyRow, PortalUser } from "@/lib/portal/store/types";
+import type { CompanyRow, MedidaCount, PortalUser } from "@/lib/portal/store/types";
+import { PortalTimeoutError } from "@/lib/portal/ui/deadline";
 import {
   BRAND_SHORTCUTS,
   FLEET_RANGES,
@@ -17,15 +19,33 @@ import {
   isShortcutActive,
   pageCount,
   parseProspectFilters,
-  toCompanySearch,
 } from "@/lib/portal/ui/filters";
+import { loadProspectos, type ProspectosData } from "@/lib/portal/ui/prospectos";
 import { fmtInt, sectorLabel } from "@/lib/portal/ui/labels";
-import { DemoTag, MTC_LEGEND, MtcTag, TempChip } from "./_components/bits";
+import { DemoTag, InferidaTag, MTC_LEGEND, MtcTag, TempChip } from "./_components/bits";
 
 export const metadata = { title: "Prospectos · Portal 360 Tyres" };
 
 /** Marcas que se listan como casillas (las de más vehículos); las elegidas fuera de esta lista se muestran igual. */
 const MARCAS_VISIBLES = 40;
+
+function ClienteTag({ row }: { row: CompanyRow }) {
+  return row.esCliente ? <span className="pt-tag pt-tag-client">cliente</span> : <span className="pt-tag pt-tag-prospect">prospecto</span>;
+}
+
+/** Medidas probables (inferidas) con cuántas unidades las llevan; "—" si la flota no tiene medida estimada. */
+function Medidas({ medidas }: { medidas: MedidaCount[] | undefined }) {
+  if (!medidas?.length) return <span className="pt-muted">—</span>;
+  return (
+    <ul className="pt-medidas">
+      {medidas.map((m) => (
+        <li key={m.medida}>
+          <span className="pt-mono">{m.medida}</span> <span className="pt-muted pt-small">· {fmtInt(m.unidades)} u.</span>
+        </li>
+      ))}
+    </ul>
+  );
+}
 
 function Participacion({ row }: { row: CompanyRow }) {
   return (
@@ -40,7 +60,27 @@ export default async function ProspectosPage({ searchParams }: { searchParams: P
   const user = await requireUser();
   const store = await getPortalStore();
   const filters = parseProspectFilters(await searchParams);
-  const [result, marcas, departamentos, users] = await Promise.all([store.searchCompanies(toCompanySearch(filters)), store.listMarcas(), store.listDepartamentos(), store.listUsers()]);
+  let data: ProspectosData;
+  try {
+    data = await loadProspectos(store, filters);
+  } catch (e) {
+    if (!(e instanceof PortalTimeoutError)) throw e;
+    console.error(`[portal] ${e.message}`);
+    return (
+      <div className="pt-stack">
+        <h1>Prospectos</h1>
+        <p className="pt-card pt-error" role="alert">
+          La búsqueda tardó demasiado y se canceló. Vuelve a intentarlo en un momento; si sigue igual, avisa al administrador.
+        </p>
+        <p>
+          <Link className="pt-btn pt-btn-dark" href={`/portal${filtersQuery(filters)}`}>
+            Reintentar
+          </Link>
+        </p>
+      </div>
+    );
+  }
+  const { result, marcas, departamentos, users } = data;
   const userName = new Map<number, string>(users.map((u: PortalUser) => [u.id, u.nombre.split(" ")[0]]));
   const pages = pageCount(result.total);
   const from = result.total ? (filters.page - 1) * PAGE_SIZE + 1 : 0;
@@ -175,11 +215,13 @@ export default async function ProspectosPage({ searchParams }: { searchParams: P
               <thead>
                 <tr>
                   <th>Empresa</th>
-                  <th>Sector</th>
-                  <th>Departamento</th>
+                  <th>Sector · Depto.</th>
                   <th className="pt-num">Unidades</th>
                   <th className="pt-num">
                     Llantas en piso <MtcTag />
+                  </th>
+                  <th>
+                    Medidas probables <InferidaTag />
                   </th>
                   <th>Participación</th>
                   <th>Dueño</th>
@@ -193,13 +235,18 @@ export default async function ProspectosPage({ searchParams }: { searchParams: P
                       <Link className="pt-company-link" href={`/portal/empresas/${r.id}`}>
                         {r.razonSocial}
                       </Link>{" "}
-                      {r.esCliente && <span className="pt-tag pt-tag-client">cliente</span>}
+                      <ClienteTag row={r} />
                       <div className="pt-muted pt-small pt-mono">RUC {r.ruc}</div>
                     </td>
-                    <td>{sectorLabel(r.sector)}</td>
-                    <td>{r.departamento ?? "—"}</td>
+                    <td>
+                      {sectorLabel(r.sector)}
+                      <div className="pt-muted pt-small">{r.departamento ?? "—"}</div>
+                    </td>
                     <td className="pt-num">{fmtInt(r.unidades)}</td>
                     <td className="pt-num">{fmtInt(r.llantasPiso)}</td>
+                    <td>
+                      <Medidas medidas={r.medidas} />
+                    </td>
                     <td>
                       <Participacion row={r} />
                     </td>
@@ -223,7 +270,7 @@ export default async function ProspectosPage({ searchParams }: { searchParams: P
                   <TempChip t={r.temperatura} />
                 </div>
                 <div className="pt-muted pt-small pt-mono">
-                  RUC {r.ruc} · {sectorLabel(r.sector)} · {r.departamento ?? "—"} {r.esCliente && <span className="pt-tag pt-tag-client">cliente</span>}
+                  RUC {r.ruc} · {sectorLabel(r.sector)} · {r.departamento ?? "—"} <ClienteTag row={r} />
                 </div>
                 <dl className="pt-kv">
                   <div>
@@ -235,6 +282,14 @@ export default async function ProspectosPage({ searchParams }: { searchParams: P
                       Llantas en piso <MtcTag />
                     </dt>
                     <dd>{fmtInt(r.llantasPiso)}</dd>
+                  </div>
+                  <div className="pt-kv-wide">
+                    <dt>
+                      Medidas probables <InferidaTag />
+                    </dt>
+                    <dd>
+                      <Medidas medidas={r.medidas} />
+                    </dd>
                   </div>
                   <div>
                     <dt>Participación</dt>
