@@ -1,6 +1,7 @@
 import path from "node:path";
 import { JsonStore } from "./json-store";
 import type { PriceStore } from "./types";
+import { setDefaultUsageSink } from "../guard/usage";
 
 export type { PriceStore, ConversationState, ProviderSummary } from "./types";
 
@@ -18,6 +19,8 @@ export async function getStore(): Promise<PriceStore> {
   } else {
     shared = new JsonStore(process.env.STORE_PATH || path.resolve(process.cwd(), "data/store.json"), process.env.STORE_SEED_PATH || path.resolve(process.cwd(), "data/seed.json.gz"));
   }
+  // consumo fuera de un mensaje (sincronización de Drive, CLI): se registra aquí como "sistema" (guard/usage.ts)
+  setDefaultUsageSink(shared);
   return shared;
 }
 

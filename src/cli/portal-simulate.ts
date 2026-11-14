@@ -20,6 +20,12 @@
  *                                (button_reply / list_reply) por parseWebhook, con su id `pt:…`; si no existe, es un error
  *   @btn <botón> || <texto>      pulsa el botón si el bot lo ofreció; si no (p. ej. la empresa ya era suya en estos
  *                                datos), manda <texto> escrito, que es su equivalente
+ *   @como <número|alias>         cambia de remitente a mitad de guion (alias = usuario del portal o vendedor de
+ *                                config/pilot.json, como --as; un número cualquiera prueba la puerta de números no
+ *                                registrados). Los mensajes siguientes salen de ese número
+ *   @rafaga <n> <texto>          manda <n> veces <texto> en el mismo instante (prueba el tope de mensajes por minuto,
+ *                                limits.burstPerMinute); los contadores salen sumados en una línea. El resto del guion
+ *                                va a ritmo humano para ese tope: el reloj de ráfagas avanza 3 s por línea
  *   @cron [ventana]              corre el resumen diario (runDailyDigest, como /api/cron/daily) con este WhatsApp de
  *                                consola, para todos los usuarios; con `ventana` cada envío falla como fuera de las 24 h
  *                                (131047) y el resumen queda como aviso pendiente para el siguiente mensaje del usuario
@@ -28,6 +34,8 @@
  * Datos: por defecto store JSON del portal (PORTAL_STORE=json) y del cotizador, sin DATABASE_URL (salvo --db). Trabaja
  * sobre COPIAS en out/simulacion/ (data/ queda intacto); --persist escribe en data/portal-store.json y data/store.json.
  * Sin PORTAL_SESSION_SECRET usa uno de simulación. Sale con código 1 si algún mensaje termina en "Ocurrió un error" (guion).
+ * Contadores (corrida E): tras cada mensaje, cuántas llamadas al modelo, a Deepgram (también las de @voz, que en
+ * producción irían a Deepgram) y descargas de medios provocó, y si alguna se bloqueó por un tope; los totales al final.
  */
 import "./env";
 import fs from "node:fs";
@@ -167,7 +175,10 @@ class ConsoleWhatsAppClient implements WhatsAppClient {
             .join("\n")}`;
     console.log(`\n🤖${who} ${message.body}\n   ${opts}\n`);
   }
+  /** Descargas de medios (contador de la corrida E). */
+  downloads = 0;
   async downloadMedia(mediaId: string) {
+    this.downloads++;
     const m = this.media.get(mediaId);
     if (!m) throw new Error(`medio simulado no encontrado: ${mediaId}`);
     return m;
@@ -227,7 +238,7 @@ async function main() {
 
   const portal = await getPortalStore();
   const store = await getStore();
-  const me = await resolvePhone(args.as, () => portal.listUsers());
+  let me = await resolvePhone(args.as, () => portal.listUsers());
   currentPhone = me.phone;
   const client = new ConsoleWhatsAppClient();
   // sin Graph API: las notas de voz (@audio / --audio) se "descargan" del archivo local que el guion cargó en el cliente
@@ -235,14 +246,28 @@ async function main() {
   // @voz: la transcripción va en cola y este fetch la devuelve como Deepgram; el resto (@audio con clave) va a Deepgram
   const realDeepgram = !!process.env.DEEPGRAM_API_KEY;
   const injected: string[] = [];
+  // contadores por mensaje (corrida E): modelo (eventos del medidor), Deepgram (este fetch) y descargas (el cliente)
+  const counts = { llm: 0, deepgram: 0, blocked: 0, tokens: 0 };
+  const totalsRun = { llm: 0, deepgram: 0, downloads: 0, blocked: 0, tokens: 0 };
+  const { onUsageEvent } = await import("../lib/guard/usage");
+  onUsageEvent((e) => {
+    if (e.kind === "llm") {
+      counts.llm++;
+      counts.tokens += e.inputTokens + e.outputTokens;
+    } else if (e.kind === "blocked") counts.blocked++;
+  });
   const deepgramFetch = (async (url: string | URL | Request, init?: RequestInit) => {
+    counts.deepgram++;
     const transcript = injected.shift();
     if (transcript === undefined) return fetch(url, init);
     return new Response(JSON.stringify({ metadata: { duration: 5 }, results: { channels: [{ alternatives: [{ transcript, confidence: 0.9 }] }] } }), { status: 200, headers: { "Content-Type": "application/json" } });
   }) as typeof fetch;
   configureReportBot({ downloadMedia: (id) => client.downloadMedia(id), deepgramFetch });
   let emailSeq = 0;
+  // reloj del tope por minuto: un guion se lee a ritmo humano (3 s por línea), no como una ráfaga; @rafaga lo congela
+  let burstNow = Date.now();
   const bot = new BotHandler({
+    burstClock: () => burstNow,
     client,
     store,
     settings: loadSettings(),
@@ -357,20 +382,60 @@ async function main() {
     }
   };
 
-  const send = async (line: string) => {
+  /** @como: cambia de remitente (alias o número, como --as). */
+  const switchSender = async (arg: string) => {
+    try {
+      me = await resolvePhone(arg.trim(), () => portal.listUsers());
+      currentPhone = me.phone;
+      client.lastInteractive = null;
+      console.log(`🔀 Ahora escribe ${me.label} (${me.phone})`);
+    } catch (err) {
+      thrown.push(`@como ${arg}: ${(err as Error).message}`);
+      console.log(`⚠️  ${(err as Error).message}`);
+    }
+  };
+
+  /** @rafaga: n veces el mismo texto en el mismo instante; una línea con los contadores sumados. */
+  const burst = async (count: number, body: string) => {
+    const before = { ...totalsRun };
+    const textsBefore = client.texts;
+    for (let i = 0; i < count; i++) await send(body, { quiet: true });
+    const blocked = totalsRun.blocked - before.blocked;
+    console.log(`👤 [ráfaga] ${count} × «${body.slice(0, 60)}» → ${client.texts - textsBefore} respuesta(s)`);
+    console.log(`   📊 modelo ${totalsRun.llm - before.llm} · Deepgram ${totalsRun.deepgram - before.deepgram} · descargas ${totalsRun.downloads - before.downloads}${blocked ? ` · bloqueadas por tope ${blocked}` : ""}`);
+  };
+
+  const send = async (line: string, opts: { quiet?: boolean } = {}): Promise<void> => {
     const cron = line.match(/^@cron\b\s*(.*)$/);
     if (cron) return runCron(cron[1]);
+    const como = line.match(/^@como\s+(\S.*)$/);
+    if (como) return switchSender(como[1]);
+    const rafaga = line.match(/^@rafaga\s+(\d+)\s+(\S.*)$/);
+    if (rafaga) {
+      burstNow = Math.max(burstNow + 3000, Date.now());
+      return burst(Math.min(Number(rafaga[1]), 2000), rafaga[2]);
+    }
+    if (!opts.quiet) burstNow = Math.max(burstNow + 3000, Date.now());
     const msg = toMessage(line);
     if (!msg) return;
     const shown = msg.type === "audio" && /^@voz\s/.test(line) ? `[voz] «${line.replace(/^@voz\s+/, "")}»` : msg.media ? `[${msg.type}] ${msg.media.fileName ?? ""} ${msg.text ?? ""}`.trim() : msg.forwarded ? `[reenviado] ${msg.text}` : msg.type === "interactive" ? `[botón] ${msg.interactiveTitle ?? ""} (id: ${msg.interactiveId ?? ""} → «${msg.text ?? ""}»)` : msg.text;
-    console.log(`👤 ${shown}`);
+    if (!opts.quiet) console.log(`👤 ${shown}`);
     sent++;
+    counts.llm = counts.deepgram = counts.blocked = counts.tokens = 0;
+    const downloadsBefore = client.downloads;
     try {
       await bot.handle(msg);
     } catch (err) {
       thrown.push(`${line}: ${(err as Error).message}`);
       console.log(`💥 ${(err as Error).stack ?? err}`);
     }
+    const dl = client.downloads - downloadsBefore;
+    totalsRun.llm += counts.llm;
+    totalsRun.deepgram += counts.deepgram;
+    totalsRun.downloads += dl;
+    totalsRun.blocked += counts.blocked;
+    totalsRun.tokens += counts.tokens;
+    if (!opts.quiet) console.log(`   📊 modelo ${counts.llm}${counts.tokens ? ` (${counts.tokens} tokens)` : ""} · Deepgram ${counts.deepgram} · descargas ${dl}${counts.blocked ? ` · bloqueadas por tope ${counts.blocked}` : ""}`);
   };
 
   const lines: string[] = [];
@@ -387,7 +452,7 @@ async function main() {
   if (lines.length) {
     for (const l of lines) await send(l);
   } else {
-    console.log('Modo interactivo: escribe un mensaje ("@doc <archivo> [leyenda]", "@audio <archivo>", "@voz <transcripción>", "@fwd <texto>", "@btn <botón>", "@cron [ventana]", "/quit").');
+    console.log('Modo interactivo: escribe un mensaje ("@doc <archivo> [leyenda]", "@audio <archivo>", "@voz <transcripción>", "@fwd <texto>", "@btn <botón>", "@como <número|alias>", "@rafaga <n> <texto>", "@cron [ventana]", "/quit").');
     const rl = readline.createInterface({ input: process.stdin, output: process.stdout, prompt: "> " });
     rl.prompt();
     for await (const line of rl) {
@@ -403,7 +468,7 @@ async function main() {
   await portal.close();
   await store.close();
   const errors = [...client.errors, ...thrown];
-  console.log(`\n── Resumen ──\nMensajes enviados al bot: ${sent}${skipped ? ` (saltados: ${skipped})` : ""}\nRespuestas de texto: ${client.texts} · archivos guardados: ${client.files}\nErrores: ${errors.length}`);
+  console.log(`\n── Resumen ──\nMensajes enviados al bot: ${sent}${skipped ? ` (saltados: ${skipped})` : ""}\nRespuestas de texto: ${client.texts} · archivos guardados: ${client.files}\nLlamadas: modelo ${totalsRun.llm} (${totalsRun.tokens} tokens) · Deepgram ${totalsRun.deepgram} · descargas ${totalsRun.downloads}${totalsRun.blocked ? ` · bloqueadas por tope ${totalsRun.blocked}` : ""}\nErrores: ${errors.length}`);
   for (const e of errors) console.log(`  ✗ ${e.split("\n")[0]}`);
   if (errors.length && lines.length) process.exit(1);
   process.exit(0);

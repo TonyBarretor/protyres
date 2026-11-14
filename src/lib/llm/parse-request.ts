@@ -1,5 +1,6 @@
 import { z } from "zod";
-import { structuredCall, type ContentBlock } from "./client";
+import { clipForModel } from "../guard/usage";
+import { quoteLlmMode, structuredCall, type ContentBlock } from "./client";
 
 const LineSchema = z.object({
   raw: z.string().nullable().optional(),
@@ -84,11 +85,17 @@ const TOOL_SCHEMA = {
 const SYSTEM = `You read tyre (llantas/neumáticos) purchase requests in Spanish or English: a salesman's short note, a customer's WhatsApp message (possibly with a photo or screenshot), or a formal RFQ email with a table.
 Extract every requested product as a line. Do not invent values: use null for anything not stated. "x4", "4 unidades", "02 llantas", "cuatro" all mean quantity 4. A quantity before a position word is that group's quantity ("2 mixtas y 8 de tracción": 2 MIX + 8 TRAC, two lines). "UB 1830" is the customer's UB code for the line (field ub), never a quantity or a size; "número 451" is the quote number, not a product; "precio 259" on a line is that line's unit_price, not a quantity nor part of the model. Keep sizes exactly as written. For photos of a tyre sidewall, read the size, brand and model if legible.`;
 
+/**
+ * Lectura de un pedido con el modelo (cotizador). QUOTE_LLM_MODE=off: null sin llamar. El texto del vendedor va cortado
+ * en `limits.maxUserChars` (se le avisa); con un archivo adjunto (foto / PDF del pedido) el propósito es cotizador_imagen.
+ */
 export async function parseRequestWithLLM(text: string, extra: ContentBlock[] = []): Promise<LLMRequest | null> {
+  if (quoteLlmMode() === "off") return null;
   try {
     const raw = await structuredCall<unknown>({
+      purpose: extra.length ? "cotizador_imagen" : "cotizador_pedido",
       system: SYSTEM,
-      content: [...extra, { type: "text", text: text || "Extract the request from the attached material." }],
+      content: [...extra, { type: "text", text: clipForModel(text) || "Extract the request from the attached material." }],
       toolName: "record_request",
       toolDescription: "Record the structured tyre request.",
       inputSchema: TOOL_SCHEMA as unknown as Record<string, unknown>,

@@ -191,6 +191,50 @@ export interface LoggedMessage extends MessageLogEntry {
   createdAt: string;
 }
 
+/**
+ * Uso medido de un servicio pagado (corrida E): una llamada al modelo (tokens) o una transcripción de voz (segundos).
+ * `phone` = quien la provocó (solo dígitos) o "sistema" (sincronización de Drive, CLI).
+ */
+export interface UsageEntry {
+  phone: string;
+  /** "reporte" | "cotizador_pedido" | "cotizador_imagen" | "lista_precios" | "voz" | … */
+  purpose: string;
+  /** Modelo de lenguaje ("claude-haiku-4-5-…") o de voz ("nova-3"). */
+  model: string;
+  inputTokens?: number;
+  outputTokens?: number;
+  /** Segundos de audio (solo voz). */
+  audioSeconds?: number;
+  /** Costo estimado en USD (precios de config/portal.json, limits.prices). */
+  costUsd: number;
+  /** Por defecto ahora. */
+  at?: Date;
+}
+
+/** Suma del uso desde una fecha, por usuario y propósito. */
+export interface UsageSummaryRow {
+  phone: string;
+  purpose: string;
+  /** Llamadas al modelo (las de voz no cuentan aquí). */
+  llmCalls: number;
+  inputTokens: number;
+  outputTokens: number;
+  /** Transcripciones de voz. */
+  audioCalls: number;
+  audioSeconds: number;
+  costUsd: number;
+}
+
+/** Mensaje que la puerta del bot no procesó (corrida E): solo número, tipo y motivo; nunca el cuerpo. */
+export interface BlockedInbound {
+  phone: string;
+  /** Tipo de mensaje de WhatsApp ("text", "audio", "document"…). */
+  kind: string;
+  /** "no_registrado" | "rafaga" | "viejo" */
+  reason: string;
+  at?: Date;
+}
+
 export interface PriceStore {
   upsertRows(rows: PriceRow[], opts?: { replace?: ReplaceScope }): Promise<{ inserted: number; removed: number }>;
   allRows(): Promise<PriceRow[]>;
@@ -242,8 +286,19 @@ export interface PriceStore {
   listMessages(phone: string, limit?: number): Promise<LoggedMessage[]>;
   getConversation(phone: string): Promise<ConversationState | null>;
   setConversation(phone: string, state: ConversationState | null): Promise<void>;
-  /** Returns false when this message id was already processed (webhook retries). */
+  /**
+   * Returns false when this message id was already processed (webhook retries). Also used for "once" marks of the
+   * guard (corrida E): keys "guard:<what>:<day>" (one fixed reply per unknown number per day, one admin notice per cap).
+   */
   markProcessed(messageId: string): Promise<boolean>;
+  /** Records one metered call (tables llm_usage / audio_usage). */
+  recordUsage(entry: UsageEntry): Promise<void>;
+  /** Usage since `since` (inclusive), grouped by phone and purpose. */
+  usageSummary(since: Date): Promise<UsageSummaryRow[]>;
+  /** Minimal log of a message the guard dropped (table blocked_inbound). */
+  logBlocked(entry: BlockedInbound): Promise<void>;
+  /** Blocked messages since `since`, by reason (for llm:usage). */
+  blockedSummary(since: Date): Promise<{ reason: string; phones: number; messages: number }[]>;
   /** Drive file id -> modifiedTime of the last successful ingest. */
   getSyncMarks(): Promise<Record<string, string>>;
   /** `provider` lets deleteProvider clear the marks of that provider's files. */

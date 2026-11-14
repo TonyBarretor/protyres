@@ -8,7 +8,7 @@ import path from "node:path";
 import { gunzipSync } from "node:zlib";
 import type { PriceRow } from "../ingest/types";
 import type { Quote } from "../quote/types";
-import { foldKey, photoKey, type ConversationState, type ListQuotesOptions, type LoggedMessage, type MessageLogEntry, type PriceStore, type ProductPhoto, type ProviderSummary, type QuoteFile, type ReplaceScope, type StoredContractItem } from "./types";
+import { foldKey, photoKey, type BlockedInbound, type ConversationState, type ListQuotesOptions, type LoggedMessage, type MessageLogEntry, type PriceStore, type ProductPhoto, type ProviderSummary, type QuoteFile, type ReplaceScope, type StoredContractItem, type UsageEntry, type UsageSummaryRow } from "./types";
 
 interface Data {
   prices: Record<string, PriceRow>;
@@ -27,11 +27,17 @@ interface Data {
   contractPrices: Record<string, StoredContractItem & { customer: string }>;
   /** WhatsApp messages in and out (the newest MAX_MESSAGES). */
   messages: LoggedMessage[];
+  /** Metered model / voice calls (the newest MAX_USAGE); `at` = ISO. */
+  usage: (Omit<UsageEntry, "at"> & { at: string })[];
+  /** Messages the guard dropped (the newest MAX_USAGE); never the body. */
+  blocked: (Omit<BlockedInbound, "at"> & { at: string })[];
 }
+
+const MAX_USAGE = 20000;
 
 const MAX_MESSAGES = 5000;
 
-const EMPTY: Data = { prices: {}, quotes: {}, conversations: {}, counters: { quote: 0 }, processed: [], syncMarks: {}, syncProviders: {}, photos: {}, quoteFiles: {}, contractPrices: {}, messages: [] };
+const EMPTY: Data = { prices: {}, quotes: {}, conversations: {}, counters: { quote: 0 }, processed: [], syncMarks: {}, syncProviders: {}, photos: {}, quoteFiles: {}, contractPrices: {}, messages: [], usage: [], blocked: [] };
 
 const digits = (s: string | undefined) => (s ?? "").replace(/\D/g, "");
 
@@ -337,6 +343,59 @@ export class JsonStore implements PriceStore {
       if (this.data.processed.length > 2000) this.data.processed.splice(0, this.data.processed.length - 2000);
       this.persist();
       return true;
+    });
+  }
+
+  recordUsage(entry: UsageEntry): Promise<void> {
+    return this.run(() => {
+      const { at, ...rest } = entry;
+      this.data.usage.push({ ...rest, phone: digits(entry.phone) || entry.phone, at: (at ?? new Date()).toISOString() });
+      if (this.data.usage.length > MAX_USAGE) this.data.usage.splice(0, this.data.usage.length - MAX_USAGE);
+      this.persist();
+    });
+  }
+
+  usageSummary(since: Date): Promise<UsageSummaryRow[]> {
+    const from = since.getTime();
+    return this.run(() => {
+      const out = new Map<string, UsageSummaryRow>();
+      for (const u of this.data.usage) {
+        if (Date.parse(u.at) < from) continue;
+        const key = `${u.phone}|${u.purpose}`;
+        let row = out.get(key);
+        if (!row) out.set(key, (row = { phone: u.phone, purpose: u.purpose, llmCalls: 0, inputTokens: 0, outputTokens: 0, audioCalls: 0, audioSeconds: 0, costUsd: 0 }));
+        if (u.audioSeconds !== undefined) {
+          row.audioCalls++;
+          row.audioSeconds += u.audioSeconds;
+        } else row.llmCalls++;
+        row.inputTokens += u.inputTokens ?? 0;
+        row.outputTokens += u.outputTokens ?? 0;
+        row.costUsd += u.costUsd;
+      }
+      return [...out.values()];
+    });
+  }
+
+  logBlocked(entry: BlockedInbound): Promise<void> {
+    return this.run(() => {
+      this.data.blocked.push({ phone: digits(entry.phone), kind: entry.kind, reason: entry.reason, at: (entry.at ?? new Date()).toISOString() });
+      if (this.data.blocked.length > MAX_USAGE) this.data.blocked.splice(0, this.data.blocked.length - MAX_USAGE);
+      this.persist();
+    });
+  }
+
+  blockedSummary(since: Date): Promise<{ reason: string; phones: number; messages: number }[]> {
+    const from = since.getTime();
+    return this.run(() => {
+      const by = new Map<string, { phones: Set<string>; messages: number }>();
+      for (const b of this.data.blocked) {
+        if (Date.parse(b.at) < from) continue;
+        let r = by.get(b.reason);
+        if (!r) by.set(b.reason, (r = { phones: new Set(), messages: 0 }));
+        r.phones.add(b.phone);
+        r.messages++;
+      }
+      return [...by.entries()].map(([reason, r]) => ({ reason, phones: r.phones.size, messages: r.messages }));
     });
   }
 

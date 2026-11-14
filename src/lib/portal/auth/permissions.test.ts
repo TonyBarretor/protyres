@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { PortalUser, UserRole } from "../store/types";
-import { canEditCompany, canGeneratePrepropuesta, canSeeAll } from "./permissions";
+import { canEditCompany, canGeneratePrepropuesta, canSeeAll, canSeeUsage } from "./permissions";
 
 const user = (id: number, rol: UserRole, activo = true): PortalUser => ({ id, nombre: `u${id}`, whatsapp: null, rol, activo, createdAt: new Date() });
 const mine = { ownerUserId: 1 };
@@ -23,6 +23,13 @@ describe("permissions", () => {
     expect(canEditCompany(user(1, "admin", false), mine)).toBe(false);
     expect(canEditCompany(null, mine)).toBe(false);
     expect(canEditCompany(user(1, "admin"), null)).toBe(false);
+  });
+
+  it("canSeeUsage (bloque Consumo del tablero, corrida E): solo admin activo", () => {
+    expect(canSeeUsage(user(1, "admin"))).toBe(true);
+    for (const rol of ["supervisor", "vendedor", "tecnico"] as const) expect(canSeeUsage(user(1, rol))).toBe(false);
+    expect(canSeeUsage(user(1, "admin", false))).toBe(false);
+    expect(canSeeUsage(null)).toBe(false);
   });
 
   it("canSeeAll: supervisor and admin only", () => {

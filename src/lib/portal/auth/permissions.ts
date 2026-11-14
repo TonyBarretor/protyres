@@ -14,6 +14,11 @@ export function canSeeAll(user: UserLike | null | undefined): boolean {
   return !!user && user.activo && (user.rol === "supervisor" || user.rol === "admin");
 }
 
+/** Bloque "Consumo" del tablero (gasto del modelo y de la voz, corrida E): solo el administrador. */
+export function canSeeUsage(user: UserLike | null | undefined): boolean {
+  return !!user && user.activo && user.rol === "admin";
+}
+
 export function canEditCompany(user: UserLike | null | undefined, company: Pick<Company, "ownerUserId"> | null | undefined): boolean {
   if (!user || !user.activo || !company) return false;
   if (user.rol === "supervisor" || user.rol === "admin") return true;

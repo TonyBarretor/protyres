@@ -11,6 +11,7 @@ import { jaroWinkler, phoneticKey } from "../voice/fuzzy";
 import type Anthropic from "@anthropic-ai/sdk";
 import { z } from "zod";
 import { getAnthropic, llmModel } from "../../llm/client";
+import { clipForModel, maxTokensFor, meteredModelCall } from "../../guard/usage";
 import { parseSpanishDateTime, parseVagueDay } from "../bot/dates";
 import { STAGES, STAGE_IDS, stageIndex, type StageId } from "../stages";
 import { formatLimaDateTime, limaDateKey } from "../ui/time";
@@ -169,14 +170,17 @@ No inventes datos: null o [] si no se dicen. Pon confianza "baja" si no está cl
 type Msg = Anthropic.MessageParam;
 
 async function callTool(client: LlmClient, model: string, system: string, messages: Msg[], usage?: LlmUsage): Promise<Anthropic.ToolUseBlock | null> {
-  const res = await client.messages.create({
-    model,
-    max_tokens: 1500,
-    system,
-    tools: [{ name: TOOL_NAME, description: "Registra el reporte estructurado.", input_schema: REPORT_TOOL_SCHEMA as unknown as Anthropic.Tool["input_schema"] }],
-    tool_choice: { type: "tool", name: TOOL_NAME },
-    messages,
-  });
+  // por el medidor (guard/usage.ts): topes del día antes de llamar y tokens reales después (propósito "reporte")
+  const res = await meteredModelCall("reporte", model, () =>
+    client.messages.create({
+      model,
+      max_tokens: maxTokensFor("reporte", 1500),
+      system,
+      tools: [{ name: TOOL_NAME, description: "Registra el reporte estructurado.", input_schema: REPORT_TOOL_SCHEMA as unknown as Anthropic.Tool["input_schema"] }],
+      tool_choice: { type: "tool", name: TOOL_NAME },
+      messages,
+    }),
+  );
   if (usage) {
     usage.calls++;
     usage.inputTokens += (res.usage?.input_tokens ?? 0) + (res.usage?.cache_read_input_tokens ?? 0) + (res.usage?.cache_creation_input_tokens ?? 0);
@@ -227,7 +231,8 @@ export async function extractReport(text: string, ctx: ExtractContext, deps: Ext
   const usage: LlmUsage = { calls: 0, inputTokens: 0, outputTokens: 0 };
   if (client) {
     try {
-      const r = await askModel(client, deps.model ?? llmModel(), systemPrompt(ctx), clean, usage);
+      // al modelo va el texto cortado en limits.maxUserChars (se avisa al usuario); las reglas ven el texto completo
+      const r = await askModel(client, deps.model ?? llmModel(), systemPrompt(ctx), clipForModel(clean), usage);
       if (r) {
         const report = reconcile(normalizeCompany(r, ctx.companies), clean, ctx);
         const tipoSeguro = detectTipo(clean) === report.tipo;
@@ -250,7 +255,7 @@ export async function extractReport(text: string, ctx: ExtractContext, deps: Ext
 export async function correctReport(current: ExtractedReport, correction: string, ctx: ExtractContext, deps: ExtractDeps = {}): Promise<ExtractedReport | null> {
   const client = resolveClient(deps);
   if (!client) return null;
-  const clean = applyVocabulary(correction.trim(), ctx.vocabulary ?? []);
+  const clean = clipForModel(applyVocabulary(correction.trim(), ctx.vocabulary ?? []));
   const user = `Borrador actual del reporte (JSON):\n${JSON.stringify(current)}\n\nEl vendedor corrige o completa: "${clean}"\n\nDevuelve el reporte COMPLETO actualizado: cambia solo lo que la corrección indica y conserva el resto tal cual.`;
   try {
     const r = await askModel(client, deps.model ?? llmModel(), systemPrompt(ctx), user);

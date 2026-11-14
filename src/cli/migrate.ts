@@ -364,6 +364,37 @@ const STATEMENTS = [
   )`,
   // Corrida D (punto 7): qué regla del enrutador del portal decidió cada mensaje (filas kind 'route'), para revisar el piloto.
   `alter table messages add column if not exists route_rule text`,
+  // Corrida E (protección): uso medido del modelo y de la voz (topes diarios, npm run llm:usage, tablero) y registro
+  // mínimo de mensajes que la puerta del bot no procesó (número no registrado, ráfaga): número, tipo y motivo, sin cuerpo.
+  `create table if not exists llm_usage (
+    id serial primary key,
+    phone text not null,
+    purpose text not null,
+    model text not null,
+    input_tokens integer not null default 0,
+    output_tokens integer not null default 0,
+    cost_usd numeric(12,6) not null default 0,
+    created_at timestamptz not null default now()
+  )`,
+  `create index if not exists llm_usage_created_idx on llm_usage (created_at, phone)`,
+  `create table if not exists audio_usage (
+    id serial primary key,
+    phone text not null,
+    purpose text not null default 'voz',
+    model text not null,
+    seconds numeric(10,2) not null default 0,
+    cost_usd numeric(12,6) not null default 0,
+    created_at timestamptz not null default now()
+  )`,
+  `create index if not exists audio_usage_created_idx on audio_usage (created_at, phone)`,
+  `create table if not exists blocked_inbound (
+    id serial primary key,
+    phone text not null,
+    kind text not null,
+    reason text not null,
+    created_at timestamptz not null default now()
+  )`,
+  `create index if not exists blocked_inbound_created_idx on blocked_inbound (created_at)`,
 ];
 
 /** Desde aquí empiezan las sentencias del portal: antes de ejecutarlas se pasa la guardia (migrate-guard.ts). */

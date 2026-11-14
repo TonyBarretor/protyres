@@ -24,6 +24,7 @@
     "portal:seed-demo": "tsx --tsconfig tsconfig.cli.json src/cli/portal-seed-demo.ts",
     "portal:clear-demo": "tsx --tsconfig tsconfig.cli.json src/cli/portal-clear-demo.ts",
     "llm:check": "tsx --tsconfig tsconfig.cli.json src/cli/llm-check.ts",
+    "llm:usage": "tsx --tsconfig tsconfig.cli.json src/cli/llm-usage.ts",
     "portal:simulate": "tsx --tsconfig tsconfig.cli.json src/cli/portal-simulate.ts",
     "portal:prepropuesta": "tsx --tsconfig tsconfig.cli.json src/cli/portal-prepropuesta.ts"
   },

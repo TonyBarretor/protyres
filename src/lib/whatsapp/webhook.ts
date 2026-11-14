@@ -89,6 +89,19 @@ export function parseWebhook(payload: unknown): { messages: InboundMessage[]; ph
   return { messages: out, phoneNumberId };
 }
 
+/**
+ * Advertencia al arrancar (src/instrumentation.ts) si falta WHATSAPP_APP_SECRET: sin él el webhook acepta cualquier POST
+ * sin verificar la firma de Meta (piloto). null si está definido.
+ */
+export function appSecretWarning(env: Record<string, string | undefined>): string | null {
+  if (env.WHATSAPP_APP_SECRET?.trim()) return null;
+  return [
+    "⚠️  WHATSAPP_APP_SECRET no está definida: el webhook de WhatsApp acepta mensajes SIN verificar la firma de Meta (X-Hub-Signature-256).",
+    "    Cualquiera que conozca la URL podría inyectar mensajes. Valor: el «Secreto de la app» en Meta for Developers → tu app →",
+    "    Configuración de la app → Básica (App Secret). Ponlo en las variables de entorno (Vercel y .env) y vuelve a desplegar.",
+  ].join("\n");
+}
+
 /** Validate X-Hub-Signature-256 (sha256=<hex>) against the raw body using the app secret. */
 export function verifySignature(rawBody: string, header: string | null | undefined, appSecret: string | undefined): boolean {
   if (!appSecret) return true; // not configured: accept (pilot); set WHATSAPP_APP_SECRET in production

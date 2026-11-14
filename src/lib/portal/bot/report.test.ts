@@ -21,6 +21,9 @@ const settings: Settings = SettingsSchema.parse({
   company: { name: "Professional Tyres", tradeName: "360° Tyres", signatureName: "360 by Professional Tyres", taxId: "RUC: 20565716396" },
   pricing: { currency: "USD", taxPct: 18, own: { pricesIncludeTax: true, maxDiscountPct: 20, defaultDiscountPct: 0 }, provider: { marginPct: 15, pricesIncludeTax: false }, exchangeRates: { PEN: 3.75 }, stalePriceDays: 30 },
   quote: { numberFormat: "COT-{NNNN}", counterStart: 1, validityDays: 7 },
+  // vendedores del cotizador (config/pilot.json): el de "revisión B" (51911111111) es solo del cotizador. Corrida E: un
+  // número que no está aquí ni en el portal no pasa la puerta del bot.
+  salespeople: { "51900000001": { name: "Frank Rodríguez" }, "51911111111": { name: "Vendedor solo del cotizador" } },
 });
 
 const FRANK = "51900000001";

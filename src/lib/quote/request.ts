@@ -11,7 +11,8 @@ import { findBrandInText, fold } from "../tyre/brands";
 import { extractPly, extractPosition } from "../tyre/attrs";
 import { findTyreSizes, normalizeSizeText, parseTyreSize } from "../tyre/spec";
 import { stripToModel } from "../ingest/util";
-import { llmAvailable } from "../llm/client";
+import { limitsConfig } from "../guard/usage";
+import { llmAvailable, quoteLlmMode } from "../llm/client";
 import { parseRequestWithLLM } from "../llm/parse-request";
 import type { QuoteRequest, RequestLine } from "./types";
 
@@ -649,7 +650,7 @@ function stillUnparsed(segment: string, r: QuoteRequest): boolean {
 /** Regex parse, refined by the LLM when available (brand/model/customer/quantities read from messy text). */
 export async function parseRequest(text: string): Promise<QuoteRequest> {
   const base = parseRequestRegex(text);
-  if (!llmAvailable()) return base;
+  if (!llmAvailable() || quoteLlmMode() === "off") return base;
   const llm = await parseRequestWithLLM(text);
   if (!llm) return base;
   const lines: RequestLine[] = [];
@@ -686,7 +687,9 @@ export async function parseRequest(text: string): Promise<QuoteRequest> {
     unit: base.unit ?? llm.unit ?? undefined,
     ub: base.ub ?? (llm.ub ? extractUb(`UB ${llm.ub}`) : undefined),
     requester: base.requester ?? llm.requester ?? undefined,
-    lines: lines.length ? lines : base.lines,
+    // corrida E: un texto más largo que limits.maxUserChars llega cortado al modelo; si por eso leyó menos ítems que las
+    // reglas (que ven el texto completo), mandan los ítems de las reglas
+    lines: lines.length && !(text.length > limitsConfig().maxUserChars && base.lines.length > lines.length) ? lines : base.lines,
     customerName: llm.customer_name ?? base.customerName,
     customerCompany: llm.customer_company ?? base.customerCompany,
     customerEmail: llm.customer_email ?? base.customerEmail,

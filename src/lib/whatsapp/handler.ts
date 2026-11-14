@@ -18,6 +18,12 @@ import { QUOTE_FILE_REFUSAL, detectQuoteDocument } from "../ingest/quote-detect"
 import { ingestWhatsAppText, looksLikePriceMessage } from "../ingest/whatsapp-text";
 import { loadProvidersConfig, resolveSourceOptions } from "../ingest/sources";
 import { extractPricesWithLLM, llmAvailable } from "../llm/extract-prices";
+import { quoteLlmMode } from "../llm/client";
+import { BURST_REPLY, BurstLimiter, isRegisteredSender, staticTeamNumbers, UNKNOWN_SENDER_REPLY } from "../guard/inbound";
+import { currentUsage, limitsConfig, modelBudgetOk, runWithUsage, type UsageContext } from "../guard/usage";
+import { loadPortalConfig } from "../portal/config";
+import { getPortalStore } from "../portal/store";
+import { limaDateKey } from "../portal/ui/time";
 import { parseRequestWithLLM } from "../llm/parse-request";
 import { routePortal } from "../portal/bot";
 import { voiceCatalogFromStore } from "../portal/voice/catalog";
@@ -55,6 +61,11 @@ export interface HandlerDeps {
   log?: (msg: string) => void;
   /** Store del portal comercial (tests); por defecto getPortalStore(), solo si el mensaje es del portal. */
   portalStore?: PortalStore;
+  /**
+   * Reloj (ms) del tope de mensajes por minuto; por defecto Date.now. El simulador lo avanza a ritmo humano por línea de
+   * guion (un guion no es una ráfaga) y lo congela para @rafaga.
+   */
+  burstClock?: () => number;
 }
 
 const HELP = [
@@ -403,9 +414,54 @@ export class BotHandler {
    * a pausa va DESPUÉS de la respuesta del cotizador). Sin nada diferido (siempre fuera del portal) es igual que antes.
    */
   async handle(msg: InboundMessage): Promise<void> {
-    const after: Array<() => Promise<void>> = [];
-    await this.handleMessage(msg, after);
-    for (const fn of after) await fn();
+    const phone = msg.from.replace(/\D/g, "");
+    const run = async () => {
+      const after: Array<() => Promise<void>> = [];
+      await this.handleMessage(msg, after);
+      for (const fn of after) await fn();
+    };
+    // mensaje interno del mismo usuario (el portal re-cotiza con requote): ya pasó la puerta, mismo contexto de consumo
+    if (currentUsage()?.phone === phone) return run();
+    if (!(await this.admit(msg))) return;
+    // contexto de consumo (guard/usage.ts): quién gasta, dónde se registra, avisos de una línea al final de la respuesta
+    const ctx: UsageContext = { phone, sink: this.store, notices: new Set(), notifyAdmin: (body) => this.notifyAdmin(body), log: (m) => this.log(m) };
+    await runWithUsage(ctx, async () => {
+      await run();
+      if (ctx.notices.size) await this.reply(msg.from, [...ctx.notices].join("\n"));
+    });
+  }
+
+  private readonly burst = new BurstLimiter(() => limitsConfig().burstPerMinute);
+
+  /**
+   * Puerta (corrida E), antes del portal y de registrar el cuerpo: un número que no es del equipo (vendedor de
+   * pilot.json, variables del equipo, usuario activo del portal) no se procesa —cero modelo, Deepgram y descargas—; se
+   * registra lo mínimo (número, tipo, fecha) y recibe UNA respuesta fija por día. Luego, el tope de mensajes por minuto.
+   */
+  private async admit(msg: InboundMessage): Promise<boolean> {
+    const from = msg.from;
+    const now = new Date();
+    const team = staticTeamNumbers(this.settings, process.env, loadPortalConfig());
+    const lookupUser = async (p: string) => (this.deps.portalStore ?? (await getPortalStore())).getUserByWhatsapp(p);
+    if (!(await isRegisteredSender(from, { team, lookupUser, log: (m) => this.log(m) }))) {
+      this.log(`puerta: ${from} no está registrado (${msg.type || "?"}): no se procesa`);
+      await this.store.logBlocked({ phone: from, kind: msg.type || "?", reason: "no_registrado", at: now }).catch((err: Error) => this.log(`puerta: no pude registrar el bloqueo: ${err.message}`));
+      const first = await this.store.markProcessed(`guard:desconocido:${from.replace(/\D/g, "")}:${limaDateKey(now)}`).catch(() => false);
+      if (first) await this.deps.client.sendText(from, UNKNOWN_SENDER_REPLY).catch((err: Error) => this.log(`puerta: no pude responder a ${from}: ${err.message}`));
+      return false;
+    }
+    const burst = this.burst.check(from, this.deps.burstClock?.() ?? now.getTime());
+    if (burst === "ok") return true;
+    this.log(`puerta: ráfaga de ${from} (más de ${limitsConfig().burstPerMinute} mensajes por minuto): no se procesa`);
+    await this.store.logBlocked({ phone: from, kind: msg.type || "?", reason: "rafaga", at: now }).catch(() => undefined);
+    if (burst === "aviso") await this.deps.client.sendText(from, BURST_REPLY).catch(() => undefined);
+    return false;
+  }
+
+  /** Aviso al administrador (tope de consumo alcanzado): PORTAL_ADMIN_NUMBER, o el primero de ADMIN_NUMBERS. */
+  private async notifyAdmin(body: string): Promise<void> {
+    const admin = [process.env.PORTAL_ADMIN_NUMBER, process.env.ADMIN_NUMBERS].map((v) => (v ?? "").split(",").map((x) => x.replace(/\D/g, "")).find(Boolean)).find(Boolean);
+    if (admin) await this.client.sendText(admin, body);
   }
 
   private async handleMessage(msg: InboundMessage, after: Array<() => Promise<void>>): Promise<void> {
@@ -547,9 +603,12 @@ export class BotHandler {
 
   private async startRequestFromMedia(from: string, msg: InboundMessage): Promise<void> {
     const caption = msg.media?.caption ?? "";
-    if (!llmAvailable()) {
+    // QUOTE_LLM_MODE=off: solo reglas, sin descargar el archivo (igual que sin modelo)
+    if (!llmAvailable() || quoteLlmMode() === "off") {
       return this.startRequest(from, caption, "(No puedo leer la imagen sin el LLM configurado; usé solo el texto.)");
     }
+    // tope del día alcanzado: no se descarga un archivo que no se va a leer (ya se avisó en una línea)
+    if (!(await modelBudgetOk("cotizador_imagen"))) return this.startRequest(from, caption);
     const { data, mimeType } = await this.client.downloadMedia(msg.media!.id);
     const mt = (mimeType || msg.media!.mimeType).toLowerCase();
     const block = mt.includes("pdf")

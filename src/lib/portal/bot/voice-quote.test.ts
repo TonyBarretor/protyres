@@ -23,6 +23,9 @@ const settings: Settings = SettingsSchema.parse({
   company: { name: "Professional Tyres", tradeName: "360° Tyres", signatureName: "360 by Professional Tyres", taxId: "RUC: 20565716396" },
   pricing: { currency: "USD", taxPct: 18, own: { pricesIncludeTax: true, maxDiscountPct: 20, defaultDiscountPct: 0 }, provider: { marginPct: 15, pricesIncludeTax: false }, exchangeRates: { PEN: 3.75 }, stalePriceDays: 30 },
   quote: { numberFormat: "COT-{NNNN}", counterStart: 1, validityDays: 7 },
+  // vendedores del cotizador (config/pilot.json): FRANK también es usuario del portal; STRANGER solo del cotizador. Corrida E:
+  // un número que no está aquí ni en el portal no pasa la puerta del bot.
+  salespeople: { "51900000001": { name: "Frank Rodríguez" }, "51911111111": { name: "Vendedor solo del cotizador" } },
 });
 
 const FRANK = "51900000001";
@@ -329,6 +332,7 @@ describe("cotizador: un pedido de contrato por voz tampoco arma el PDF sin ok", 
     pricing: { currency: "USD", taxPct: 18, provider: { marginPct: 15, pricesIncludeTax: false }, stalePriceDays: 30 },
     quote: { numberFormat: "COT-{NNNN}", counterStart: 1, validityDays: 7, paymentType: "Factura crédito", paymentTerm: "30 días", deliveryTerm: "48 hrs post OC" },
     customers: loadCustomerProfiles(),
+    salespeople: { [FRANK]: { name: "Frank Rodríguez" }, [STRANGER]: { name: "Vendedor solo del cotizador" } }, // corrida E: los números del pedido son del equipo
   });
   const PEDIDO = "prosegur ayacucho 1830\n2 v99\n4 v89\nsolicitante: Johann Castañeda";
 

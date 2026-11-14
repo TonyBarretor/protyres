@@ -1,4 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
+import { maxTokensFor, meteredModelCall, type UsagePurpose } from "../guard/usage";
 
 let cached: Anthropic | null | undefined;
 
@@ -10,6 +11,17 @@ export function llmModel(): string {
 
 export function llmAvailable(): boolean {
   return !!process.env.ANTHROPIC_API_KEY && process.env.LLM_DISABLED !== "1";
+}
+
+/**
+ * Modelo en el cotizador (corrida E): QUOTE_LLM_MODE = off | shadow | on, leído en cada llamada. `off` = cero llamadas al
+ * modelo para leer pedidos (parseRequest y startRequestFromMedia: solo reglas). Sin la variable (o con otro valor), "on":
+ * el comportamiento de siempre. `shadow` lo implementa la corrida del modo sombra; mientras tanto se comporta como "on".
+ */
+export type QuoteLlmMode = "off" | "shadow" | "on";
+export function quoteLlmMode(env: Record<string, string | undefined> = process.env): QuoteLlmMode {
+  const v = (env.QUOTE_LLM_MODE ?? "").trim().toLowerCase();
+  return v === "off" || v === "shadow" ? v : "on";
 }
 
 export function getAnthropic(): Anthropic | null {
@@ -31,8 +43,12 @@ export type ContentBlock =
 /**
  * Ask the model to fill one tool's input schema and return that input as JSON.
  * Forcing `tool_choice` guarantees structured output.
+ * Goes through the usage meter (guard/usage.ts): `purpose` names the use for the daily caps and the llm_usage table; a cap
+ * reached throws UsageCapExceeded without calling (callers already treat a throw / null as "no model": rules).
+ * max_tokens: config `limits.maxTokens[purpose]`, else `maxTokens`, else 4096.
  */
 export async function structuredCall<T>(params: {
+  purpose: UsagePurpose;
   system: string;
   content: ContentBlock[];
   toolName: string;
@@ -42,9 +58,10 @@ export async function structuredCall<T>(params: {
 }): Promise<T | null> {
   const client = getAnthropic();
   if (!client) return null;
-  const res = await client.messages.create({
-    model: llmModel(),
-    max_tokens: params.maxTokens ?? 4096,
+  const model = llmModel();
+  const res = await meteredModelCall(params.purpose, model, () => client.messages.create({
+    model,
+    max_tokens: maxTokensFor(params.purpose, params.maxTokens ?? 4096),
     system: params.system,
     tools: [
       {
@@ -55,7 +72,7 @@ export async function structuredCall<T>(params: {
     ],
     tool_choice: { type: "tool", name: params.toolName },
     messages: [{ role: "user", content: params.content }],
-  });
+  }));
   const block = res.content.find((b) => b.type === "tool_use");
   if (!block || block.type !== "tool_use") return null;
   return block.input as T;

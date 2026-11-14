@@ -7,7 +7,7 @@ import postgres from "postgres";
 import * as schema from "../../db/schema";
 import type { PriceRow, PriceSource } from "../ingest/types";
 import type { Quote } from "../quote/types";
-import { foldKey, photoKey, type ConversationState, type ListQuotesOptions, type LoggedMessage, type MessageLogEntry, type PriceStore, type ProductPhoto, type ProviderSummary, type QuoteFile, type ReplaceScope, type StoredContractItem } from "./types";
+import { foldKey, photoKey, type BlockedInbound, type ConversationState, type ListQuotesOptions, type LoggedMessage, type MessageLogEntry, type PriceStore, type ProductPhoto, type ProviderSummary, type QuoteFile, type ReplaceScope, type StoredContractItem, type UsageEntry, type UsageSummaryRow } from "./types";
 
 type Db = PostgresJsDatabase<typeof schema>;
 
@@ -461,6 +461,79 @@ export class PgStore implements PriceStore {
   async markProcessed(messageId: string): Promise<boolean> {
     const res = await this.db.insert(schema.processedMessages).values({ id: messageId }).onConflictDoNothing().returning({ id: schema.processedMessages.id });
     return res.length > 0;
+  }
+
+  // ── corrida E: uso medido y mensajes descartados (tablas llm_usage, audio_usage, blocked_inbound; SQL directo, fuera
+  // del esquema de Drizzle). Sin migrar todavía: se registra en la consola y el bot sigue (sin topes hasta migrar).
+
+  async recordUsage(entry: UsageEntry): Promise<void> {
+    const phone = entry.phone.replace(/\D/g, "") || entry.phone;
+    const at = entry.at ?? new Date();
+    try {
+      if (entry.audioSeconds !== undefined) {
+        await this.sqlClient`insert into audio_usage (phone, purpose, model, seconds, cost_usd, created_at) values (${phone}, ${entry.purpose}, ${entry.model}, ${entry.audioSeconds}, ${entry.costUsd}, ${at})`;
+      } else {
+        await this.sqlClient`insert into llm_usage (phone, purpose, model, input_tokens, output_tokens, cost_usd, created_at) values (${phone}, ${entry.purpose}, ${entry.model}, ${entry.inputTokens ?? 0}, ${entry.outputTokens ?? 0}, ${entry.costUsd}, ${at})`;
+      }
+    } catch (err) {
+      if (!isMissingTable(err)) throw err;
+      console.warn("[store] llm_usage / audio_usage no existen: corre npm run db:migrate (el uso no se registra ni se aplican topes)");
+    }
+  }
+
+  async usageSummary(since: Date): Promise<UsageSummaryRow[]> {
+    try {
+      const llm = await this.sqlClient<{ phone: string; purpose: string; calls: number; input: number; output: number; cost: number }[]>`
+        select phone, purpose, count(*)::int as calls, coalesce(sum(input_tokens), 0)::bigint::float8 as input,
+               coalesce(sum(output_tokens), 0)::bigint::float8 as output, coalesce(sum(cost_usd), 0)::float8 as cost
+        from llm_usage where created_at >= ${since} group by phone, purpose`;
+      const audio = await this.sqlClient<{ phone: string; purpose: string; calls: number; seconds: number; cost: number }[]>`
+        select phone, purpose, count(*)::int as calls, coalesce(sum(seconds), 0)::float8 as seconds, coalesce(sum(cost_usd), 0)::float8 as cost
+        from audio_usage where created_at >= ${since} group by phone, purpose`;
+      const out = new Map<string, UsageSummaryRow>();
+      const row = (phone: string, purpose: string) => {
+        const key = `${phone}|${purpose}`;
+        let r = out.get(key);
+        if (!r) out.set(key, (r = { phone, purpose, llmCalls: 0, inputTokens: 0, outputTokens: 0, audioCalls: 0, audioSeconds: 0, costUsd: 0 }));
+        return r;
+      };
+      for (const l of llm) {
+        const r = row(l.phone, l.purpose);
+        r.llmCalls += Number(l.calls);
+        r.inputTokens += Number(l.input);
+        r.outputTokens += Number(l.output);
+        r.costUsd += Number(l.cost);
+      }
+      for (const a of audio) {
+        const r = row(a.phone, a.purpose);
+        r.audioCalls += Number(a.calls);
+        r.audioSeconds += Number(a.seconds);
+        r.costUsd += Number(a.cost);
+      }
+      return [...out.values()];
+    } catch (err) {
+      if (isMissingTable(err)) return [];
+      throw err;
+    }
+  }
+
+  async logBlocked(entry: BlockedInbound): Promise<void> {
+    try {
+      await this.sqlClient`insert into blocked_inbound (phone, kind, reason, created_at) values (${entry.phone.replace(/\D/g, "")}, ${entry.kind}, ${entry.reason}, ${entry.at ?? new Date()})`;
+    } catch (err) {
+      if (!isMissingTable(err)) throw err;
+    }
+  }
+
+  async blockedSummary(since: Date): Promise<{ reason: string; phones: number; messages: number }[]> {
+    try {
+      const rows = await this.sqlClient<{ reason: string; phones: number; messages: number }[]>`
+        select reason, count(distinct phone)::int as phones, count(*)::int as messages from blocked_inbound where created_at >= ${since} group by reason`;
+      return rows.map((r) => ({ reason: r.reason, phones: Number(r.phones), messages: Number(r.messages) }));
+    } catch (err) {
+      if (isMissingTable(err)) return [];
+      throw err;
+    }
   }
 
   async getSyncMarks(): Promise<Record<string, string>> {

@@ -4,6 +4,8 @@ import { getStore } from "./store";
 import { BotHandler } from "./whatsapp/handler";
 import { GraphWhatsAppClient, graphConfigFromEnv, type WhatsAppClient } from "./whatsapp/client";
 import type { InboundMessage } from "./whatsapp/webhook";
+import { admitWebhookMessage } from "./guard/inbound";
+import { limitsConfig } from "./guard/usage";
 
 let handler: BotHandler | null = null;
 
@@ -27,12 +29,26 @@ export function allowedSender(phone: string): boolean {
   return list.includes(phone.replace(/\D/g, ""));
 }
 
-export async function processInbound(messages: InboundMessage[]): Promise<void> {
+function allowedList(): string[] {
+  return (process.env.WHATSAPP_ALLOWED_NUMBERS ?? "")
+    .split(",")
+    .map((s) => s.replace(/\D/g, ""))
+    .filter(Boolean);
+}
+
+/**
+ * Mensajes del webhook: lista blanca (WHATSAPP_ALLOWED_NUMBERS), antigüedad (Meta reintenta durante horas: más de
+ * limits.maxMessageAgeMinutes no se procesa, para no pagar dos veces ni contestar tarde) y repetidos por id. La puerta de
+ * números no registrados y el tope por minuto están en BotHandler.handle (así también pasa el simulador).
+ */
+export async function processInbound(messages: InboundMessage[], now: () => number = Date.now): Promise<void> {
   const store = await getStore();
   const bot = await getBot();
   for (const m of messages) {
-    if (!allowedSender(m.from)) {
-      console.log(`[bot] ignoring message from non-allowed number ${m.from}`);
+    const verdict = admitWebhookMessage(m, { nowMs: now(), maxAgeMinutes: limitsConfig().maxMessageAgeMinutes, allowed: allowedList() });
+    if (!verdict.ok) {
+      console.log(`[bot] mensaje ${m.id} de ${m.from} descartado: ${verdict.reason === "viejo" ? `más de ${limitsConfig().maxMessageAgeMinutes} min de antigüedad` : "número fuera de WHATSAPP_ALLOWED_NUMBERS"}`);
+      if (verdict.reason === "viejo") await store.logBlocked({ phone: m.from, kind: m.type || "?", reason: "viejo" }).catch(() => undefined);
       continue;
     }
     if (!(await store.markProcessed(m.id))) continue; // webhook retry

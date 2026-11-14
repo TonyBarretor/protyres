@@ -59,5 +59,25 @@
       "total": ["total", "importe", "subtotal", "monto", "amount"],
       "vendedor": ["vendedor", "comercial", "salesperson", "vendedor/a"]
     }
+  },
+  "limits": {
+    "_comment": "Corrida E — topes de gasto (modelo de lenguaje y voz) y de entrada del bot; se miden por día de Lima en las tablas llm_usage / audio_usage (npm run llm:usage). Al superar un tope no se llama al servicio: el bot sigue con reglas, lo dice en una línea y avisa al administrador una vez por día. Piloto de ~4 usuarios: un vendedor activo hace ~30-60 llamadas al día (reporte ≈ 3-5 mil tokens; pedido ≈ 2 mil), así que el tope por usuario deja 3x de margen y el global corta un abuso en ~2 USD/día.",
+    "perUserDaily": { "llmCalls": 150, "llmTokens": 500000, "audioMinutes": 45 },
+    "globalDaily": { "llmCalls": 400, "llmTokens": 1500000, "audioMinutes": 120 },
+    "_commentEntrada": "maxVoiceSeconds: nota de voz más larga no se transcribe. maxUserChars: texto del usuario al modelo (reporte, pedido), se corta y se avisa. maxPriceListChars: tope propio de una lista de precios de proveedor (larga de verdad). maxTokens: salida máxima por propósito. burstPerMinute: mensajes por usuario por minuto. maxMessageAgeMinutes: mensajes del webhook más viejos se descartan.",
+    "maxVoiceSeconds": 180,
+    "maxUserChars": 2000,
+    "maxPriceListChars": 60000,
+    "maxTokens": { "reporte": 1500, "cotizador_pedido": 2048, "cotizador_imagen": 2048, "lista_precios": 8192 },
+    "burstPerMinute": 30,
+    "maxMessageAgeMinutes": 10,
+    "prices": {
+      "_comment": "Precios para el costo ESTIMADO en USD (aproximados; revisar contra la factura). models: clave = prefijo del id del modelo; 'default' para uno no listado. deepgramPerMinute: Nova-3 pregrabado, aproximado.",
+      "models": {
+        "claude-haiku-4-5": { "inputPerMTok": 1, "outputPerMTok": 5 },
+        "default": { "inputPerMTok": 3, "outputPerMTok": 15 }
+      },
+      "deepgramPerMinute": 0.0043
+    }
   }
 }

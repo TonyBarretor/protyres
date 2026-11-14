@@ -2,6 +2,7 @@ import { z } from "zod";
 import type { IngestOptions, PriceRow, PriceSource } from "../ingest/types";
 import { buildRow, todayIso } from "../ingest/util";
 import { dedupeRows } from "../ingest/tabular";
+import { limitsConfig } from "../guard/usage";
 import { llmAvailable, structuredCall, type ContentBlock } from "./client";
 
 export { llmAvailable };
@@ -71,12 +72,14 @@ export async function extractPricesWithLLM(
   const content: ContentBlock[] = [];
   if (input.pdf) content.push({ type: "document", source: { type: "base64", media_type: "application/pdf", data: input.pdf.toString("base64") } });
   if (input.image) content.push({ type: "image", source: { type: "base64", media_type: input.image.mediaType, data: input.image.data.toString("base64") } });
-  const text = input.text ? `Provider: ${opts.provider}\n\n${input.text.slice(0, 60_000)}` : `Provider: ${opts.provider}. Extract every priced tyre from the attached document.`;
+  // una lista de proveedor es larga de verdad: su propio tope (limits.maxPriceListChars, 60.000 por defecto), no el del usuario
+  const text = input.text ? `Provider: ${opts.provider}\n\n${input.text.slice(0, limitsConfig().maxPriceListChars)}` : `Provider: ${opts.provider}. Extract every priced tyre from the attached document.`;
   content.push({ type: "text", text });
 
   let raw: unknown;
   try {
     raw = await structuredCall({
+      purpose: "lista_precios",
       system: SYSTEM,
       content,
       toolName: "record_price_list",

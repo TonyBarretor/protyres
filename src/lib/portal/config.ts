@@ -67,6 +67,43 @@ const SurveysSchema = z.looseObject({
   expiresDays: z.number().int().min(1).max(365).default(30),
 });
 
+/** Tope diario de consumo (por usuario o del bot entero). */
+const DailyCapsSchema = z.object({
+  /** Llamadas al modelo de lenguaje. */
+  llmCalls: z.number().int().min(0).default(150),
+  /** Tokens de entrada + salida. */
+  llmTokens: z.number().int().min(0).default(500_000),
+  /** Minutos de audio transcrito (Deepgram). */
+  audioMinutes: z.number().min(0).default(45),
+});
+
+const ModelPriceSchema = z.object({ inputPerMTok: z.number().min(0), outputPerMTok: z.number().min(0) });
+
+/** Corrida E (protección): topes de gasto y de entrada del bot (src/lib/guard). */
+const LimitsSchema = z.looseObject({
+  perUserDaily: DailyCapsSchema.prefault({}),
+  globalDaily: DailyCapsSchema.prefault({ llmCalls: 400, llmTokens: 1_500_000, audioMinutes: 120 }),
+  /** Nota de voz más larga que esto: no se transcribe. */
+  maxVoiceSeconds: z.number().int().min(10).max(3600).default(180),
+  /** Texto del usuario que va al modelo (reporte, lectura de pedido): se corta aquí y se avisa. */
+  maxUserChars: z.number().int().min(100).default(2000),
+  /** Texto de una lista de precios (mensaje / PDF de proveedor) que va al modelo: es largo de verdad, tope propio. */
+  maxPriceListChars: z.number().int().min(1000).default(60_000),
+  /** max_tokens de salida por propósito (el resto, 4096). */
+  maxTokens: z.record(z.string(), z.number().int().min(16)).default({ reporte: 1500, cotizador_pedido: 2048, cotizador_imagen: 2048, lista_precios: 8192 }),
+  /** Mensajes por usuario por minuto; por encima no se procesan (se avisa una vez por minuto). */
+  burstPerMinute: z.number().int().min(1).default(30),
+  /** Mensajes del webhook más viejos que esto (timestamp de Meta) se descartan sin procesar. */
+  maxMessageAgeMinutes: z.number().min(1).default(10),
+  /** Precios para el costo estimado (USD). Modelo: clave = prefijo del id; "default" si ninguno coincide. */
+  prices: z
+    .looseObject({
+      models: z.record(z.string(), ModelPriceSchema).default({ "claude-haiku-4-5": { inputPerMTok: 1, outputPerMTok: 5 }, default: { inputPerMTok: 3, outputPerMTok: 15 } }),
+      deepgramPerMinute: z.number().min(0).default(0.0043),
+    })
+    .prefault({}),
+});
+
 export const PortalConfigSchema = z.looseObject({
   import: ImportSchema.prefault({}),
   appointments: AppointmentsSchema.prefault({}),
@@ -76,6 +113,7 @@ export const PortalConfigSchema = z.looseObject({
   surveys: SurveysSchema.prefault({}),
   /** Feriados ("AAAA-MM-DD") que no cuentan como días hábiles. */
   holidays: z.array(z.string().regex(/^\d{4}-\d{2}-\d{2}$/)).default([]),
+  limits: LimitsSchema.prefault({}),
 });
 
 export type PortalConfig = z.infer<typeof PortalConfigSchema>;
@@ -85,6 +123,7 @@ export type PortalTechLeadConfig = PortalConfig["techLead"];
 export type PortalQuotesConfig = PortalConfig["quotes"];
 export type PortalGoalsConfig = PortalConfig["goals"];
 export type PortalSurveysConfig = PortalConfig["surveys"];
+export type PortalLimitsConfig = PortalConfig["limits"];
 
 export function portalConfigPath(): string {
   return process.env.PORTAL_CONFIG || path.join(process.cwd(), "config", "portal.json");

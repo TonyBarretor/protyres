@@ -29,7 +29,9 @@ import { canEditCompany } from "../auth/permissions";
 import { stageIndex, stageLabel, type StageId } from "../stages";
 import type { Company, PortalStore } from "../store/types";
 import { formatLimaDateTime } from "../ui/time";
-import { deepgramKeyFromEnv, transcribe, TranscriptionError, VoiceNotConfigured } from "../voice/deepgram";
+import { DEEPGRAM_MODEL, deepgramKeyFromEnv, transcribe, TranscriptionError, VoiceNotConfigured } from "../voice/deepgram";
+import { audioDurationSec } from "../voice/duration";
+import { audioBudget, limitsConfig, recordAudio, voiceDisabled } from "../../guard/usage";
 import { buildKeyterms, parseLearnCommand } from "../voice/vocabulary";
 import { findCompanies, mentionedCompanies, shortName } from "./companies";
 import { askAgain } from "./pause";
@@ -41,6 +43,8 @@ import { clearPending, setPending, type ReportDraftStep } from "./state";
 export const VOICE_OFF = "La voz aún no está activa. Escríbeme el reporte en texto, por favor.";
 export const VOICE_FAILED = "No pude transcribir tu nota de voz. Escríbeme el reporte en texto, por favor.";
 export const VOICE_EMPTY = "No entendí nada en la nota de voz (¿salió en silencio?). Escríbeme el reporte en texto, por favor.";
+export const VOICE_DISABLED_REPLY = "La voz está apagada por ahora. Escríbeme el texto, por favor.";
+export const VOICE_TOO_LONG = (maxSec: number) => `Tu nota de voz dura más de ${Math.round(maxSec / 60)} minutos y no la transcribo. Mándame una más corta o escríbeme el texto, por favor.`;
 export const VOICE_DOWNLOAD_FAILED = "No pude descargar tu nota de voz de WhatsApp. Escríbeme el reporte en texto, por favor.";
 export const REPORT_DISCARDED = "Listo, descarté el reporte. No guardé nada.";
 /** Respuesta al botón *Corregir* (o a escribir `corregir`): el borrador sigue esperando. */
@@ -167,7 +171,13 @@ export async function fetchVoice(ctx: PortalContext, audio: { id: string; mimeTy
   return r;
 }
 
+/**
+ * Corrida E: VOICE_DISABLED=1 apaga la voz al instante (sin descarga ni Deepgram). Tras descargar (gratis) y ANTES de
+ * pagar Deepgram: la duración (OGG exacta; otros formatos, cota por bytes) contra limits.maxVoiceSeconds y contra los
+ * minutos de voz del día (por usuario y global). Lo transcrito se registra con la duración que informa Deepgram.
+ */
 async function fetchVoiceOnce(ctx: PortalContext, audio: { id: string; mimeType: string }): Promise<VoiceResult> {
+  if (voiceDisabled(ctx.env)) return { ok: false, reply: VOICE_DISABLED_REPLY };
   const apiKey = deepgramKeyFromEnv(ctx.env);
   if (!apiKey) return { ok: false, reply: VOICE_OFF };
   let media: { data: Buffer; mimeType: string };
@@ -177,6 +187,14 @@ async function fetchVoiceOnce(ctx: PortalContext, audio: { id: string; mimeType:
     ctx.log(`portal: no pude descargar el audio ${audio.id}: ${(err as Error).message}`);
     return { ok: false, reply: VOICE_DOWNLOAD_FAILED };
   }
+  const maxSec = limitsConfig().maxVoiceSeconds;
+  const est = audioDurationSec(media.data, media.mimeType || audio.mimeType);
+  if (est.seconds > maxSec) {
+    ctx.log(`portal: nota de voz de ${Math.round(est.seconds)} s${est.exact ? "" : " (estimado por bytes)"} > ${maxSec} s: no se transcribe`);
+    return { ok: false, reply: VOICE_TOO_LONG(maxSec) };
+  }
+  const capped = await audioBudget(est.seconds);
+  if (capped) return { ok: false, reply: capped };
   const [companies, learned, catalog] = await Promise.all([
     sellerCompanies(ctx.store, ctx.user.id),
     ctx.store.listVocabulary(),
@@ -191,6 +209,7 @@ async function fetchVoiceOnce(ctx: PortalContext, audio: { id: string; mimeType:
   let text: string;
   try {
     const r = await transcribe(media.data, media.mimeType || audio.mimeType, { apiKey, keyterms, fetchImpl: deps.deepgramFetch });
+    await recordAudio(r.durationSec || est.seconds, DEEPGRAM_MODEL);
     text = r.text.trim();
   } catch (err) {
     if (err instanceof VoiceNotConfigured) return { ok: false, reply: VOICE_OFF };
@@ -264,7 +283,7 @@ export async function interpretReport(ctx: PortalContext, rawText: string, opts:
   const ectx = await extractContext(ctx);
   const res = await extractReport(text, ectx, { client: deps.llm });
   if (res.usage) ctx.log(`portal: reporte por modelo (${res.usage.calls} llamada(s), ${res.usage.inputTokens} tokens de entrada, ${res.usage.outputTokens} de salida)`);
-  if (res.llmError) ctx.log(`portal: el modelo no armó el reporte (${res.llmError}); uso reglas. Revisa ANTHROPIC_API_KEY con: npm run llm:check`);
+  if (res.llmError) ctx.log(`portal: el modelo no armó el reporte (${res.llmError}); uso reglas.${/^tope /.test(res.llmError) ? "" : " Revisa ANTHROPIC_API_KEY con: npm run llm:check"}`);
   let draft = makeDraft(res.report, { companies: ectx.companies, canal, texto: res.text, messageAt: opts.occurredAt, via: res.via });
   // con reglas la confianza siempre es baja: si el tipo se reconoció ("visité", "llamé") no se pregunta
   if ((res.via === "rules" && !res.report.faltantes.includes("tipo")) || res.tipoSeguro) draft.answered = draft.answered.includes("tipo") ? draft.answered : [...draft.answered, "tipo"];

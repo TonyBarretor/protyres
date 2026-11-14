@@ -8,11 +8,13 @@ import { canSeeAll, requireUser } from "@/lib/portal/auth/session";
 import type { ComplianceFigure } from "@/lib/portal/dashboard/compliance";
 import { formatInt, formatMoney, formatPct, monthName } from "@/lib/portal/dashboard/format";
 import { loadDashboard, type DashboardScope } from "@/lib/portal/dashboard/load";
+import { loadUsageForDashboard } from "@/lib/portal/dashboard/usage";
 import { getPortalStore } from "@/lib/portal/store";
 import { loadSurveySummary } from "@/lib/portal/survey/summary";
 import { DemoTag } from "../_components/bits";
 import { HBar, Legend, ProgressBar, WeekBars } from "./charts";
 import { SurveySummary } from "./SurveySummary";
+import { UsageSummary } from "./UsageSummary";
 import "./tablero.css";
 
 export const metadata = { title: "Tablero · Portal 360 Tyres" };
@@ -89,6 +91,8 @@ export default async function TableroPage({ searchParams }: { searchParams: Prom
   // encuestas: vendedor -> sus empresas; supervisor -> todas, o las del vendedor elegido
   const surveys = await loadSurveySummary(store, { ownerUserId: scope.kind === "usuario" ? scope.userId : undefined });
   if (picked && !users.some((u) => u.id === picked.id)) users.push(picked);
+  // corrida E: consumo del modelo y de la voz, solo para el admin (null para los demás)
+  const usage = await loadUsageForDashboard(user, store);
 
   const { compliance, projection, goal } = d.figures;
   const cur = d.currency;
@@ -361,6 +365,9 @@ export default async function TableroPage({ searchParams }: { searchParams: Prom
 
       {/* C3: resumen de encuestas (no renderiza nada sin datos). */}
       <SurveySummary data={surveys} />
+
+      {/* Corrida E: consumo del asistente (solo admin; no renderiza nada para los demás). */}
+      <UsageSummary data={usage} />
     </div>
   );
 }
