@@ -11,7 +11,10 @@ import { createHash } from "node:crypto";
 import { revalidatePath } from "next/cache";
 import { requireUser } from "@/lib/portal/auth/session";
 import { readSalesXlsx, REQUIRED_SALE_FIELDS, SALE_FIELDS, checkUploadMeta, checkXlsxBytes, SalesXlsxLimitError, type SalesXlsxResult } from "@/lib/portal/sales/xlsx";
+import { loadPortalConfig } from "@/lib/portal/config";
+import { recalcScoresSafely } from "@/lib/portal/scoring/recalc";
 import { getPortalStore } from "@/lib/portal/store";
+import { getStore } from "@/lib/store";
 import { canUploadSales } from "@/lib/portal/ui/permissions";
 import { formatLimaShort, formatLimaTime } from "@/lib/portal/ui/time";
 import { MAX_UPLOAD_BYTES, type ConfirmResult, type PreviewResult } from "./types";
@@ -93,6 +96,8 @@ export async function confirmSales(formData: FormData): Promise<ConfirmResult> {
     return { ok: false, error: `Este archivo ya se cargó ${when} (${prev.total.toLocaleString("es-PE")} ventas). No se guardó de nuevo para no duplicar las cifras.` };
   }
   const inserted = await store.insertSales(p.result.rows.map((r) => ({ ...r, sourceRef })));
+  // corrida G: las ventas cambian quién es cliente y el espacio por ganar (y con eso los cortes de nivel): todo
+  await recalcScoresSafely(store, loadPortalConfig().scoring, { prices: await getStore().catch(() => null), why: "subida de ventas" });
   await store.flush();
   revalidatePath("/portal", "layout");
   return { ok: true, inserted, skippedErrors: p.result.errors.length };

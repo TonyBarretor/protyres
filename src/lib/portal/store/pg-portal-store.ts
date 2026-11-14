@@ -6,6 +6,7 @@ import postgres from "postgres";
 import { serverlessPgOptions } from "../../store/pg-options";
 import { isClosedStage, stageProbability, type StageId } from "../stages";
 import { dedupeBy, defaultSince, digits, groupFleet, normMarca, pageOf, searchRucPrefix, searchTerms, toIsoDate, topMedidas, ttlCache, type FleetAggRow } from "./shared";
+import type { BestCompaniesQuery, BestCompany, Nivel, RankingValidation, RankingValidationInput, ScoreDetail, ScoreInput, ScoreInputQuery, ScoreRun, ScoreRunInput, ScoreUpdate, ValidationAnswer } from "./types";
 import type {
   Activity,
   ActivityFilter,
@@ -86,6 +87,19 @@ const str = (v: unknown): string | null => (v === null || v === undefined ? null
 const date = (v: unknown): Date | null => (v === null || v === undefined ? null : v instanceof Date ? v : new Date(String(v)));
 const normPlaca = (p: string) => p.trim().toUpperCase().replace(/\s+/g, "");
 
+/** jsonb: la librería ya lo entrega como objeto; por si llega como texto. */
+function jsonOf<T>(v: unknown): T | null {
+  if (v === null || v === undefined) return null;
+  if (typeof v === "string") {
+    try {
+      return JSON.parse(v) as T;
+    } catch {
+      return null;
+    }
+  }
+  return v as T;
+}
+
 function toCompany(r: Row): Company {
   return {
     id: Number(r.id),
@@ -100,9 +114,32 @@ function toCompany(r: Row): Company {
     ownerUserId: num(r.owner_user_id),
     temperatura: (r.temperatura as Temperatura | null) ?? null,
     score: num(r.score),
+    nivel: (r.nivel as Nivel | null) ?? null,
+    scoreDetalle: jsonOf<ScoreDetail>(r.score_detalle),
+    scoreAt: date(r.score_at),
     creditTermsDays: num(r.credit_terms_days),
     createdAt: date(r.created_at)!,
     updatedAt: date(r.updated_at)!,
+  };
+}
+
+const SCORE_BATCH = 500;
+
+function toScoreRun(r: Row): ScoreRun {
+  const conteo = jsonOf<Record<Nivel, number>>(r.conteo) ?? { A: 0, B: 0, C: 0 };
+  return { id: Number(r.id), runAt: date(r.run_at)!, empresas: Number(r.empresas), cutA: num(r.cut_a), cutB: num(r.cut_b), conteo, duracionMs: num(r.duracion_ms) };
+}
+
+function toValidation(r: Row): RankingValidation {
+  return {
+    id: Number(r.id),
+    userId: Number(r.user_id),
+    companyId: Number(r.company_id),
+    nivelVendedor: String(r.nivel_vendedor) as ValidationAnswer,
+    nota: str(r.nota),
+    nivelSistema: (r.nivel_sistema as Nivel | null) ?? null,
+    scoreSistema: num(r.score_sistema),
+    createdAt: date(r.created_at)!,
   };
 }
 
@@ -292,6 +329,143 @@ export class PgPortalStore implements PortalStore {
     await this.sql.end({ timeout: 5 });
   }
 
+  // ── puntaje de atractivo (corrida G) ──
+  // Una consulta por tabla para todas las empresas, en serie (sin consultas en cola en el intermediario de conexiones).
+
+  async scoringInputs(q: ScoreInputQuery): Promise<ScoreInput[]> {
+    const sql = this.sql;
+    const ids = q.companyIds;
+    if (ids && !ids.length) return [];
+    const onlyIds = (col: string) => (ids ? sql`and ${sql(col)} in ${sql(ids)}` : sql``);
+    const companies = await sql`
+      select id, ruc, unidades, llantas_piso, sector, departamento, antiguedad_media, es_cliente from companies
+      where true ${onlyIds("id")} order by id`;
+    const medidas = await sql`
+      select company_id, medida_probable as medida, count(*)::int as n from fleet_vehicles
+      where medida_probable is not null ${onlyIds("company_id")} group by 1, 2`;
+    const marcas = q.marcas.length
+      ? await sql`
+      select company_id, upper(trim(marca)) as marca, count(*)::int as n from fleet_vehicles
+      where upper(trim(marca)) in ${sql(q.marcas)} ${onlyIds("company_id")} group by 1, 2`
+      : [];
+    const rucs = companies.map((c) => String(c.ruc));
+    const sales = await sql`
+      select ruc, coalesce(sum(cantidad) filter (where not is_demo and fecha >= ${q.since12m}::date), 0)::float8 as v12,
+        bool_or(not is_demo) as reales, bool_or(is_demo) as demo
+      from sales where true ${ids ? sql`and ruc in ${sql(rucs.length ? rucs : [""])}` : sql``} group by ruc`;
+    const credit = await sql`select company_id, estado from company_credit where true ${onlyIds("company_id")}`;
+    const lost = await sql`
+      select company_id, max(closed_at) as at from opportunities
+      where etapa = 'cerrado_perdido' and closed_at >= ${q.lostSince} ${onlyIds("company_id")} group by 1`;
+
+    const med = new Map<number, Record<string, number>>();
+    for (const m of medidas) {
+      const id = Number(m.company_id);
+      const o = med.get(id) ?? {};
+      o[String(m.medida)] = Number(m.n);
+      med.set(id, o);
+    }
+    const mar = new Map<number, Record<string, number>>();
+    for (const m of marcas) {
+      const id = Number(m.company_id);
+      const o = mar.get(id) ?? {};
+      const k = String(m.marca).replace(/\s+/g, " ");
+      o[k] = (o[k] ?? 0) + Number(m.n);
+      mar.set(id, o);
+    }
+    const sal = new Map(sales.map((s) => [String(s.ruc), s]));
+    const cred = new Map(credit.map((c) => [Number(c.company_id), String(c.estado) as CreditEstado]));
+    const los = new Map(lost.map((l) => [Number(l.company_id), date(l.at)]));
+    return companies.map((c) => {
+      const id = Number(c.id);
+      const s = sal.get(String(c.ruc));
+      return {
+        companyId: id,
+        ruc: String(c.ruc),
+        unidades: Number(c.unidades ?? 0),
+        llantasPiso: Number(c.llantas_piso ?? 0),
+        sector: (c.sector as Sector | null) ?? null,
+        departamento: str(c.departamento),
+        antiguedadMedia: num(c.antiguedad_media),
+        esClienteMarcado: Boolean(c.es_cliente),
+        medidas: med.get(id) ?? {},
+        marcasPreferidas: mar.get(id) ?? {},
+        vendidos12m: s ? Number(s.v12) : 0,
+        ventasReales: s ? Boolean(s.reales) : false,
+        ventasDemo: s ? Boolean(s.demo) : false,
+        credito: cred.get(id) ?? null,
+        perdidaAt: los.get(id) ?? null,
+      };
+    });
+  }
+
+  /** Por lotes de SCORE_BATCH con unnest (una sentencia por lote, en serie). */
+  async saveScores(rows: ScoreUpdate[], at: Date): Promise<number> {
+    const sql = this.sql;
+    let n = 0;
+    for (let i = 0; i < rows.length; i += SCORE_BATCH) {
+      const b = rows.slice(i, i + SCORE_BATCH);
+      const r = await sql`
+        update companies c set score = v.score, nivel = v.nivel, score_detalle = v.detalle::jsonb, score_at = ${at}
+        from unnest(${sql.array(b.map((x) => x.companyId))}::int[], ${sql.array(b.map((x) => x.score))}::numeric[],
+          ${sql.array(b.map((x) => x.nivel))}::text[], ${sql.array(b.map((x) => JSON.stringify(x.detalle)))}::text[]) as v(id, score, nivel, detalle)
+        where c.id = v.id`;
+      n += r.count;
+    }
+    return n;
+  }
+
+  async saveScoreRun(run: ScoreRunInput): Promise<ScoreRun> {
+    const [r] = await this.sql`
+      insert into score_runs (run_at, empresas, cut_a, cut_b, conteo, duracion_ms)
+      values (${run.runAt ?? new Date()}, ${run.empresas}, ${run.cutA}, ${run.cutB}, ${this.sql.json(run.conteo)}, ${run.duracionMs})
+      returning *`;
+    return toScoreRun(r);
+  }
+
+  async latestScoreRun(): Promise<ScoreRun | null> {
+    const [r] = await this.sql`select * from score_runs order by run_at desc, id desc limit 1`;
+    return r ? toScoreRun(r) : null;
+  }
+
+  async bestCompanies(q: BestCompaniesQuery): Promise<{ rows: BestCompany[]; total: number }> {
+    const rows = await this.sql`
+      select c.*, count(*) over () as total_count from companies c
+      where c.score is not null and (c.owner_user_id is null or (c.owner_user_id = ${q.userId}
+        and not exists (select 1 from activities a where a.company_id = c.id and a.occurred_at >= ${q.activeSince})))
+      order by c.score desc, c.id asc
+      limit ${Math.max(0, q.limit)} offset ${Math.max(0, q.offset ?? 0)}`;
+    return { rows: rows.map((r) => ({ ...toCompany(r), propia: num(r.owner_user_id) === q.userId })), total: rows.length ? Number(rows[0].total_count) : 0 };
+  }
+
+  async addRankingValidations(rows: RankingValidationInput[]): Promise<RankingValidation[]> {
+    if (!rows.length) return [];
+    const values = rows.map((r) => ({
+      user_id: r.userId,
+      company_id: r.companyId,
+      nivel_vendedor: r.nivelVendedor,
+      nota: r.nota,
+      nivel_sistema: r.nivelSistema,
+      score_sistema: r.scoreSistema,
+      created_at: r.createdAt ?? new Date(),
+    }));
+    const out = await this.sql`insert into ranking_validations ${this.sql(values)} returning *`;
+    return out.map(toValidation);
+  }
+
+  async listRankingValidations(filter: { userId?: number; since?: Date } = {}): Promise<RankingValidation[]> {
+    const conds: Fragment[] = [];
+    if (filter.userId !== undefined) conds.push(this.sql`user_id = ${filter.userId}`);
+    if (filter.since) conds.push(this.sql`created_at >= ${filter.since}`);
+    const rows = await this.sql`select * from ranking_validations where ${where(this.sql, conds)} order by created_at desc, id desc`;
+    return rows.map(toValidation);
+  }
+
+  async markUserNotice(userId: number, aviso: string): Promise<boolean> {
+    const r = await this.sql`insert into user_notices (user_id, aviso) values (${userId}, ${aviso}) on conflict do nothing`;
+    return r.count > 0;
+  }
+
   // ── empresas ──
 
   async upsertCompanies(batch: CompanyInput[]): Promise<UpsertCompaniesResult> {
@@ -387,11 +561,13 @@ export class PgPortalStore implements PortalStore {
     if (opts.maxUnits !== undefined) conds.push(sql`c.unidades <= ${opts.maxUnits}`);
     if (opts.esCliente !== undefined) conds.push(sql`c.es_cliente = ${opts.esCliente}`);
     if (opts.ownerUserId !== undefined) conds.push(sql`c.owner_user_id = ${opts.ownerUserId}`);
+    if (opts.nivel?.length) conds.push(sql`c.nivel in ${sql(opts.nivel)}`);
     if (opts.marcas?.length) {
       const marcas = [...new Set(opts.marcas.map(normMarca))];
       conds.push(sql`exists (select 1 from fleet_vehicles f where f.company_id = c.id and upper(trim(f.marca)) in ${sql(marcas)})`);
     }
-    const orderCol = opts.orderBy === "llantas" ? sql`c.llantas_piso` : opts.orderBy === "participacion" ? sql`coalesce(p.cantidad, 0)` : sql`c.unidades`;
+    // atractivo: sin puntaje al final (-1 < 0..100)
+    const orderCol = opts.orderBy === "atractivo" ? sql`coalesce(c.score, -1)` : opts.orderBy === "llantas" ? sql`c.llantas_piso` : opts.orderBy === "participacion" ? sql`coalesce(p.cantidad, 0)` : sql`c.unidades`;
     const { pageSize, offset } = pageOf(opts.page, opts.pageSize);
     const rows = await sql`
       with p as (

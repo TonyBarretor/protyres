@@ -35,7 +35,13 @@ export interface Company {
   esCliente: boolean;
   ownerUserId: number | null;
   temperatura: Temperatura | null;
+  /** Puntaje de atractivo 0–100 (corrida G, `npm run portal:recalc-score`); null = aún no calculado. */
   score: number | null;
+  /** Nivel A/B/C del puntaje (percentil y frenos). Opcional en objetos armados a mano; los stores siempre lo traen. */
+  nivel?: Nivel | null;
+  /** Aporte de cada factor y frenos aplicados (de aquí sale la explicación). */
+  scoreDetalle?: ScoreDetail | null;
+  scoreAt?: Date | null;
   /** Plazo de crédito habitual en días (fase B lo propone al cotizar). */
   creditTermsDays: number | null;
   createdAt: Date;
@@ -92,7 +98,7 @@ export type FleetVehicleInput = Omit<FleetVehicle, "id">;
 
 export type FleetKey = Pick<FleetVehicle, "placa" | "origen">;
 
-export type CompanyOrder = "unidades" | "llantas" | "participacion";
+export type CompanyOrder = "atractivo" | "unidades" | "llantas" | "participacion";
 
 export interface CompanySearch {
   /**
@@ -108,6 +114,9 @@ export interface CompanySearch {
   marcas?: string[];
   esCliente?: boolean;
   ownerUserId?: number;
+  /** Niveles del puntaje (cualquiera de ellos). */
+  nivel?: Nivel[];
+  /** Por defecto "unidades" (Prospectos pasa "atractivo"). Con "atractivo", las empresas sin puntaje van al final. */
   orderBy?: CompanyOrder;
   /** 1 en adelante. */
   page?: number;
@@ -886,7 +895,140 @@ export interface RateLimitRepo {
   pruneRateLimitHits(before: Date): Promise<number>;
 }
 
-export interface PortalStore extends CompanyRepo, FleetRepo, SalesRepo, UserRepo, ContactRepo, OpportunityRepo, ActivityRepo, AppointmentRepo, PortalConversationRepo, VocabularyRepo, VoiceTranscriptRepo, PurchaseOrderRepo, CreditRepo, SurveyRepo, RateLimitRepo {
+// ── Puntaje de atractivo (corrida G) ──
+
+export type Nivel = "A" | "B" | "C";
+export type ScoreFactorId = "potencial" | "encaje" | "espacio" | "familiaridad" | "cercania" | "antiguedad";
+
+/**
+ * Lo que se guarda en companies.score_detalle: el aporte de cada factor (valor 0–1 y puntos) con los datos que lo
+ * explican, y los frenos. El texto para el vendedor se arma al mostrarlo (src/lib/portal/scoring/explain.ts).
+ */
+export interface ScoreDetail {
+  v: 1;
+  factores: ScoreFactor[];
+  frenos: ScoreBrake[];
+  /** Nivel por percentil, antes de los frenos. */
+  nivelBase: Nivel | null;
+}
+
+export interface ScoreFactor {
+  id: ScoreFactorId;
+  /** 0–1. */
+  valor: number;
+  /** Aporte al puntaje (valor × peso, reescalado a 100). */
+  puntos: number;
+  /** Puntos máximos del factor. */
+  max: number;
+  /** true = faltaba el dato: vale 0 y la explicación lo dice. */
+  sinDato: boolean;
+  /** Datos para explicarlo (números de la empresa, no del modelo). */
+  dato: Record<string, string | number | boolean | null>;
+}
+
+export type ScoreBrake = { id: "credito"; estado: string } | { id: "perdida"; dias: number };
+
+/** Lo que el cálculo necesita de cada empresa (una consulta por tabla para todas, o para las indicadas). */
+export interface ScoreInput {
+  companyId: number;
+  ruc: string;
+  unidades: number;
+  llantasPiso: number;
+  sector: Sector | null;
+  departamento: string | null;
+  antiguedadMedia: number | null;
+  /** Marcada como cliente en el portal (p. ej. al registrar una OC). */
+  esClienteMarcado: boolean;
+  /** Unidades por medida probable (sin las que no tienen medida inferida). */
+  medidas: Record<string, number>;
+  /** Unidades por marca de vehículo preferida (marca normalizada). */
+  marcasPreferidas: Record<string, number>;
+  /** Neumáticos vendidos (ventas reales, sin demo) desde `since12m`. */
+  vendidos12m: number;
+  /** Tiene alguna venta real (no demo), de cualquier fecha. */
+  ventasReales: boolean;
+  /** Tiene ventas demo (y ninguna real: se trata como prospecto). */
+  ventasDemo: boolean;
+  credito: CreditEstado | null;
+  /** Cierre de la oportunidad perdida más reciente desde `lostSince` (null si ninguna). */
+  perdidaAt: Date | null;
+}
+
+export interface ScoreInputQuery {
+  /** Solo estas empresas (recálculo puntual); sin esto, todas. */
+  companyIds?: number[];
+  /** Marcas preferidas (normalizadas con normMarca). */
+  marcas: string[];
+  since12m: IsoDate;
+  lostSince: Date;
+}
+
+export interface ScoreUpdate {
+  companyId: number;
+  score: number;
+  nivel: Nivel;
+  detalle: ScoreDetail;
+}
+
+export interface ScoreRun {
+  id: number;
+  runAt: Date;
+  empresas: number;
+  /** Puntaje mínimo para A y para B en ese cálculo (los usa el recálculo de una sola empresa). */
+  cutA: number | null;
+  cutB: number | null;
+  conteo: Record<Nivel, number>;
+  duracionMs: number | null;
+}
+
+export type ScoreRunInput = Omit<ScoreRun, "id" | "runAt"> & { runAt?: Date };
+
+/** Empresa de "tus mejores flotas" (Hoy y el bot). */
+export interface BestCompany extends Company {
+  /** true = ya es del usuario (sin actividad reciente); false = sin dueño. */
+  propia: boolean;
+}
+
+export interface BestCompaniesQuery {
+  userId: number;
+  /** Las propias entran si nadie registró actividad con ellas desde esta fecha. */
+  activeSince: Date;
+  limit: number;
+  offset?: number;
+}
+
+export type ValidationAnswer = Nivel | "desconocida";
+
+export interface RankingValidation {
+  id: number;
+  userId: number;
+  companyId: number;
+  nivelVendedor: ValidationAnswer;
+  nota: string | null;
+  /** Nivel y puntaje del sistema cuando el vendedor respondió. */
+  nivelSistema: Nivel | null;
+  scoreSistema: number | null;
+  createdAt: Date;
+}
+
+export type RankingValidationInput = Omit<RankingValidation, "id" | "createdAt"> & { createdAt?: Date };
+
+export interface ScoringRepo {
+  scoringInputs(q: ScoreInputQuery): Promise<ScoreInput[]>;
+  /** Guarda puntaje, nivel y detalle (por lotes en Postgres). Devuelve cuántas empresas actualizó. */
+  saveScores(rows: ScoreUpdate[], at: Date): Promise<number>;
+  saveScoreRun(run: ScoreRunInput): Promise<ScoreRun>;
+  latestScoreRun(): Promise<ScoreRun | null>;
+  /** Con puntaje, sin dueño o del usuario sin actividad reciente; de mayor a menor puntaje. Nunca las de otro vendedor. */
+  bestCompanies(q: BestCompaniesQuery): Promise<{ rows: BestCompany[]; total: number }>;
+  addRankingValidations(rows: RankingValidationInput[]): Promise<RankingValidation[]>;
+  /** Más reciente primero. */
+  listRankingValidations(filter?: { userId?: number; since?: Date }): Promise<RankingValidation[]>;
+  /** Marca el aviso como dado: true si es la primera vez (atómico), false si ya se había dado. */
+  markUserNotice(userId: number, aviso: string): Promise<boolean>;
+}
+
+export interface PortalStore extends ScoringRepo, CompanyRepo, FleetRepo, SalesRepo, UserRepo, ContactRepo, OpportunityRepo, ActivityRepo, AppointmentRepo, PortalConversationRepo, VocabularyRepo, VoiceTranscriptRepo, PurchaseOrderRepo, CreditRepo, SurveyRepo, RateLimitRepo {
   /** Escribe lo pendiente (JSON); no-op en Postgres. Los CLI la llaman antes de salir. */
   flush(): Promise<void>;
   close(): Promise<void>;

@@ -11,7 +11,10 @@ import { creditEstadoLabel, MAX_CREDIT_PDF_BYTES, parseCreditForm, planCreditUpd
 import { setCompanyCreditTerms } from "@/lib/portal/quotes/link";
 import { requireUser } from "@/lib/portal/auth/session";
 import { isStageId, stageLabel } from "@/lib/portal/stages";
+import { loadPortalConfig } from "@/lib/portal/config";
+import { recalcScoresSafely } from "@/lib/portal/scoring/recalc";
 import { getPortalStore } from "@/lib/portal/store";
+import { getStore } from "@/lib/store";
 import type { CreditPdf, PortalStore, PortalUser } from "@/lib/portal/store/types";
 import { formId, formText, isTemperatura, parseContactForm, temperaturaLabel, type FormLike } from "@/lib/portal/ui/labels";
 import { canAssignSelf, canEditOpportunity, canReassign } from "@/lib/portal/ui/permissions";
@@ -215,6 +218,8 @@ export async function saveCompanyCredit(formData: FormData): Promise<void> {
   if (!entry && plan.termsDays === null) done(back, "aviso", "Crédito sin cambios.");
   if (entry && entry.estadoAnterior !== entry.estadoNuevo) {
     await log(store, user, company.id, `Crédito: ${creditEstadoLabel(entry.estadoAnterior)} → ${creditEstadoLabel(entry.estadoNuevo)}.`, null, "credito");
+    // corrida G: crédito observado/rechazado frena el nivel; solo esta empresa, con los cortes del último cálculo
+    await recalcScoresSafely(store, loadPortalConfig().scoring, { companyIds: [company.id], prices: await getStore().catch(() => null), why: "cambio de crédito" });
   }
   revalidatePath(back);
   done(back, "aviso", plan.termsDays !== null ? `Crédito guardado. Plazo habitual: ${plan.termsDays} días.` : "Crédito guardado.");

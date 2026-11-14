@@ -443,6 +443,42 @@ const STATEMENTS = [
   // lista. Sin "concurrently": fleet_vehicles solo la escribe el import del MTC y el índice se crea en ~1 s sin bloquear lecturas.
   `create index if not exists fleet_vehicles_marca_norm_idx on fleet_vehicles ((upper(trim(marca))), company_id)`,
   `create index if not exists fleet_vehicles_company_medida_idx on fleet_vehicles (company_id, medida_probable)`,
+  // Corrida G: puntaje de atractivo (companies.score ya existía, sin uso). nivel A/B/C, score_detalle = aporte de cada
+  // factor y frenos (src/lib/portal/scoring/score.ts), score_at = último cálculo. Los llena `npm run portal:recalc-score`.
+  `alter table companies add column if not exists nivel text`,
+  `alter table companies add column if not exists score_detalle jsonb`,
+  `alter table companies add column if not exists score_at timestamptz`,
+  `create index if not exists companies_score_idx on companies (score desc nulls last, id)`,
+  `create index if not exists companies_nivel_score_idx on companies (nivel, score desc)`,
+  // Cada recálculo completo: cortes de nivel (los usa el recálculo de una sola empresa), conteo por nivel y duración.
+  `create table if not exists score_runs (
+    id serial primary key,
+    run_at timestamptz not null default now(),
+    empresas integer not null,
+    cut_a numeric(8,2),
+    cut_b numeric(8,2),
+    conteo jsonb not null default '{}'::jsonb,
+    duracion_ms integer
+  )`,
+  // Validación del ranking con el vendedor (/portal/validar-ranking): su nivel frente al del sistema en ese momento.
+  `create table if not exists ranking_validations (
+    id serial primary key,
+    user_id integer not null,
+    company_id integer not null,
+    nivel_vendedor text not null,
+    nota text,
+    nivel_sistema text,
+    score_sistema numeric(8,2),
+    created_at timestamptz not null default now()
+  )`,
+  `create index if not exists ranking_validations_user_idx on ranking_validations (user_id, created_at)`,
+  // Avisos del bot que se dan una sola vez por usuario (p. ej. "puedes validar el ranking").
+  `create table if not exists user_notices (
+    user_id integer not null,
+    aviso text not null,
+    created_at timestamptz not null default now(),
+    primary key (user_id, aviso)
+  )`,
 ];
 
 /** Desde aquí empiezan las sentencias del portal: antes de ejecutarlas se pasa la guardia (migrate-guard.ts). */

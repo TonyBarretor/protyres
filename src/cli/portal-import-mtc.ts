@@ -15,7 +15,9 @@ import { parseArgs } from "node:util";
 import { loadPortalConfig } from "../lib/portal/config";
 import { formatImportSummary, importMtc } from "../lib/portal/mtc/import";
 import { loadTyreRules } from "../lib/portal/mtc/inference";
+import { recalcScoresSafely } from "../lib/portal/scoring/recalc";
 import { getPortalStore } from "../lib/portal/store";
+import { getStore } from "../lib/store";
 import { seedUsers } from "../lib/portal/users";
 
 const { values } = parseArgs({
@@ -58,6 +60,11 @@ async function main(): Promise<void> {
       console.log(`Usuarios del portal: ${seeded.users.map((u) => `${u.nombre} (${u.rol})`).join(", ") || "ninguno"}`);
       for (const w of seeded.warnings) console.log(`Aviso: ${w}`);
       console.log(`Totales en el store: ${(await store.countCompanies()).toLocaleString("es-PE")} empresas, ${(await store.countFleet()).toLocaleString("es-PE")} vehículos`);
+      // corrida G: el puntaje depende de la flota (llantas, medidas, marcas, departamento): se recalcula todo
+      const prices = await getStore();
+      const r = await recalcScoresSafely(store, cfg.scoring, { prices, why: "import del padrón", log: (m) => console.log(m) });
+      if (r) console.log(`Puntaje: A ${r.conteo.A} · B ${r.conteo.B} · C ${r.conteo.C}`);
+      await prices.close();
       await store.flush();
     }
     console.log(`\nListo en ${((Date.now() - t0) / 1000).toFixed(1)} s.`);

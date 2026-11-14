@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { z } from "zod";
+import { ScoringSchema } from "./scoring/config";
 
 /** Portal settings (config/portal.json). Other blocks add their own keys here; unknown keys are kept. */
 const ImportSchema = z.object({
@@ -154,6 +155,8 @@ export const PortalConfigSchema = z.looseObject({
   holidays: z.array(z.string().regex(/^\d{4}-\d{2}-\d{2}$/)).default([]),
   limits: LimitsSchema.prefault({}),
   publicInputs: PublicInputsSchema.prefault({}),
+  /** Corrida G: puntaje de atractivo (src/lib/portal/scoring/config.ts). */
+  scoring: ScoringSchema.prefault({}),
 });
 
 export type PortalConfig = z.infer<typeof PortalConfigSchema>;
@@ -166,6 +169,7 @@ export type PortalSurveysConfig = PortalConfig["surveys"];
 export type PortalLimitsConfig = PortalConfig["limits"];
 export type PortalPublicInputsConfig = PortalConfig["publicInputs"];
 export type RateRule = z.infer<typeof RateRuleSchema>;
+export type PortalScoringConfig = PortalConfig["scoring"];
 
 export function portalConfigPath(): string {
   return process.env.PORTAL_CONFIG || path.join(process.cwd(), "config", "portal.json");

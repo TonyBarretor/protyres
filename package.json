@@ -21,6 +21,8 @@
     "db:studio": "drizzle-kit studio",
     "portal:import-mtc": "tsx --tsconfig tsconfig.cli.json src/cli/portal-import-mtc.ts",
     "portal:recalc-sector": "tsx --tsconfig tsconfig.cli.json src/cli/portal-recalc-sector.ts",
+    "portal:recalc-score": "tsx --tsconfig tsconfig.cli.json src/cli/portal-recalc-score.ts",
+    "score:validation-report": "tsx --tsconfig tsconfig.cli.json src/cli/score-validation-report.ts",
     "portal:seed-users": "tsx --tsconfig tsconfig.cli.json src/cli/portal-seed-users.ts",
     "portal:seed-demo": "tsx --tsconfig tsconfig.cli.json src/cli/portal-seed-demo.ts",
     "portal:clear-demo": "tsx --tsconfig tsconfig.cli.json src/cli/portal-clear-demo.ts",

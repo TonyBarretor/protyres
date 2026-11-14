@@ -66,6 +66,7 @@ import { surveyCounts } from "./survey-shared";
 import type { Survey, SurveyAnswer, SurveyAnswerInput, SurveyAnswerResult, SurveyCanal, SurveyFilter, SurveyInput, SurveyResponse } from "./types";
 import { resolveCreditSave } from "../credit/changes";
 import type { CompanyCredit, CreditHistoryEntry, CreditPdf, CreditSaveInput } from "./types";
+import type { BestCompaniesQuery, BestCompany, RankingValidation, RankingValidationInput, ScoreInput, ScoreInputQuery, ScoreRun, ScoreRunInput, ScoreUpdate } from "./types";
 
 interface StoredLoginToken extends LoginToken {
   usedAt: Date | null;
@@ -100,11 +101,15 @@ interface FileData {
   /** Crédito (C4): la fila con el PDF en base64 (`pdfData`) y su historial. */
   credit?: (CompanyCredit & { pdfData: string | null })[];
   creditHistory?: CreditHistoryEntry[];
+  /** Corrida G: cálculos del puntaje, validación del ranking y avisos de una sola vez. */
+  scoreRuns?: ScoreRun[];
+  rankingValidations?: RankingValidation[];
+  userNotices?: { userId: number; aviso: string; createdAt: Date }[];
 }
 
 /** Campos Date por colección (JSON los guarda como texto ISO). */
 const DATE_FIELDS: Record<string, string[]> = {
-  companies: ["createdAt", "updatedAt"],
+  companies: ["createdAt", "updatedAt", "scoreAt"],
   sales: ["createdAt"],
   users: ["createdAt"],
   loginTokens: ["expiresAt", "usedAt", "createdAt"],
@@ -123,6 +128,9 @@ const DATE_FIELDS: Record<string, string[]> = {
   orderProfiles: ["updatedAt"],
   credit: ["consultadoAt", "updatedAt"],
   creditHistory: ["createdAt"],
+  scoreRuns: ["runAt"],
+  rankingValidations: ["createdAt"],
+  userNotices: ["createdAt"],
 };
 
 const DEBOUNCE_MS = 300;
@@ -164,6 +172,10 @@ export class JsonPortalStore implements PortalStore {
   private credit = new Map<number, CompanyCredit & { pdfData: string | null }>();
   private creditHistoryRows: CreditHistoryEntry[] = [];
   private creditHistorySeq = 0;
+  /** Corrida G. */
+  private scoreRuns: ScoreRun[] = [];
+  private rankingValidations: RankingValidation[] = [];
+  private userNotices: { userId: number; aviso: string; createdAt: Date }[] = [];
   /**
    * Límite de intentos (corrida E, punto 5): solo en memoria, no va al archivo (el store JSON es de un proceso; en
    * producción manda la tabla rate_limit_hits de Postgres). Clave `bucket|ventana`.
@@ -246,6 +258,9 @@ export class JsonPortalStore implements PortalStore {
     for (const c of revive("credit", raw.credit)) this.credit.set(c.companyId, c);
     this.creditHistoryRows = revive("creditHistory", raw.creditHistory);
     this.creditHistorySeq = this.creditHistoryRows.reduce((m, h) => Math.max(m, h.id), 0);
+    this.scoreRuns = revive("scoreRuns", raw.scoreRuns);
+    this.rankingValidations = revive("rankingValidations", raw.rankingValidations);
+    this.userNotices = revive("userNotices", raw.userNotices);
   }
 
   private snapshot(): FileData {
@@ -272,6 +287,9 @@ export class JsonPortalStore implements PortalStore {
       orderProfiles: [...this.orderProfiles.values()],
       credit: [...this.credit.values()],
       creditHistory: this.creditHistoryRows,
+      scoreRuns: this.scoreRuns,
+      rankingValidations: this.rankingValidations,
+      userNotices: this.userNotices,
     };
   }
 
@@ -387,6 +405,9 @@ export class JsonPortalStore implements PortalStore {
           ownerUserId: null,
           temperatura: null,
           score: null,
+          nivel: null,
+          scoreDetalle: null,
+          scoreAt: null,
           creditTermsDays: null,
           createdAt: now,
           updatedAt: now,
@@ -450,6 +471,7 @@ export class JsonPortalStore implements PortalStore {
       if (opts.maxUnits !== undefined && c.unidades > opts.maxUnits) continue;
       if (opts.esCliente !== undefined && c.esCliente !== opts.esCliente) continue;
       if (opts.ownerUserId !== undefined && c.ownerUserId !== opts.ownerUserId) continue;
+      if (opts.nivel?.length && !(c.nivel && opts.nivel.includes(c.nivel))) continue;
       if (marcas && marcaIdx) {
         const set = marcaIdx.get(c.id);
         if (!set || !marcas.some((m) => set.has(m))) continue;
@@ -462,7 +484,8 @@ export class JsonPortalStore implements PortalStore {
     );
     const rows: CompanyRow[] = matches.map((c) => ({ ...c, participacion: part[c.ruc]?.cantidad ?? 0, participacionDemo: part[c.ruc]?.demo ?? false }));
     const orderBy = opts.orderBy ?? "unidades";
-    const val = (r: CompanyRow) => (orderBy === "llantas" ? r.llantasPiso : orderBy === "participacion" ? r.participacion : r.unidades);
+    // atractivo: sin puntaje al final (como "nulls last" en Postgres)
+    const val = (r: CompanyRow) => (orderBy === "atractivo" ? (r.score ?? -1) : orderBy === "llantas" ? r.llantasPiso : orderBy === "participacion" ? r.participacion : r.unidades);
     rows.sort((a, b) => val(b) - val(a) || a.razonSocial.localeCompare(b.razonSocial) || a.id - b.id);
     const { pageSize, offset } = pageOf(opts.page, opts.pageSize);
     const page = rows.slice(offset, offset + pageSize);
@@ -1256,5 +1279,125 @@ export class JsonPortalStore implements PortalStore {
       }
     }
     return n;
+  }
+
+  // ── puntaje de atractivo (corrida G) ──
+
+  async scoringInputs(q: ScoreInputQuery): Promise<ScoreInput[]> {
+    const ids = q.companyIds ? new Set(q.companyIds) : null;
+    const prefs = new Set(q.marcas.map(normMarca));
+    const out: ScoreInput[] = [];
+    const lost = new Map<number, Date>();
+    for (const o of this.opportunities.values()) {
+      if (o.etapa !== "cerrado_perdido" || !o.closedAt || o.closedAt < q.lostSince) continue;
+      const prev = lost.get(o.companyId);
+      if (!prev || o.closedAt > prev) lost.set(o.companyId, o.closedAt);
+    }
+    for (const c of [...this.companies.values()].sort((a, b) => a.id - b.id)) {
+      if (ids && !ids.has(c.id)) continue;
+      const medidas: Record<string, number> = {};
+      const marcasPreferidas: Record<string, number> = {};
+      for (const key of this.fleetByCompany.get(c.id) ?? []) {
+        const v = this.fleet.get(key);
+        if (!v) continue;
+        if (v.medidaProbable) medidas[v.medidaProbable] = (medidas[v.medidaProbable] ?? 0) + 1;
+        const m = normMarca(v.marca);
+        if (m && prefs.has(m)) marcasPreferidas[m] = (marcasPreferidas[m] ?? 0) + 1;
+      }
+      let vendidos12m = 0;
+      let ventasReales = false;
+      let ventasDemo = false;
+      for (const s of this.salesByRucIdx.get(c.ruc) ?? []) {
+        if (s.isDemo) {
+          ventasDemo = true;
+          continue;
+        }
+        ventasReales = true;
+        if (s.fecha >= q.since12m) vendidos12m += s.cantidad;
+      }
+      out.push({
+        companyId: c.id,
+        ruc: c.ruc,
+        unidades: c.unidades,
+        llantasPiso: c.llantasPiso,
+        sector: c.sector,
+        departamento: c.departamento,
+        antiguedadMedia: c.antiguedadMedia,
+        esClienteMarcado: c.esCliente,
+        medidas,
+        marcasPreferidas,
+        vendidos12m,
+        ventasReales,
+        ventasDemo,
+        credito: this.credit.get(c.id)?.estado ?? null,
+        perdidaAt: lost.get(c.id) ?? null,
+      });
+    }
+    return out;
+  }
+
+  async saveScores(rows: ScoreUpdate[], at: Date): Promise<number> {
+    let n = 0;
+    for (const r of rows) {
+      const c = this.companies.get(r.companyId);
+      if (!c) continue;
+      c.score = r.score;
+      c.nivel = r.nivel;
+      c.scoreDetalle = structuredClone(r.detalle);
+      c.scoreAt = at;
+      n++;
+    }
+    if (n) this.changed();
+    return n;
+  }
+
+  async saveScoreRun(run: ScoreRunInput): Promise<ScoreRun> {
+    const row: ScoreRun = { id: (this.scoreRuns.at(-1)?.id ?? 0) + 1, runAt: run.runAt ?? new Date(), empresas: run.empresas, cutA: run.cutA, cutB: run.cutB, conteo: { ...run.conteo }, duracionMs: run.duracionMs };
+    this.scoreRuns.push(row);
+    if (this.scoreRuns.length > 200) this.scoreRuns.splice(0, this.scoreRuns.length - 200);
+    this.changed();
+    return structuredClone(row);
+  }
+
+  async latestScoreRun(): Promise<ScoreRun | null> {
+    const r = this.scoreRuns.at(-1);
+    return r ? structuredClone(r) : null;
+  }
+
+  async bestCompanies(q: BestCompaniesQuery): Promise<{ rows: BestCompany[]; total: number }> {
+    const recent = new Set<number>();
+    for (const a of this.activities) if (a.occurredAt >= q.activeSince) recent.add(a.companyId);
+    const eligible = [...this.companies.values()]
+      .filter((c) => c.score !== null && (c.ownerUserId === null || (c.ownerUserId === q.userId && !recent.has(c.id))))
+      .sort((a, b) => (b.score ?? 0) - (a.score ?? 0) || a.id - b.id);
+    const offset = Math.max(0, q.offset ?? 0);
+    const rows = eligible.slice(offset, offset + Math.max(0, q.limit)).map((c) => ({ ...structuredClone(c), propia: c.ownerUserId === q.userId }));
+    return { rows, total: eligible.length };
+  }
+
+  async addRankingValidations(rows: RankingValidationInput[]): Promise<RankingValidation[]> {
+    const out: RankingValidation[] = [];
+    let id = this.rankingValidations.reduce((m, v) => Math.max(m, v.id), 0);
+    for (const r of rows) {
+      const v: RankingValidation = { id: ++id, userId: r.userId, companyId: r.companyId, nivelVendedor: r.nivelVendedor, nota: r.nota, nivelSistema: r.nivelSistema, scoreSistema: r.scoreSistema, createdAt: r.createdAt ?? new Date() };
+      this.rankingValidations.push(v);
+      out.push(structuredClone(v));
+    }
+    if (out.length) this.changed();
+    return out;
+  }
+
+  async listRankingValidations(filter: { userId?: number; since?: Date } = {}): Promise<RankingValidation[]> {
+    return this.rankingValidations
+      .filter((v) => (filter.userId === undefined || v.userId === filter.userId) && (!filter.since || v.createdAt >= filter.since))
+      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime() || b.id - a.id)
+      .map((v) => structuredClone(v));
+  }
+
+  async markUserNotice(userId: number, aviso: string): Promise<boolean> {
+    if (this.userNotices.some((n) => n.userId === userId && n.aviso === aviso)) return false;
+    this.userNotices.push({ userId, aviso, createdAt: new Date() });
+    this.changed();
+    return true;
   }
 }
