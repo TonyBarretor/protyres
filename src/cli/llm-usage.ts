@@ -64,7 +64,7 @@ async function main(): Promise<void> {
     ),
   );
   console.log(`\nPor usuario y día: ${cfg.perUserDaily.llmCalls} llamadas, ${cfg.perUserDaily.llmTokens.toLocaleString("es-PE")} tokens, ${cfg.perUserDaily.audioMinutes} min de voz. Nota de voz máx. ${cfg.maxVoiceSeconds} s; texto al modelo máx. ${cfg.maxUserChars} caracteres (listas de precios: ${cfg.maxPriceListChars}); ${cfg.burstPerMinute} mensajes por minuto.`);
-  console.log(`Interruptores: LLM_DISABLED=${process.env.LLM_DISABLED ?? "(no)"} · VOICE_DISABLED=${process.env.VOICE_DISABLED ?? "(no)"} · QUOTE_LLM_MODE=${process.env.QUOTE_LLM_MODE ?? "(sin definir: on)"}`);
+  console.log(`Interruptores: LLM_DISABLED=${process.env.LLM_DISABLED ?? "(no)"} · VOICE_DISABLED=${process.env.VOICE_DISABLED ?? "(no)"} · QUOTE_LLM_MODE=${process.env.QUOTE_LLM_MODE ?? "(sin definir: shadow)"}`);
   if (r.blocked.length) {
     console.log("\n── Mensajes no procesados (7 días) ──");
     const why: Record<string, string> = { no_registrado: "número no registrado", rafaga: "ráfaga", viejo: "viejo (reintento de Meta)" };

@@ -1,7 +1,8 @@
 /**
  * Ítems de una OC que llegó sin cotización previa, escritos "con el formato de cotización"
- * ("8 x Fenixway Flama 77 315/80R22.5 a 254"). Reutiliza el cotizador sin cambiarlo: su parser de pedidos
- * (parseRequest: regex, y el modelo si hay clave), sus candidatos de las listas (findCandidates) y su armado de ítems
+ * ("8 x Fenixway Flama 77 315/80R22.5 a 254"). Reutiliza el cotizador sin cambiarlo: su parser de pedidos por REGLAS
+ * (parseRequestRegex; corrida E: el texto de una OC es dato de terceros y el pedido en firme cambia datos —ítems, precios,
+ * Excel del pedido— sin pasar por las opciones del cotizador, así que nunca va al modelo), sus candidatos de las listas (findCandidates) y su armado de ítems
  * (itemFromCandidate / manualItem, buildQuote). El precio escrito manda (como "precio 254" en el cotizador: sin IGV, en la
  * moneda de cotización); sin precio, el de la lista propia o el del proveedor con el margen, igual que el cotizador.
  *
@@ -11,7 +12,7 @@
  */
 import { buildQuote, itemFromCandidate, manualItem } from "../../quote/build";
 import { findCandidates } from "../../quote/match";
-import { describeLine, parseRequest } from "../../quote/request";
+import { describeLine, parseRequestRegex } from "../../quote/request";
 import type { Quote, QuoteItem } from "../../quote/types";
 import type { Settings } from "../../settings";
 import type { PriceStore } from "../../store/types";
@@ -34,7 +35,7 @@ export type OrderItemsResult =
 export const ORDER_ITEMS_EXAMPLE = "*8 x Fenixway Flama 77 315/80R22.5 a 254*";
 
 export async function parseOrderItems(text: string, deps: { priceStore: PriceStore; settings: Settings; today?: string }): Promise<OrderItemsResult> {
-  const req = await parseRequest(normalizeOrderItemsText(text));
+  const req = parseRequestRegex(normalizeOrderItemsText(text));
   const lines = req.lines;
   if (!lines.length) return { ok: false, error: `No encontré ítems en tu mensaje. Escríbelos con el formato de cotización, uno por línea:\n${ORDER_ITEMS_EXAMPLE}` };
   if (lines.length > PEDIDO_MAX_ITEMS) return { ok: false, error: `El formato de pedido tiene ${PEDIDO_MAX_ITEMS} filas de ítems y escribiste ${lines.length}. Divide la OC en dos pedidos y mándame primero hasta ${PEDIDO_MAX_ITEMS} ítems.` };

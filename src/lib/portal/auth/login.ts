@@ -5,14 +5,38 @@
  *   GET  /portal/login?t=...      -> firma inválida: "Enlace vencido o ya usado"; firma válida: formulario que se envía solo
  *   POST /portal/login (t=...)    -> consume el token (un solo uso), crea la sesión, pone la cookie y redirige (303) a /portal.
  *                                    Si trae cabecera Origin y no es el mismo host de la petición: 403 sin tocar el token.
+ *   Corrida E, punto 5: token de más de publicInputs.maxTokenChars o con caracteres raros -> "Enlace vencido" sin tocar la
+ *                                    base; cuerpo del POST > maxLoginBodyBytes -> 413; más intentos que rateLimits.login
+ *                                    (por IP y por token) -> 429 (src/lib/portal/auth/rate-limit.ts).
  *   POST /api/portal/logout       -> borra la sesión y la cookie, redirige a /portal/login
  *   GET  /api/portal/logout       -> 405 (cerrar sesión cambia estado: un enlace o una precarga no deben poder hacerlo)
  */
 import { NextResponse } from "next/server";
 import type { PortalStore } from "../store/types";
 import { HOME_PATH, LOGIN_PATH, SESSION_COOKIE } from "./constants";
-import { configErrorPage, confirmLoginPage, expiredLinkPage, forbiddenOriginPage, noSessionPage } from "./pages";
+import { configErrorPage, confirmLoginPage, expiredLinkPage, forbiddenOriginPage, noSessionPage, payloadTooLargePage, tooManyAttemptsPage } from "./pages";
+import { checkRateLimit, clientIp, publicInputsConfig, retryText, type RateLimitDeps } from "./rate-limit";
 import { PortalAuthConfigError, createSession, destroySession, hasValidSignature, sessionCookie, verifyLoginToken, type AuthOptions } from "./tokens";
+
+/**
+ * Corrida E, punto 5. `limits`: límite de intentos por IP y por token (el route handler lo pasa siempre; sin él, p. ej. en
+ * pruebas viejas, no se cuenta). El tamaño del cuerpo y la forma del token se comprueban siempre, antes de tocar la base.
+ */
+export interface LoginOptions extends AuthOptions {
+  limits?: RateLimitDeps;
+}
+
+/** Forma de un token de enlace (base64url + "." + firma) y largo razonable: lo demás ni se cuenta ni se busca. */
+const TOKEN_CHARS = /^[A-Za-z0-9_.-]+$/;
+function plausibleToken(token: string): boolean {
+  return token.length <= publicInputsConfig().maxTokenChars && TOKEN_CHARS.test(token);
+}
+
+async function limited(req: Request, token: string, opts: LoginOptions): Promise<Response | null> {
+  if (!opts.limits) return null;
+  const r = await checkRateLimit({ ...opts.limits, now: opts.limits.now ?? opts.now }, "login", { ip: clientIp(req.headers), token });
+  return r.ok ? null : tooManyAttemptsPage(r.retryAfterSec, retryText(r.retryAfterSec));
+}
 
 function guard(fn: () => Promise<Response>): Promise<Response> {
   return fn().catch((err: unknown) => {
@@ -21,19 +45,52 @@ function guard(fn: () => Promise<Response>): Promise<Response> {
   });
 }
 
-export function loginGet(req: Request, opts: AuthOptions = {}): Promise<Response> {
+export function loginGet(req: Request, opts: LoginOptions = {}): Promise<Response> {
   return guard(async () => {
     const token = new URL(req.url).searchParams.get("t");
     if (!token) return noSessionPage();
+    if (!plausibleToken(token)) return expiredLinkPage();
+    const blocked = await limited(req, token, opts);
+    if (blocked) return blocked;
     if (!hasValidSignature(token, opts.env ?? process.env)) return expiredLinkPage();
     return confirmLoginPage(token);
   });
 }
 
-async function tokenFromBody(req: Request): Promise<string | null> {
+/** Lee el cuerpo sin pasar de `max` bytes (aunque no traiga Content-Length o mienta). null = demasiado grande. */
+export async function readBodyLimited(req: Request, max: number): Promise<Uint8Array | null> {
+  const declared = Number(req.headers.get("content-length") ?? "");
+  if (Number.isFinite(declared) && declared > max) return null;
+  if (!req.body) return new Uint8Array(0);
+  const reader = req.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > max) {
+      await reader.cancel().catch(() => undefined);
+      return null;
+    }
+    chunks.push(value);
+  }
+  const out = new Uint8Array(total);
+  let at = 0;
+  for (const c of chunks) {
+    out.set(c, at);
+    at += c.byteLength;
+  }
+  return out;
+}
+
+/** Token del formulario (o de ?t=); "too_large" si el cuerpo pasa del máximo. */
+async function tokenFromBody(req: Request): Promise<string | null | "too_large"> {
   const fromQuery = new URL(req.url).searchParams.get("t");
+  const body = await readBodyLimited(req, publicInputsConfig().maxLoginBodyBytes);
+  if (body === null) return "too_large";
   try {
-    const form = await req.formData();
+    const form = await new Response(body as BodyInit, { headers: { "content-type": req.headers.get("content-type") ?? "" } }).formData();
     const t = form.get("t");
     if (typeof t === "string" && t) return t;
   } catch {
@@ -59,11 +116,15 @@ export function isSameOrigin(req: Request): boolean {
   }
 }
 
-export function loginPost(req: Request, store: PortalStore | (() => Promise<PortalStore>), opts: AuthOptions = {}): Promise<Response> {
+export function loginPost(req: Request, store: PortalStore | (() => Promise<PortalStore>), opts: LoginOptions = {}): Promise<Response> {
   return guard(async () => {
     if (!isSameOrigin(req)) return forbiddenOriginPage();
     const token = await tokenFromBody(req);
-    if (!token || !hasValidSignature(token, opts.env ?? process.env)) return expiredLinkPage();
+    if (token === "too_large") return payloadTooLargePage();
+    if (!token || !plausibleToken(token)) return expiredLinkPage();
+    const blocked = await limited(req, token, opts);
+    if (blocked) return blocked;
+    if (!hasValidSignature(token, opts.env ?? process.env)) return expiredLinkPage();
     const s = typeof store === "function" ? await store() : store;
     const userId = await verifyLoginToken(s, token, opts);
     const user = userId === null ? null : await s.getUser(userId);

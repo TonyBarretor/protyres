@@ -100,7 +100,8 @@ describe("medidor: una llamada pasa por el contador", () => {
     const r = await runWithUsage(ctx, () => extractReport(`Visité Zeta Bus. ${"bla ".repeat(800)}`, ectx, { client }));
     expect(r.via).toBe("llm");
     expect(seen[0].max_tokens).toBe(1500);
-    expect(String(seen[0].messages[0].content).length).toBe(2000);
+    // corrida E punto 3: el texto va delimitado como dato (<mensaje>…</mensaje>); dentro, los 2.000 caracteres
+    expect(String(seen[0].messages[0].content).replace(/^<mensaje>\n|\n<\/mensaje>$/g, "").length).toBe(2000);
     expect([...ctx.notices]).toEqual([CLIP_NOTICE(2000)]);
     expect(await store.usageSummary(new Date(0))).toMatchObject([{ phone: FRANK, purpose: "reporte", llmCalls: 1, inputTokens: 3000, outputTokens: 380 }]);
     __setLimitsForTests(limits({ perUserDaily: { llmCalls: 1, llmTokens: 1_000_000, audioMinutes: 10 } }));
@@ -145,7 +146,8 @@ describe("topes en el bot", () => {
     process.env.ANTHROPIC_API_KEY = "test-key";
     delete process.env.LLM_DISABLED;
     delete process.env.VOICE_DISABLED;
-    delete process.env.QUOTE_LLM_MODE;
+    // corrida E punto 4: el valor por defecto pasó a "shadow"; estas pruebas ejercitan el camino con modelo ("on")
+    process.env.QUOTE_LLM_MODE = "on";
     process.env.DEEPGRAM_API_KEY = "dg-test-key";
     process.env.PORTAL_ADMIN_NUMBER = ADMIN;
     process.env.PORTAL_SESSION_SECRET = "test-secret-0123456789abcdef";
@@ -245,7 +247,7 @@ describe("topes en el bot", () => {
     const long = `${PEDIDO}\n${"nota ".repeat(1000)}`;
     await bot.handle(msg({ text: long }));
     const sentText = (requests[0].messages[0].content as { type: string; text?: string }[]).find((b) => b.type === "text")?.text ?? "";
-    expect(sentText.length).toBe(2000);
+    expect(sentText.replace(/^<mensaje>\n|\n<\/mensaje>$/g, "").length).toBe(2000); // delimitado como dato (punto 3)
     expect(client.texts().at(-1)).toBe(CLIP_NOTICE(2000));
     // un pedido largo: si el modelo (texto cortado) lee menos ítems que las reglas (texto completo), mandan las reglas
     __setAnthropicForTests({
@@ -263,7 +265,7 @@ describe("topes en el bot", () => {
     requests.length = 0;
     await extractPricesWithLLM({ text: "x".repeat(70_000) }, { provider: "Norte", sourceRef: "t", source: "whatsapp" });
     const listText = (requests[0].messages[0].content as { type: string; text?: string }[]).find((b) => b.type === "text")?.text ?? "";
-    expect(listText.length).toBe("Provider: Norte\n\n".length + 60_000);
+    expect(listText.length).toBe("Provider: Norte\n\n<documento>\n".length + 60_000 + "\n</documento>".length); // delimitado (punto 3)
     expect(requests[0].max_tokens).toBe(8192);
   });
 

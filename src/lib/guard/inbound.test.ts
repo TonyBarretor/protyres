@@ -97,8 +97,10 @@ describe("puerta del bot: número no registrado", () => {
   const saved: Record<string, string | undefined> = {};
 
   beforeEach(async () => {
-    for (const k of ["ANTHROPIC_API_KEY", "LLM_DISABLED", "DEEPGRAM_API_KEY", "ADMIN_NUMBERS", "PORTAL_ADMIN_NUMBER", "PORTAL_SESSION_SECRET"]) saved[k] = process.env[k];
+    for (const k of ["ANTHROPIC_API_KEY", "LLM_DISABLED", "DEEPGRAM_API_KEY", "ADMIN_NUMBERS", "PORTAL_ADMIN_NUMBER", "PORTAL_SESSION_SECRET", "QUOTE_LLM_MODE"]) saved[k] = process.env[k];
     process.env.ANTHROPIC_API_KEY = "test-key";
+    // corrida E punto 4: el valor por defecto pasó a "shadow"; aquí se mide la lectura del pedido con modelo ("on")
+    process.env.QUOTE_LLM_MODE = "on";
     delete process.env.LLM_DISABLED;
     process.env.DEEPGRAM_API_KEY = "dg-test-key";
     process.env.ADMIN_NUMBERS = ADMIN;

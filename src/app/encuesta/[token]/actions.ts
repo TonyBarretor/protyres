@@ -6,6 +6,7 @@
 import { redirect } from "next/navigation";
 import { getPortalStore } from "@/lib/portal/store";
 import { submitSurvey } from "@/lib/portal/survey/service";
+import { surveyFormTooLarge } from "@/lib/portal/survey/questions";
 import { isSurveyTokenShape, SURVEY_PATH } from "@/lib/portal/survey/tokens";
 
 export async function submitSurveyAction(formData: FormData): Promise<void> {
@@ -14,6 +15,8 @@ export async function submitSurveyAction(formData: FormData): Promise<void> {
   // el token solo tiene [A-Za-z0-9_-]: la ruta de vuelta no puede salir de /encuesta
   const back = token ? `${SURVEY_PATH}/${token}` : `${SURVEY_PATH}/invalido`;
   if (!token) redirect(back);
+  // límite de intentos y Content-Length: src/proxy.ts (src/lib/portal/survey/gate.ts); aquí el tamaño real del formulario
+  if (surveyFormTooLarge(formData)) redirect(`${back}?error=tamano`);
   const store = await getPortalStore();
   const r = await submitSurvey(store, token, formData);
   if (r.ok) redirect(`${back}?r=ok`);

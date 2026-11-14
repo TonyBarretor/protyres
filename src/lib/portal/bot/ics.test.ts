@@ -97,3 +97,16 @@ describe("ics", () => {
     expect(icsLima(new Date("2027-01-01T03:30:00Z"))).toBe("20261231T223000");
   });
 });
+
+// corrida E, punto 3: un nombre de empresa o una nota con un CR suelto / caracteres de control no abre una línea nueva
+describe("inyección en el .ics", () => {
+  it("CR solo, U+2028 y controles no crean propiedades nuevas", () => {
+    expect(escapeText("a\rEND:VEVENT")).toBe("a\\nEND:VEVENT");
+    expect(escapeText("a b\u0000c\u0007d")).toBe("a\\nbcd");
+    const ics = sample({ summary: "Visita: ACME\rATTENDEE:mailto:x@hacker.example\r\nEND:VEVENT", location: "Lima\u000bX" });
+    const names = parseIcsLines(ics).map((l) => l.name);
+    expect(names).not.toContain("ATTENDEE");
+    expect(names.filter((n) => n === "END:VEVENT" || n === "END")).toHaveLength(names.filter((n) => n === "BEGIN").length);
+    expect(ics.split("\r\n").some((l) => l.startsWith("ATTENDEE"))).toBe(false);
+  });
+});

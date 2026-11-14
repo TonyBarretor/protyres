@@ -7,13 +7,16 @@
  *
  * Regex first (always works); the LLM, when configured, refines brand/model/customer and reads messy text.
  */
-import { findBrandInText, fold } from "../tyre/brands";
+import { brandsInText, findBrandInText, fold, knownBrand } from "../tyre/brands";
 import { extractPly, extractPosition } from "../tyre/attrs";
 import { findTyreSizes, normalizeSizeText, parseTyreSize } from "../tyre/spec";
 import { stripToModel } from "../ingest/util";
-import { limitsConfig } from "../guard/usage";
+import { limitsConfig, type UsagePurpose } from "../guard/usage";
+import { mayHaveItems } from "../guard/off-topic";
+import type { PriceRow } from "../ingest/types";
 import { llmAvailable, quoteLlmMode } from "../llm/client";
-import { parseRequestWithLLM } from "../llm/parse-request";
+import { parseRequestWithLLMResult, type LLMRequest } from "../llm/parse-request";
+import { currentQuoteScope, diffViews, shadowView, type QuoteLlmScope, type QuoteShadowEntry } from "./shadow";
 import type { QuoteRequest, RequestLine } from "./types";
 
 const NUMBER_WORDS: Record<string, number> = {
@@ -647,66 +650,222 @@ function stillUnparsed(segment: string, r: QuoteRequest): boolean {
   }
 }
 
-/** Regex parse, refined by the LLM when available (brand/model/customer/quantities read from messy text). */
+/**
+ * Regex parse, refined by the LLM according to QUOTE_LLM_MODE (corrida E; see quote/shadow.ts):
+ *  - off, no model, or a text with nothing an item could come from (guard/off-topic.ts mayHaveItems): the rules alone.
+ *  - shadow (default): the rules alone; the last reading of the message is noted in the message scope and compared with
+ *    the model AFTER the reply (BotHandler.handle). Outside a message (CLI) there is no scope: the rules alone.
+ *  - on: the model's reading, validated by mergeModelRequest.
+ */
 export async function parseRequest(text: string): Promise<QuoteRequest> {
   const base = parseRequestRegex(text);
-  if (!llmAvailable() || quoteLlmMode() === "off") return base;
-  const llm = await parseRequestWithLLM(text);
-  if (!llm) return base;
+  if (!llmAvailable()) return base;
+  const mode = quoteLlmMode();
+  if (mode === "off" || !mayHaveItems(text)) return base;
+  const scope = currentQuoteScope();
+  if (mode === "shadow") {
+    if (scope) scope.pending = { text, base };
+    return base;
+  }
+  return (await readWithModel(text, base, { catalog: scope?.catalog })).request;
+}
+
+export interface ModelReading {
+  /** The request as "on" uses it: the rules refined by the model, validated (the rules alone when the model gave nothing). */
+  request: QuoteRequest;
+  /** The model's raw (schema-valid) answer; null when there was none. */
+  llm: LLMRequest | null;
+  /** Why there is no answer ("invalido", the API error, the usage cap…). */
+  error?: string;
+  /** What the validations discarded from the model's answer. */
+  rejected: string[];
+}
+
+/** Reads `text` with the model and validates it against the text and the catalog (modes on and shadow). */
+export async function readWithModel(text: string, base: QuoteRequest, opts: { catalog?: (canonicals: string[]) => Promise<PriceRow[]>; purpose?: UsagePurpose } = {}): Promise<ModelReading> {
+  const res = await parseRequestWithLLMResult(text, [], opts.purpose ? { purpose: opts.purpose } : {});
+  if (!res.data) return { request: base, llm: null, error: res.error, rejected: [] };
+  const canonicals = [...new Set((res.data.lines ?? []).map((l) => (l.size ? parseTyreSize(l.size)?.canonical : undefined)).filter((c): c is string => !!c))];
+  const rows = opts.catalog && canonicals.length ? await opts.catalog(canonicals).catch(() => [] as PriceRow[]) : [];
+  return { ...mergeModelRequest(text, base, res.data, rows), llm: res.data };
+}
+
+/**
+ * QUOTE_LLM_MODE=shadow, después de responder: el modelo lee el último pedido del mensaje (propósito cotizador_sombra),
+ * se valida igual que en "on" y se registra la diferencia por campo con lo de las reglas (lo que recibió el vendedor).
+ * Nunca lanza: un error queda en el registro (modelError) y en el log.
+ */
+export async function shadowCompare(scope: QuoteLlmScope): Promise<QuoteShadowEntry | null> {
+  const p = scope.pending;
+  scope.pending = undefined;
+  if (!p) return null;
+  try {
+    const reading = await readWithModel(p.text, p.base, { catalog: scope.catalog, purpose: "cotizador_sombra" });
+    const rules = shadowView(p.base);
+    const model = reading.llm ? shadowView(reading.request) : null;
+    const entry: QuoteShadowEntry = { phone: scope.phone, text: p.text, rules, model, diffs: model ? diffViews(rules, model) : [], rejected: reading.rejected, ...(reading.error ? { modelError: reading.error } : {}) };
+    scope.log?.(`sombra: ${model ? `${entry.diffs.length} diferencia(s) con las reglas${entry.rejected.length ? `, ${entry.rejected.length} descartada(s) por validación` : ""}` : `sin lectura del modelo (${reading.error ?? "?"})`}`);
+    if (scope.sink) await scope.sink.logQuoteShadow(entry).catch((err: Error) => scope.log?.(`sombra: no pude registrar la comparación: ${err.message}`));
+    return entry;
+  } catch (err) {
+    scope.log?.(`sombra: error: ${(err as Error).message}`);
+    return null;
+  }
+}
+
+/** Lowercase alphanumerics only ("X Multi Z" -> "xmultiz"): to compare a model / plate with the text. */
+const squash = (s: string) => fold(s).replace(/ /g, "");
+
+/** Every number written in the text (digits, "22,5", and number words: "cuatro" -> 4). */
+function numbersIn(text: string): Set<number> {
+  const out = new Set<number>();
+  for (const m of text.matchAll(/\d+(?:[.,]\d+)?/g)) {
+    out.add(parseFloat(m[0].replace(",", ".")));
+    for (const part of m[0].split(/[.,]/)) out.add(parseInt(part, 10));
+  }
+  for (const w of fold(text).split(" ")) if (NUMBER_WORDS[w] !== undefined) out.add(NUMBER_WORDS[w]);
+  return out;
+}
+
+/**
+ * What the model proposes, validated (corrida E, punto 3 y 4). The model only EXTRACTS: it never decides prices,
+ * discounts, margins, the tax mode or the email recipient, and what it proposes must be in the text (or the catalog):
+ *  - size: one the rules find in the text, or one in the catalog whose numbers are all written in the text. Otherwise the
+ *    item is invented: the rules' items win.
+ *  - brand: a known brand (brands.ts or the catalog's rows of that size) mentioned in the text; otherwise the brand written
+ *    on the line, or the rules' brand for that size.
+ *  - model (design): written in the text, or one of the catalog for that size; otherwise the rules' model for that size.
+ *  - quantity: a number written in the text (or 1); otherwise the rules' quantity for that size.
+ *  - unit price: "precio N" on the line (rules), or a number written on that line of the text.
+ *  - non-tyre item: its description must share a word with the text.
+ *  - discount, margin, con/sin IGV: the rules only. Email: the model's only when it is literally in the text.
+ *  - notes and address (printed on the quote, not shown in the summary): only when literally in the text.
+ * The default option and the prices are never the model's (they come from the price lists and the rules).
+ */
+export function mergeModelRequest(text: string, base: QuoteRequest, llm: LLMRequest, catalog: PriceRow[] = []): { request: QuoteRequest; rejected: string[] } {
+  const rejected: string[] = [];
+  const ftext = fold(text);
+  const stext = squash(text);
+  const nums = numbersIn(text);
+  const textSizes = new Set(findTyreSizes(text).map((s) => s.canonical));
+  const mentioned = brandsInText(text);
+  const textLines = text.split(/\r?\n/);
+  const sameSize = (size: RequestLine["size"]) => (size ? base.lines.find((b) => b.size?.canonical === size.canonical) : undefined);
+  const contains = (s: string | null | undefined) => !!s && !!fold(s) && ftext.includes(fold(s));
+  let invented = false;
+
   const lines: RequestLine[] = [];
   for (const l of llm.lines ?? []) {
     const size = l.size ? parseTyreSize(l.size) ?? undefined : undefined;
     if (!size && !l.description) continue;
+    if (size) {
+      const sizeNums = size.canonical.match(/\d+(?:\.\d+)?/g) ?? [];
+      const inCatalog = catalog.some((r) => r.size === size.canonical) && sizeNums.every((n) => nums.has(parseFloat(n)));
+      if (!textSizes.has(size.canonical) && !inCatalog) {
+        rejected.push(`medida ${size.canonical} no está en el texto ni en el catálogo`);
+        invented = true;
+        continue;
+      }
+    } else if (!fold(l.description ?? "").split(" ").some((w) => w.length >= 4 && ` ${ftext} `.includes(` ${w} `))) {
+      rejected.push(`ítem «${l.description}» no está en el texto`);
+      invented = true;
+      continue;
+    }
+    const rawOk = !!l.raw && contains(l.raw);
+    const rules = sameSize(size);
+    const catalogRows = size ? catalog.filter((r) => r.size === size.canonical) : [];
+
+    // brand: known (or in the catalog for that size) AND mentioned in the text; else what is written / the rules
+    let brand: string | undefined;
+    if (l.brand) {
+      const known = knownBrand(l.brand) ?? findBrandInText(l.brand)?.brand ?? catalogRows.find((r) => r.brand && fold(r.brand) === fold(l.brand!))?.brand;
+      if (known && (mentioned.has(known) || ` ${ftext} `.includes(` ${fold(known)} `))) brand = known;
+      else {
+        brand = (rawOk ? findBrandInText(l.raw!)?.brand : undefined) ?? rules?.brand;
+        if (fold(brand ?? "") !== fold(l.brand)) rejected.push(`marca «${l.brand}» no existe o no está en el texto`);
+      }
+    }
+    // model (design): written in the text, or in the catalog for that size
+    let model: string | undefined;
+    if (l.model) {
+      const sm = squash(l.model);
+      if (sm && (stext.includes(sm) || catalogRows.some((r) => r.model && squash(r.model) === sm))) model = l.model;
+      else {
+        model = rules?.model;
+        rejected.push(`diseño «${l.model}» no está en el texto ni en el catálogo`);
+      }
+    }
+    // quantity: a number written in the text
+    let quantity = l.quantity ?? 1;
+    if (quantity !== 1 && !nums.has(quantity)) {
+      rejected.push(`cantidad ${quantity} no está en el texto`);
+      quantity = rules?.quantity ?? 1;
+    }
+    // the line of the text this item is on (the model's raw when it is in the text, else the line with its size)
+    const lineText = rawOk ? l.raw! : size ? textLines.find((t) => findTyreSizes(t).some((s) => s.canonical === size.canonical)) : undefined;
+    const modelPrice = l.unit_price && l.unit_price > 0 && lineText && numbersIn(lineText).has(l.unit_price) ? l.unit_price : undefined;
+    if (l.unit_price && l.unit_price > 0 && modelPrice === undefined) rejected.push(`precio ${l.unit_price} no está escrito en la línea`);
+    const plate = l.plate && stext.includes(squash(l.plate)) ? extractPlate(`placa ${l.plate}`) ?? l.plate.toUpperCase() : undefined;
     lines.push({
       raw: l.raw ?? l.description ?? l.size ?? "",
       size,
-      // a brand the LLM misspelled ("Aonalite" for "Aonaite") is not kept: the one written on the line (or read by the regex
-      // for the same size) wins; an unknown brand is kept only when the message has none
-      brand: l.brand
-        ? findBrandInText(l.brand)?.brand ??
-          (l.raw ? findBrandInText(l.raw)?.brand : undefined) ??
-          base.lines.find((b) => b.brand && size && b.size?.canonical === size.canonical)?.brand ??
-          l.brand
-        : undefined,
-      model: l.model ?? undefined,
-      quantity: l.quantity ?? 1,
+      brand,
+      model,
+      quantity,
       position: (l.position as RequestLine["position"]) ?? undefined,
-      ply: l.ply ?? undefined,
+      ply: l.ply && nums.has(l.ply) ? l.ply : undefined,
       text: size ? undefined : l.description ?? undefined,
       application: l.application?.trim().toUpperCase() || undefined,
-      plate: l.plate ? extractPlate(`placa ${l.plate}`) ?? l.plate.toUpperCase() : undefined,
-      ub: (l.raw ? extractUb(l.raw) : undefined) ?? (l.ub ? extractUb(`UB ${l.ub}`) : undefined),
-      // "precio 259" typed on the line is read exactly by the regex; the LLM's value only when the regex has none
-      unitPrice: (l.raw ? extractLinePrice(l.raw) : undefined) ?? regexPriceFor(base.lines, lines.length, size) ?? (l.unit_price && l.unit_price > 0 ? l.unit_price : undefined),
+      plate,
+      ub: (rawOk ? extractUb(l.raw!) : undefined) ?? (l.ub && nums.has(parseInt(l.ub, 10)) ? extractUb(`UB ${l.ub}`) : undefined),
+      // "precio 259" typed on the line is read exactly by the regex; the LLM's value only when that number is on the line
+      unitPrice: (rawOk ? extractLinePrice(l.raw!) : undefined) ?? regexPriceFor(base.lines, lines.length, size) ?? modelPrice,
     });
   }
   for (const l of lines) if (l.unitPrice === undefined) delete l.unitPrice;
+  if (invented && base.lines.length) rejected.push("ítems: el modelo propuso un ítem que no está en el texto; mandan los de las reglas");
+
+  const literal = <T extends string>(v: T | null | undefined, field: string): T | undefined => {
+    if (!v) return undefined;
+    if (contains(v)) return v;
+    rejected.push(`${field} «${v}» no está en el texto`);
+    return undefined;
+  };
+  const email = llm.customer_email?.trim();
+  const emailOk = email && text.toLowerCase().includes(email.toLowerCase()) ? email : undefined;
+  if (email && !emailOk) rejected.push(`correo «${email}» no está en el texto`);
+  for (const [field, v, b] of [["descuento", llm.discount_pct, base.discountPct], ["margen", llm.margin_pct, base.marginPct], ["igv", llm.prices_include_tax, base.showPricesWithTax]] as const) {
+    if (v !== null && v !== undefined && v !== b) rejected.push(`${field} del modelo (${v}) ignorado: solo lo escrito`);
+  }
+  const validity = llm.validity_days && nums.has(llm.validity_days) ? llm.validity_days : undefined;
+
   const merged: QuoteRequest = {
     ...base,
     // keyed fields typed by the salesman ("unidad: …") are read exactly by the regex; corrections appended later win
     unit: base.unit ?? llm.unit ?? undefined,
-    ub: base.ub ?? (llm.ub ? extractUb(`UB ${llm.ub}`) : undefined),
+    ub: base.ub ?? (llm.ub && nums.has(parseInt(llm.ub, 10)) ? extractUb(`UB ${llm.ub}`) : undefined),
     requester: base.requester ?? llm.requester ?? undefined,
     // corrida E: un texto más largo que limits.maxUserChars llega cortado al modelo; si por eso leyó menos ítems que las
-    // reglas (que ven el texto completo), mandan los ítems de las reglas
-    lines: lines.length && !(text.length > limitsConfig().maxUserChars && base.lines.length > lines.length) ? lines : base.lines,
+    // reglas (que ven el texto completo), mandan los ítems de las reglas; un ítem inventado, también
+    lines: lines.length && !(invented && base.lines.length) && !(text.length > limitsConfig().maxUserChars && base.lines.length > lines.length) ? lines : base.lines,
     customerName: llm.customer_name ?? base.customerName,
     customerCompany: llm.customer_company ?? base.customerCompany,
-    customerEmail: llm.customer_email ?? base.customerEmail,
+    customerEmail: emailOk ?? base.customerEmail,
     attention: llm.attention ?? base.attention,
-    address: llm.address ?? base.address,
-    discountPct: llm.discount_pct ?? base.discountPct,
-    marginPct: llm.margin_pct ?? base.marginPct,
-    showPricesWithTax: llm.prices_include_tax ?? base.showPricesWithTax,
+    address: literal(llm.address, "dirección") ?? base.address,
+    // precios, descuento, margen e IGV: solo lo escrito (reglas)
+    discountPct: base.discountPct,
+    marginPct: base.marginPct,
+    showPricesWithTax: base.showPricesWithTax,
     paymentType: llm.payment_type ?? base.paymentType,
     paymentTerm: llm.payment_term ?? base.paymentTerm,
     deliveryTerm: llm.delivery_term ?? base.deliveryTerm,
-    validityDays: llm.validity_days ?? base.validityDays,
-    notes: llm.notes ?? undefined,
+    validityDays: validity ?? base.validityDays,
+    notes: literal(llm.notes, "notas"),
     parsedBy: "llm+regex",
   };
   const unparsed = base.unparsed?.filter((seg) => stillUnparsed(seg, merged));
-  return { ...merged, unparsed: unparsed?.length ? unparsed : undefined };
+  return { request: { ...merged, unparsed: unparsed?.length ? unparsed : undefined }, rejected };
 }
 
 /** The regex line's "precio 259" for the LLM's line `i`, when the regex read the same line there (same size). */

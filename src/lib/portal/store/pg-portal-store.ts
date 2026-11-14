@@ -268,6 +268,21 @@ export class PgPortalStore implements PortalStore {
 
   async flush(): Promise<void> {}
 
+  // ── límite de intentos (corrida E, punto 5): rate_limit_hits ──
+
+  async hitRateLimit(bucket: string, windowStart: Date): Promise<number> {
+    const [r] = await this.sql`
+      insert into rate_limit_hits (bucket, window_start, hits) values (${bucket}, ${windowStart}, 1)
+      on conflict (bucket, window_start) do update set hits = rate_limit_hits.hits + 1, updated_at = now()
+      returning hits`;
+    return Number(r.hits);
+  }
+
+  async pruneRateLimitHits(before: Date): Promise<number> {
+    const r = await this.sql`delete from rate_limit_hits where window_start < ${before}`;
+    return r.count;
+  }
+
   async close(): Promise<void> {
     await this.sql.end({ timeout: 5 });
   }

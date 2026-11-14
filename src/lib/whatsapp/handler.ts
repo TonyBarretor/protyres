@@ -25,6 +25,8 @@ import { loadPortalConfig } from "../portal/config";
 import { getPortalStore } from "../portal/store";
 import { limaDateKey } from "../portal/ui/time";
 import { parseRequestWithLLM } from "../llm/parse-request";
+import { OFF_TOPIC_REPLY, isOffTopic } from "../guard/off-topic";
+import { runWithQuoteScope, type QuoteLlmScope } from "../quote/shadow";
 import { routePortal } from "../portal/bot";
 import { voiceCatalogFromStore } from "../portal/voice/catalog";
 import { linkQuoteToPortal, onQuoteSentToPortal, portalCreditTerm } from "../portal/quotes/link";
@@ -44,7 +46,7 @@ import { attachPhotos, findPhoto, itemsWithoutPhoto, loadImage, searchWebPhotos,
 import { fmtMoney, r2 } from "../quote/pricing";
 import { FIELD_LABEL, askRequired, detectProfile, findProfile, hasExcelFormat, leadingProfile, missingInQuote, missingRequired, profileGuide, profileHead, profileId, profileKey, profileRequestText, shortItemLabel, type RequiredField } from "../quote/profiles";
 import { PROSEGUR_MAX_ITEMS, prosegurTooManyItems, renderProsegurXlsx } from "../quote/prosegur-xlsx";
-import { describeLine, describeRequest, parseEmail, parseQuantity, parseRequest, parseRequestRegex, stripMargin, unparsedHintInfo } from "../quote/request";
+import { describeLine, describeRequest, parseEmail, parseQuantity, parseRequest, parseRequestRegex, shadowCompare, stripMargin, unparsedHintInfo } from "../quote/request";
 import type { Candidate, EmailDraft, LineCandidates, Quote, QuoteItem, QuoteRequest, RequestLine } from "../quote/types";
 import type { WhatsAppClient } from "./client";
 import { LoggingWhatsAppClient, historyLine } from "./logging-client";
@@ -425,9 +427,14 @@ export class BotHandler {
     if (!(await this.admit(msg))) return;
     // contexto de consumo (guard/usage.ts): quién gasta, dónde se registra, avisos de una línea al final de la respuesta
     const ctx: UsageContext = { phone, sink: this.store, notices: new Set(), notifyAdmin: (body) => this.notifyAdmin(body), log: (m) => this.log(m) };
+    // modelo en el cotizador (quote/shadow.ts): el catálogo para validar lo que propone y, en modo sombra, el pedido a comparar
+    const scope: QuoteLlmScope = { phone, catalog: (canonicals) => this.store.findBySize(canonicals), sink: this.store, log: (m) => this.log(m) };
     await runWithUsage(ctx, async () => {
-      await run();
+      await runWithQuoteScope(scope, run);
       if (ctx.notices.size) await this.reply(msg.from, [...ctx.notices].join("\n"));
+      // QUOTE_LLM_MODE=shadow: el modelo lee el pedido DESPUÉS de responder (no retrasa la respuesta) y solo se registra la
+      // diferencia; sus avisos (recorte, tope) no llegan al vendedor: contexto de uso propio con otra lista de avisos
+      if (scope.pending) await runWithUsage({ ...ctx, notices: new Set() }, () => shadowCompare(scope));
     });
   }
 
@@ -577,6 +584,9 @@ export class BotHandler {
       // items sent as messages of their own ("2 v99", then "4 v89"): contract lines go into the quote just presented
       if ((state.step === "review_quote" || state.step === "need_email") && (await this.addToQuote(from, state, text))) return;
       if (!text) return this.reply(from, "No entendí el mensaje. Escribe *ayuda* para ver cómo funciona.");
+      // fuera de tema reconocible (poema, traducción, "ignora tus instrucciones", la clave…; guard/off-topic.ts): una
+      // línea fija, sin modelo. Un texto sin señales que no es reconocible sigue como siempre (reglas: "No encontré…")
+      if (!profileNext && isOffTopic(text)) return this.reply(from, OFF_TOPIC_REPLY);
       // a new request while a quote is open: never a silent restart
       if ((state.step === "choose" || state.step === "review_quote" || state.step === "need_email") && (await this.confirmNewRequest(from, state, text, voice))) return;
       return this.startRequest(from, text, undefined, { profile: profileNext?.profile, header: profileNext?.header, ...(voice ? { voice } : {}) });
@@ -603,8 +613,9 @@ export class BotHandler {
 
   private async startRequestFromMedia(from: string, msg: InboundMessage): Promise<void> {
     const caption = msg.media?.caption ?? "";
-    // QUOTE_LLM_MODE=off: solo reglas, sin descargar el archivo (igual que sin modelo)
-    if (!llmAvailable() || quoteLlmMode() === "off") {
+    // QUOTE_LLM_MODE off o shadow: solo reglas, sin descargar el archivo (igual que sin modelo). En shadow no se compara
+    // la foto: descargarla y leerla costaría más que un texto, y lo que se quiere medir es la lectura de pedidos escritos
+    if (!llmAvailable() || quoteLlmMode() !== "on") {
       return this.startRequest(from, caption, "(No puedo leer la imagen sin el LLM configurado; usé solo el texto.)");
     }
     // tope del día alcanzado: no se descarga un archivo que no se va a leer (ya se avisó en una línea)

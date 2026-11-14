@@ -14,14 +14,16 @@ export function llmAvailable(): boolean {
 }
 
 /**
- * Modelo en el cotizador (corrida E): QUOTE_LLM_MODE = off | shadow | on, leído en cada llamada. `off` = cero llamadas al
- * modelo para leer pedidos (parseRequest y startRequestFromMedia: solo reglas). Sin la variable (o con otro valor), "on":
- * el comportamiento de siempre. `shadow` lo implementa la corrida del modo sombra; mientras tanto se comporta como "on".
+ * Modelo en el cotizador (corrida E): QUOTE_LLM_MODE = off | shadow | on, leído en cada llamada. Por defecto (sin la
+ * variable o con otro valor) "shadow". `off` = cero llamadas al modelo para leer pedidos (solo reglas); `shadow` = el
+ * vendedor recibe lo mismo que en off y, después de responder, el modelo lee el pedido y solo se registra la diferencia
+ * (quote/shadow.ts, tabla quote_shadow); `on` = el modelo refina lo de las reglas, siempre validado
+ * (quote/request.ts mergeModelRequest). Una foto / PDF con leyenda de pedido solo se descarga y se lee en `on`.
  */
 export type QuoteLlmMode = "off" | "shadow" | "on";
 export function quoteLlmMode(env: Record<string, string | undefined> = process.env): QuoteLlmMode {
   const v = (env.QUOTE_LLM_MODE ?? "").trim().toLowerCase();
-  return v === "off" || v === "shadow" ? v : "on";
+  return v === "off" || v === "on" ? v : "shadow";
 }
 
 export function getAnthropic(): Anthropic | null {

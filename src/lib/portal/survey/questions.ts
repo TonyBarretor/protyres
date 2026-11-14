@@ -20,6 +20,15 @@ export type ValoraId = (typeof VALORA_OPTIONS)[number]["id"];
 
 export const MAX_VALORA = 3;
 export const MAX_MEJORAR = 1000;
+/** Casillas de la pregunta 2 que se miran (hay 8 opciones): más que esto es un formulario armado a mano. */
+export const MAX_VALORA_RAW = 20;
+/**
+ * Corrida E, punto 5: tope del formulario entero (además del Content-Length que mira el proxy). Una respuesta real son
+ * ~10 campos cortos + "mejorar" (1.000) + los campos internos de Next; "mejorar" pegado de un texto largo se recorta,
+ * pero algo 8 veces más grande o con archivos no es una respuesta.
+ */
+export const MAX_SURVEY_FIELDS = 40;
+export const MAX_SURVEY_CHARS = MAX_MEJORAR * 8;
 
 export const SURVEY_QUESTIONS = {
   nps: "¿Qué tan probable es que recomiende 360 Tyres a un colega o a otra empresa?",
@@ -44,7 +53,7 @@ export interface SurveyFormLike {
   getAll(name: string): FormDataEntryValue[];
 }
 
-export type SurveyFieldError = "nps" | "valora" | "valora_max" | "satisfaccion" | "referencia";
+export type SurveyFieldError = "nps" | "valora" | "valora_max" | "satisfaccion" | "referencia" | "tamano";
 
 export type ParsedSurvey = { ok: true; answer: SurveyAnswerInput } | { ok: false; errors: SurveyFieldError[] };
 
@@ -54,6 +63,7 @@ export const SURVEY_ERROR_TEXT: Record<SurveyFieldError, string> = {
   valora_max: "Elija como máximo 3 opciones en la pregunta 2.",
   satisfaccion: "Elija un valor de 1 a 5 en la pregunta 3.",
   referencia: "Responda sí o no en la pregunta 5.",
+  tamano: "La respuesta es demasiado larga. Acorte su comentario y vuelva a enviarla.",
 };
 
 function intIn(v: FormDataEntryValue | null, min: number, max: number): number | null {
@@ -72,9 +82,11 @@ export function parseSurveyForm(f: SurveyFormLike): ParsedSurvey {
   const nps = intIn(f.get("nps"), 0, 10);
   if (nps === null) errors.push("nps");
 
-  const raw = f.getAll("valora").filter((v): v is string => typeof v === "string").map((v) => v.trim());
+  const all = f.getAll("valora");
+  const raw = all.filter((v): v is string => typeof v === "string").map((v) => v.trim());
   const valora = [...new Set(raw)];
-  if (valora.length === 0 || valora.some((v) => !VALORA_IDS.has(v))) errors.push("valora");
+  if (all.length > MAX_VALORA_RAW) errors.push("valora_max");
+  else if (valora.length === 0 || valora.some((v) => !VALORA_IDS.has(v))) errors.push("valora");
   else if (valora.length > MAX_VALORA) errors.push("valora_max");
 
   const satisfaccion = intIn(f.get("satisfaccion"), 1, 5);
@@ -89,4 +101,20 @@ export function parseSurveyForm(f: SurveyFormLike): ParsedSurvey {
 
   if (errors.length) return { ok: false, errors };
   return { ok: true, answer: { nps: nps!, valora, satisfaccionEntrega: satisfaccion, mejorar: mejorar || null, referencia } };
+}
+
+/**
+ * true si el formulario no puede ser una respuesta real: más de MAX_SURVEY_FIELDS campos, más de MAX_SURVEY_CHARS
+ * caracteres en total o algún archivo. La server action lo rechaza antes de abrir la encuesta.
+ */
+export function surveyFormTooLarge(form: Iterable<[string, FormDataEntryValue]>): boolean {
+  let fields = 0;
+  let chars = 0;
+  for (const [k, v] of form) {
+    if (typeof v !== "string") return true;
+    fields++;
+    chars += k.length + v.length;
+    if (fields > MAX_SURVEY_FIELDS || chars > MAX_SURVEY_CHARS) return true;
+  }
+  return false;
 }

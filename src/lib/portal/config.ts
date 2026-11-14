@@ -104,6 +104,45 @@ const LimitsSchema = z.looseObject({
     .prefault({}),
 });
 
+/** Un límite de intentos: ventana fija de `windowMinutes`; por IP (hasheada) y, si aplica, por token del enlace. */
+const RateRuleSchema = z.looseObject({
+  windowMinutes: z.number().int().min(1).max(24 * 60),
+  perIp: z.number().int().min(1),
+  /** Sin valor: no hay límite por token (el cron no tiene token). */
+  perToken: z.number().int().min(1).optional(),
+});
+
+/** Tipo y tamaño del Excel de "Subir ventas" (además de los 4 MB del formulario). */
+const SalesUploadSchema = z.looseObject({
+  /** Filas con datos por hoja; más que esto no se lee (se pide dividir el archivo). */
+  maxRows: z.number().int().min(100).default(20_000),
+  /** Columnas leídas por fila (las de más a la derecha se ignoran). */
+  maxColumns: z.number().int().min(10).default(60),
+  /** Hojas en el archivo (se cuentan en el índice del ZIP antes de abrirlo). */
+  maxSheets: z.number().int().min(1).default(20),
+  /** Tamaño descomprimido total del .xlsx (MB): corta un "zip bomb" antes de que exceljs lo cargue entero. */
+  maxUncompressedMB: z.number().min(1).default(100),
+});
+
+/** Corrida E, punto 5: entradas públicas (login, encuesta, cron) y subida de Excel. */
+const PublicInputsSchema = z.looseObject({
+  rateLimits: z
+    .looseObject({
+      login: RateRuleSchema.default({ windowMinutes: 15, perIp: 20, perToken: 6 }),
+      surveyView: RateRuleSchema.default({ windowMinutes: 60, perIp: 60, perToken: 20 }),
+      surveySubmit: RateRuleSchema.default({ windowMinutes: 60, perIp: 30, perToken: 5 }),
+      cron: RateRuleSchema.default({ windowMinutes: 60, perIp: 10 }),
+    })
+    .prefault({}),
+  /** Token de enlace (login o encuesta) más largo que esto: se rechaza sin tocar la base. */
+  maxTokenChars: z.number().int().min(64).max(1024).default(128),
+  /** Cuerpo del POST de /portal/login. */
+  maxLoginBodyBytes: z.number().int().min(256).default(4096),
+  /** Cuerpo del envío de la encuesta (Content-Length, en el proxy). */
+  maxSurveyBodyBytes: z.number().int().min(1024).default(32_768),
+  salesUpload: SalesUploadSchema.prefault({}),
+});
+
 export const PortalConfigSchema = z.looseObject({
   import: ImportSchema.prefault({}),
   appointments: AppointmentsSchema.prefault({}),
@@ -114,6 +153,7 @@ export const PortalConfigSchema = z.looseObject({
   /** Feriados ("AAAA-MM-DD") que no cuentan como días hábiles. */
   holidays: z.array(z.string().regex(/^\d{4}-\d{2}-\d{2}$/)).default([]),
   limits: LimitsSchema.prefault({}),
+  publicInputs: PublicInputsSchema.prefault({}),
 });
 
 export type PortalConfig = z.infer<typeof PortalConfigSchema>;
@@ -124,6 +164,8 @@ export type PortalQuotesConfig = PortalConfig["quotes"];
 export type PortalGoalsConfig = PortalConfig["goals"];
 export type PortalSurveysConfig = PortalConfig["surveys"];
 export type PortalLimitsConfig = PortalConfig["limits"];
+export type PortalPublicInputsConfig = PortalConfig["publicInputs"];
+export type RateRule = z.infer<typeof RateRuleSchema>;
 
 export function portalConfigPath(): string {
   return process.env.PORTAL_CONFIG || path.join(process.cwd(), "config", "portal.json");

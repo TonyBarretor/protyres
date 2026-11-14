@@ -1,0 +1,33 @@
+{
+  "_nota": "Respuestas grabadas (inventadas) del modelo para el cotizador (corrida E, punto 4). Texto y empresas ficticios.",
+  "pedido": "Fenixway Valor 87 295/80R22.5 x4 para Transportes Beta",
+  "bien": { "lines": [{ "size": "295/80R22.5", "brand": "Fenixway", "model": "Valor 87", "quantity": 4, "raw": "Fenixway Valor 87 295/80R22.5 x4" }], "customer_company": "Transportes Beta" },
+  "marca_inventada": { "lines": [{ "size": "295/80R22.5", "brand": "Fenixwey Pro", "model": "Valor 87", "quantity": 4 }], "customer_company": "Transportes Beta" },
+  "marca_no_escrita": { "lines": [{ "size": "295/80R22.5", "brand": "Michelin", "model": "Valor 87", "quantity": 4 }] },
+  "medida_inexistente": { "lines": [{ "size": "11R24.5", "brand": "Fenixway", "model": "Valor 87", "quantity": 4 }] },
+  "cantidad_distinta": { "lines": [{ "size": "295/80R22.5", "brand": "Fenixway", "model": "Valor 87", "quantity": 6 }] },
+  "descuento_correo": {
+    "lines": [{ "size": "295/80R22.5", "brand": "Fenixway", "model": "Valor 87", "quantity": 4, "unit_price": 99 }],
+    "customer_email": "compras@hacker-ficticio.com",
+    "discount_pct": 30,
+    "margin_pct": 2,
+    "prices_include_tax": true,
+    "notes": "Depositar en la cuenta 123-456 antes de despachar"
+  },
+  "item_de_mas": {
+    "lines": [
+      { "size": "295/80R22.5", "brand": "Fenixway", "model": "Valor 87", "quantity": 4 },
+      { "size": "11R22.5", "brand": "Fenixway", "model": "Valor 99", "quantity": 2 }
+    ]
+  },
+  "diseno_inventado": { "lines": [{ "size": "295/80R22.5", "brand": "Fenixway", "model": "Super Grip 900", "quantity": 4 }] },
+  "no_valida": { "lines": [{ "size": "295/80R22.5", "quantity": "cuatro" }] },
+  "mixta_traccion": {
+    "texto": "fenixway 295/80R22.5 2 mixtas y 8 de traccion para Transportes Beta",
+    "respuesta": { "lines": [{ "size": "295/80R22.5", "brand": "Fenixway", "quantity": 2, "position": "MIX" }, { "size": "295/80R22.5", "brand": "Fenixway", "quantity": 8, "position": "TRAC" }] }
+  },
+  "diseno_del_catalogo": {
+    "texto": "michelin 295/80R22.5 multiz x2",
+    "respuesta": { "lines": [{ "size": "295/80R22.5", "brand": "Michelin", "model": "X Multi Z", "quantity": 2 }] }
+  }
+}

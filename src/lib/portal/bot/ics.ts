@@ -24,13 +24,18 @@ export interface IcsEvent {
 
 export const ICS_MIME = "text/calendar";
 
-/** Escape de un valor TEXT (RFC 5545 §3.3.11). */
+/**
+ * Escape de un valor TEXT (RFC 5545 §3.3.11): \ ; , y saltos de línea (CRLF, LF o CR solo) como \n. Los caracteres de
+ * control que TEXT no admite (todos salvo el tabulador) se quitan: un nombre de empresa o una nota con un CR suelto no
+ * puede abrir una línea nueva del .ics (p. ej. "ATTENDEE:" o "END:VEVENT" inyectados).
+ */
 export function escapeText(s: string): string {
   return s
     .replace(/\\/g, "\\\\")
     .replace(/;/g, "\\;")
     .replace(/,/g, "\\,")
-    .replace(/\r?\n/g, "\\n");
+    .replace(/\r\n|\r|\n|\u2028|\u2029/g, "\\n")
+    .replace(/[\u0000-\u0008\u000A-\u001F\u007F]/g, "");
 }
 
 /** Pliega una línea de contenido a 75 octetos (continuaciones empiezan con un espacio). */

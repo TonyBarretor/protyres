@@ -4,10 +4,13 @@ import { describeRequest, extractUb, parseDiscount, parseMargin, parseQuantity, 
 // the LLM is off unless a test turns it on with a canned answer
 const llm = vi.hoisted(() => ({ on: false, answer: null as unknown }));
 vi.mock("../llm/client", async (orig) => ({ ...(await orig<typeof import("../llm/client")>()), llmAvailable: () => llm.on }));
-vi.mock("../llm/parse-request", () => ({ parseRequestWithLLM: async () => llm.answer }));
+vi.mock("../llm/parse-request", () => ({ parseRequestWithLLM: async () => llm.answer, parseRequestWithLLMResult: async () => ({ data: llm.answer }) }));
 
 beforeAll(() => {
   process.env.LLM_DISABLED = "1";
+  // corrida E punto 4: el valor por defecto de QUOTE_LLM_MODE pasó a "shadow" (el vendedor recibe solo reglas); las
+  // pruebas "with the LLM" ejercitan el camino con modelo: "on" explícito
+  process.env.QUOTE_LLM_MODE = "on";
 });
 
 describe("salesman one-liners", () => {
@@ -363,13 +366,17 @@ describe("per-line manual price 'precio 259'", () => {
     expect(own.lines[0]).toMatchObject({ quantity: 4, unitPrice: 259 });
     expect(own.unparsed).toBeUndefined();
   });
-  it("with the LLM: the regex's price wins, the LLM's when the regex has none", async () => {
+  it("with the LLM: the regex's price wins; the LLM's only when that number is written on the line", async () => {
     llm.on = true;
     try {
       llm.answer = { lines: [{ size: "315/80R22.5", brand: "Fenixway", model: "Flama 77", quantity: 4, unit_price: 250, raw: "Fenixway Flama 77 315/80R22.5 x4 precio 259" }] };
       expect((await parseRequest(EXAMPLE)).lines[0].unitPrice).toBe(259);
+      // corrida E punto 3 (cambio pedido): antes el modelo podía dar 250 por "a doscientos cincuenta"; un precio del modelo
+      // vale solo si ese número está escrito en la línea del texto ("a 254", que las reglas no leen por ambiguo)
       llm.answer = { lines: [{ size: "315/80R22.5", brand: "Fenixway", model: "Flama 77", quantity: 4, unit_price: 250 }] };
-      expect((await parseRequest("Fenixway Flama 77 315/80R22.5 x4 a doscientos cincuenta")).lines[0].unitPrice).toBe(250);
+      expect((await parseRequest("Fenixway Flama 77 315/80R22.5 x4 a doscientos cincuenta")).lines[0].unitPrice).toBeUndefined();
+      llm.answer = { lines: [{ size: "315/80R22.5", brand: "Fenixway", model: "Flama 77", quantity: 4, unit_price: 254 }] };
+      expect((await parseRequest("Fenixway Flama 77 315/80R22.5 x4 a 254")).lines[0].unitPrice).toBe(254);
     } finally {
       llm.on = false;
       llm.answer = null;

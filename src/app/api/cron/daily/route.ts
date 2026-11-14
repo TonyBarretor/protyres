@@ -1,3 +1,4 @@
+import { checkRateLimit, clientIp } from "@/lib/portal/auth/rate-limit";
 import { runDailyJobs } from "@/lib/portal/notify/jobs";
 import { getPortalStore } from "@/lib/portal/store";
 import { getStore } from "@/lib/store";
@@ -14,7 +15,13 @@ export const maxDuration = 60;
  * `Authorization: Bearer $CRON_SECRET`. Prueba sin enviar nada:
  *   curl -H "Authorization: Bearer $CRON_SECRET" "http://localhost:3000/api/cron/daily?dry=1"
  */
+/** Ventanas del límite de intentos más viejas que esto se borran en cada corrida (las ventanas duran como mucho 1 h). */
+const RATE_LIMIT_KEEP_MS = 2 * 24 * 3600_000;
+
 export async function GET(req: Request): Promise<Response> {
+  // Corrida E, punto 5: límite por IP antes de mirar el secreto (Vercel llama una vez al día; frena a quien lo adivine)
+  const limit = await checkRateLimit({ store: getPortalStore }, "cron", { ip: clientIp(req.headers) });
+  if (!limit.ok) return Response.json({ ok: false, error: "Demasiados intentos; vuelva a intentarlo más tarde" }, { status: 429, headers: { "retry-after": String(limit.retryAfterSec) } });
   const secret = process.env.CRON_SECRET;
   if (!secret) return Response.json({ ok: false, error: "CRON_SECRET no está configurado" }, { status: 500 });
   if ((req.headers.get("authorization") ?? "") !== `Bearer ${secret}`) return Response.json({ ok: false, error: "unauthorized" }, { status: 401 });
@@ -30,6 +37,8 @@ export async function GET(req: Request): Promise<Response> {
     }
     const store = await getPortalStore();
     const jobs = await runDailyJobs({ store, client, now: new Date(), dryRun, env: process.env, log });
+    // limpieza del límite de intentos (tabla rate_limit_hits); si falla (sin migrar) no tumba el cron
+    await store.pruneRateLimitHits(new Date(Date.now() - RATE_LIMIT_KEEP_MS)).catch((err: unknown) => log(`limpieza de rate_limit_hits: ${(err as Error).message}`));
     if (!dryRun) await store.flush();
     return Response.json({ ok: true, dryRun, jobs });
   } catch (err) {

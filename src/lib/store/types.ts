@@ -1,5 +1,6 @@
 import type { PriceRow, PriceSource } from "../ingest/types";
 import type { Quote, QuoteItem } from "../quote/types";
+import type { QuoteShadowEntry, QuoteShadowRow } from "../quote/shadow";
 import { fold, knownBrand } from "../tyre/brands";
 
 /** Case / accent / punctuation-insensitive key: "J.CH." -> "jch", "Prosegur S.A." -> "prosegursa". */
@@ -299,6 +300,10 @@ export interface PriceStore {
   logBlocked(entry: BlockedInbound): Promise<void>;
   /** Blocked messages since `since`, by reason (for llm:usage). */
   blockedSummary(since: Date): Promise<{ reason: string; phones: number; messages: number }[]>;
+  /** QUOTE_LLM_MODE=shadow: one comparison rules vs model (table quote_shadow; the text is customer data: database only). */
+  logQuoteShadow(entry: QuoteShadowEntry): Promise<void>;
+  /** Shadow comparisons, newest first (`since` inclusive, at most `limit`, default 1000). */
+  listQuoteShadow(opts?: { since?: Date; limit?: number }): Promise<QuoteShadowRow[]>;
   /** Drive file id -> modifiedTime of the last successful ingest. */
   getSyncMarks(): Promise<Record<string, string>>;
   /** `provider` lets deleteProvider clear the marks of that provider's files. */

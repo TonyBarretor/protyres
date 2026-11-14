@@ -810,7 +810,18 @@ export interface SurveyRepo {
   listSurveyResponses(filter?: SurveyFilter): Promise<SurveyResponse[]>;
 }
 
-export interface PortalStore extends CompanyRepo, FleetRepo, SalesRepo, UserRepo, ContactRepo, OpportunityRepo, ActivityRepo, AppointmentRepo, PortalConversationRepo, VocabularyRepo, PurchaseOrderRepo, CreditRepo, SurveyRepo {
+/**
+ * Corrida E, punto 5: contadores del límite de intentos de las entradas públicas (src/lib/portal/auth/rate-limit.ts).
+ * `bucket` ya viene hasheado (nunca una IP ni un token en claro).
+ */
+export interface RateLimitRepo {
+  /** Suma 1 al contador de (bucket, ventana) de forma atómica y devuelve el total de esa ventana. */
+  hitRateLimit(bucket: string, windowStart: Date): Promise<number>;
+  /** Borra las ventanas que empezaron antes de `before` (limpieza del cron). Devuelve cuántas. */
+  pruneRateLimitHits(before: Date): Promise<number>;
+}
+
+export interface PortalStore extends CompanyRepo, FleetRepo, SalesRepo, UserRepo, ContactRepo, OpportunityRepo, ActivityRepo, AppointmentRepo, PortalConversationRepo, VocabularyRepo, PurchaseOrderRepo, CreditRepo, SurveyRepo, RateLimitRepo {
   /** Escribe lo pendiente (JSON); no-op en Postgres. Los CLI la llaman antes de salir. */
   flush(): Promise<void>;
   close(): Promise<void>;

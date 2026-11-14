@@ -185,4 +185,14 @@ export function findBrandInText(text: string): { brand: string; alias: string; i
   return best;
 }
 
+/** Every known brand mentioned in free text (by any of its aliases). */
+export function brandsInText(text: string): Set<string> {
+  const f = ` ${fold(text)} `;
+  const out = new Set<string>();
+  for (const [alias, brand] of ALIAS_INDEX) {
+    if (alias.length >= 2 && f.includes(` ${alias} `)) out.add(brand);
+  }
+  return out;
+}
+
 export const KNOWN_BRANDS = Object.keys(BRANDS);

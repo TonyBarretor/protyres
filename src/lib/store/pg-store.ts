@@ -7,6 +7,7 @@ import postgres from "postgres";
 import * as schema from "../../db/schema";
 import type { PriceRow, PriceSource } from "../ingest/types";
 import type { Quote } from "../quote/types";
+import type { QuoteShadowEntry, QuoteShadowRow } from "../quote/shadow";
 import { foldKey, photoKey, type BlockedInbound, type ConversationState, type ListQuotesOptions, type LoggedMessage, type MessageLogEntry, type PriceStore, type ProductPhoto, type ProviderSummary, type QuoteFile, type ReplaceScope, type StoredContractItem, type UsageEntry, type UsageSummaryRow } from "./types";
 
 type Db = PostgresJsDatabase<typeof schema>;
@@ -530,6 +531,42 @@ export class PgStore implements PriceStore {
       const rows = await this.sqlClient<{ reason: string; phones: number; messages: number }[]>`
         select reason, count(distinct phone)::int as phones, count(*)::int as messages from blocked_inbound where created_at >= ${since} group by reason`;
       return rows.map((r) => ({ reason: r.reason, phones: Number(r.phones), messages: Number(r.messages) }));
+    } catch (err) {
+      if (isMissingTable(err)) return [];
+      throw err;
+    }
+  }
+
+  // QUOTE_LLM_MODE=shadow (corrida E): tabla quote_shadow (SQL directo). Sin migrar: aviso en consola y el bot sigue.
+
+  async logQuoteShadow(entry: QuoteShadowEntry): Promise<void> {
+    const phone = entry.phone.replace(/\D/g, "") || entry.phone;
+    try {
+      await this.sqlClient`insert into quote_shadow (phone, request_text, rules, model, diffs, rejected, model_error, created_at)
+        values (${phone}, ${entry.text}, ${this.sqlClient.json(entry.rules as unknown as postgres.JSONValue)}, ${entry.model ? this.sqlClient.json(entry.model as unknown as postgres.JSONValue) : null},
+                ${this.sqlClient.json(entry.diffs as unknown as postgres.JSONValue)}, ${this.sqlClient.json(entry.rejected as unknown as postgres.JSONValue)}, ${entry.modelError ?? null}, ${entry.at ?? new Date()})`;
+    } catch (err) {
+      if (!isMissingTable(err)) throw err;
+      console.warn("[store] quote_shadow no existe: corre npm run db:migrate (las comparaciones del modo sombra no se registran)");
+    }
+  }
+
+  async listQuoteShadow(opts: { since?: Date; limit?: number } = {}): Promise<QuoteShadowRow[]> {
+    try {
+      const rows = await this.sqlClient<{ id: number; phone: string; request_text: string; rules: unknown; model: unknown; diffs: unknown; rejected: unknown; model_error: string | null; created_at: Date }[]>`
+        select id, phone, request_text, rules, model, diffs, rejected, model_error, created_at from quote_shadow
+        where created_at >= ${opts.since ?? new Date(0)} order by created_at desc, id desc limit ${opts.limit ?? 1000}`;
+      return rows.map((r) => ({
+        id: Number(r.id),
+        phone: r.phone,
+        text: r.request_text,
+        rules: r.rules as QuoteShadowRow["rules"],
+        model: (r.model ?? null) as QuoteShadowRow["model"],
+        diffs: (r.diffs ?? []) as QuoteShadowRow["diffs"],
+        rejected: (r.rejected ?? []) as string[],
+        ...(r.model_error ? { modelError: r.model_error } : {}),
+        at: new Date(r.created_at),
+      }));
     } catch (err) {
       if (isMissingTable(err)) return [];
       throw err;

@@ -7,10 +7,16 @@
  * La fila de encabezados se busca en las primeras 25 filas (la que más campos reconoce). Obligatorios: fecha, ruc,
  * cantidad. Cada fila de datos se valida por separado: las malas van a `errors` (con su número de fila de Excel) y no
  * frenan a las buenas.
+ *
+ * Corrida E, punto 5 (entradas): `validateSalesUpload` mira nombre, tamaño, firma ZIP real e índice del ZIP (hojas y tamaño
+ * descomprimido) antes de abrirlo; `readSalesXlsx` corta con SalesXlsxLimitError si una hoja tiene más de `maxRows` filas
+ * con datos y solo lee las primeras `maxColumns` columnas (config/portal.json → publicInputs.salesUpload). Las celdas son
+ * datos: una fórmula vale su resultado guardado (no se calcula nada) y el texto se muestra escapado por React; nada del
+ * Excel va al modelo.
  */
 import ExcelJS from "exceljs";
 import { z } from "zod";
-import { loadPortalConfig } from "../config";
+import { loadPortalConfig, type PortalPublicInputsConfig } from "../config";
 import { digits } from "../store/shared";
 import type { IsoDate, SaleInput } from "../store/types";
 
@@ -82,12 +88,102 @@ export interface SalesXlsxResult {
   errors: SaleRowError[];
 }
 
+export type SalesUploadLimits = PortalPublicInputsConfig["salesUpload"];
+
+/** Límite de "Subir ventas" superado: el mensaje va tal cual al usuario. */
+export class SalesXlsxLimitError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "SalesXlsxLimitError";
+  }
+}
+
+export interface ZipDirectory {
+  entries: number;
+  /** Suma de los tamaños descomprimidos declarados en el índice central. */
+  uncompressedBytes: number;
+  /** Entradas xl/worksheets/*.xml. */
+  sheets: number;
+  /** Tamaños de 32 bits saturados (ZIP64): no se puede confiar en la suma. */
+  zip64: boolean;
+}
+
+const ZIP_LOCAL = 0x04034b50;
+const ZIP_CENTRAL = 0x02014b50;
+const ZIP_END = 0x06054b50;
+
+/** Lee el índice central de un ZIP sin descomprimir nada. null si no es un ZIP legible. */
+export function readZipDirectory(buf: Uint8Array): ZipDirectory | null {
+  if (buf.length < 22) return null;
+  const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+  if (dv.getUint32(0, true) !== ZIP_LOCAL) return null;
+  let end = -1;
+  for (let i = buf.length - 22; i >= Math.max(0, buf.length - 22 - 0xffff); i--) {
+    if (dv.getUint32(i, true) === ZIP_END) {
+      end = i;
+      break;
+    }
+  }
+  if (end < 0) return null;
+  const total = dv.getUint16(end + 10, true);
+  const cdOffset = dv.getUint32(end + 16, true);
+  if (total === 0xffff || cdOffset === 0xffffffff) return { entries: total, uncompressedBytes: Infinity, sheets: 0, zip64: true };
+  const dec = new TextDecoder();
+  let p = cdOffset;
+  let uncompressedBytes = 0;
+  let sheets = 0;
+  let zip64 = false;
+  for (let n = 0; n < total; n++) {
+    if (p + 46 > buf.length || dv.getUint32(p, true) !== ZIP_CENTRAL) return null;
+    const size = dv.getUint32(p + 24, true);
+    const nameLen = dv.getUint16(p + 28, true);
+    const extraLen = dv.getUint16(p + 30, true);
+    const commentLen = dv.getUint16(p + 32, true);
+    if (p + 46 + nameLen > buf.length) return null;
+    const name = dec.decode(buf.subarray(p + 46, p + 46 + nameLen));
+    if (size === 0xffffffff) zip64 = true;
+    uncompressedBytes += size;
+    if (/^xl\/worksheets\/[^/]+\.xml$/i.test(name)) sheets++;
+    p += 46 + nameLen + extraLen + commentLen;
+  }
+  return { entries: total, uncompressedBytes: zip64 ? Infinity : uncompressedBytes, sheets, zip64 };
+}
+
+export function salesUploadLimits(): SalesUploadLimits {
+  return loadPortalConfig().publicInputs.salesUpload;
+}
+
+const NOT_XLSX = "El archivo no es un Excel .xlsx válido. Ábrelo en Excel y guárdalo como «Libro de Excel (.xlsx)».";
+
+/** Nombre .xlsx y tamaño (antes de leer el archivo). Mensaje para el usuario, o null. */
+export function checkUploadMeta(file: { name: string; size: number }, maxBytes: number): string | null {
+  if (!/\.xlsx$/i.test(file.name)) return "El archivo debe ser .xlsx (Excel). Si es .xls o .csv, ábrelo en Excel y guárdalo como .xlsx.";
+  if (file.size > maxBytes) return `El archivo pesa más de ${Math.round(maxBytes / 1_000_000)} MB. Divídelo en partes (por ejemplo, por mes).`;
+  return null;
+}
+
+/** Firma ZIP (`PK\x03\x04`, lo que es un .xlsx de verdad) e índice del ZIP: hojas y tamaño descomprimido. Mensaje, o null. */
+export function checkXlsxBytes(bytes: Uint8Array, limits: SalesUploadLimits = salesUploadLimits()): string | null {
+  const dir = readZipDirectory(bytes);
+  if (!dir || !dir.entries) return NOT_XLSX;
+  if (dir.sheets > limits.maxSheets) return `El Excel tiene ${dir.sheets} hojas (máximo ${limits.maxSheets}). Deja solo la hoja de ventas.`;
+  if (dir.uncompressedBytes > limits.maxUncompressedMB * 1_048_576) return `El Excel descomprimido pasa de ${limits.maxUncompressedMB} MB. Divídelo en partes (por ejemplo, por mes).`;
+  return null;
+}
+
+/** Las dos comprobaciones de arriba sobre un archivo ya leído. */
+export function validateSalesUpload(file: { name: string; size: number; bytes: Uint8Array }, opts: { maxBytes: number; limits?: SalesUploadLimits }): string | null {
+  return checkUploadMeta({ name: file.name, size: Math.max(file.size, file.bytes.length) }, opts.maxBytes) ?? checkXlsxBytes(file.bytes, opts.limits);
+}
+
 export interface ReadSalesOptions {
   columnMap?: SalesColumnMap;
   /** Nombre de la hoja; por defecto la primera visible cuya cabecera tenga los obligatorios. */
   sheet?: string;
   /** Por defecto "excel". */
   origen?: string;
+  /** Por defecto config/portal.json → publicInputs.salesUpload. */
+  limits?: SalesUploadLimits;
 }
 
 type Raw = ExcelJS.CellValue;
@@ -191,13 +287,13 @@ export function detectColumns(rows: string[][], columnMap: SalesColumnMap, maxSc
   return best && { headerRow: best.headerRow, mapping: best.mapping };
 }
 
-/** Lee la hoja como matriz de valores crudos (fila/columna 0 = fila 1 / columna A). */
-function sheetMatrix(ws: ExcelJS.Worksheet): Raw[][] {
+/** Lee la hoja como matriz de valores crudos (fila/columna 0 = fila 1 / columna A), solo las primeras `maxColumns` columnas. */
+function sheetMatrix(ws: ExcelJS.Worksheet, maxColumns: number): Raw[][] {
   const rows: Raw[][] = [];
   ws.eachRow({ includeEmpty: false }, (row, rowNumber) => {
     const cells: Raw[] = [];
     row.eachCell({ includeEmpty: true }, (cell, colNumber) => {
-      cells[colNumber - 1] = cell.value;
+      if (colNumber <= maxColumns) cells[colNumber - 1] = cell.value;
     });
     rows[rowNumber - 1] = cells;
   });
@@ -254,6 +350,10 @@ export function rowsToSales(matrix: Raw[][], headerRow: number, mapping: Detecte
 /** Lee un .xlsx de ventas. `input`: contenido del archivo. */
 export async function readSalesXlsx(input: Buffer | ArrayBuffer | Uint8Array, opts: ReadSalesOptions = {}): Promise<SalesXlsxResult> {
   const columnMap = opts.columnMap ?? loadSalesColumnMap();
+  const limits = opts.limits ?? salesUploadLimits();
+  const bytes = input instanceof Uint8Array ? input : new Uint8Array(input);
+  const invalid = checkXlsxBytes(bytes, limits);
+  if (invalid) throw new SalesXlsxLimitError(invalid);
   const wb = new ExcelJS.Workbook();
   await wb.xlsx.load(input as unknown as ArrayBuffer);
   const sheets = wb.worksheets.filter((ws) => (opts.sheet ? ws.name === opts.sheet : ws.state !== "hidden" && ws.state !== "veryHidden"));
@@ -262,7 +362,12 @@ export async function readSalesXlsx(input: Buffer | ArrayBuffer | Uint8Array, op
   }
   let fallback: SalesXlsxResult | null = null;
   for (const ws of sheets) {
-    const matrix = sheetMatrix(ws);
+    if (ws.actualRowCount > limits.maxRows) {
+      throw new SalesXlsxLimitError(
+        `La hoja "${ws.name}" tiene más de ${limits.maxRows.toLocaleString("es-PE")} filas (${ws.actualRowCount.toLocaleString("es-PE")}). Divídela en partes (por ejemplo, por mes) y súbelas una por una.`,
+      );
+    }
+    const matrix = sheetMatrix(ws, limits.maxColumns);
     const det = detectColumns(
       matrix.map((r) => Array.from(r, (c) => text(c ?? null))),
       columnMap,

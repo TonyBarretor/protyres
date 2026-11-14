@@ -192,3 +192,27 @@ describe("pedidoFromQuote", () => {
     expect(plazoDiasFromTerm("factura")).toBeUndefined();
   });
 });
+
+// corrida E, punto 3: texto de terceros (razón social del MTC/Excel, contacto, ítems, observaciones) que empieza con
+// = + - @ se escribe como TEXTO (celda de cadena), nunca como fórmula
+describe("inyección de fórmulas", () => {
+  it("una celda que empieza con = + - @ queda como texto", async () => {
+    const data = {
+      ...sample,
+      cliente: { ...sample.cliente, razonSocial: '=HYPERLINK("http://x.example","clic")', contacto: "+cmd|' /C calc'!A0", direccionFiscal: "-2+3", direccionEntrega: "@SUM(1,1)" },
+      items: [{ ...sample.items[0], modelo: "=1+1" }],
+      observaciones: "=IMPORTXML(1)",
+    };
+    const ws = await reload(await buildPedidoXlsx(data));
+    for (const a of ["G6", "G8", "G9"]) {
+      const c = ws.getCell(a);
+      expect(c.type, a).toBe(ExcelJS.ValueType.String);
+      expect(c.formula, a).toBeFalsy();
+    }
+    expect(ws.getCell("G6").value).toBe('=HYPERLINK("HTTP://X.EXAMPLE","CLIC")');
+    // ninguna fórmula del libro trae lo escrito por terceros (las fórmulas son solo las de la plantilla)
+    const injected: string[] = [];
+    ws.eachRow((row) => row.eachCell((c) => void (c.formula && /HYPERLINK|IMPORTXML|cmd|SUM\(1|1\+1/i.test(c.formula) ? injected.push(c.address) : 0)));
+    expect(injected).toEqual([]);
+  });
+});

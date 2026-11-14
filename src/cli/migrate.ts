@@ -395,6 +395,30 @@ const STATEMENTS = [
     created_at timestamptz not null default now()
   )`,
   `create index if not exists blocked_inbound_created_idx on blocked_inbound (created_at)`,
+  // Corrida E, punto 5: límite de intentos de las entradas públicas (login, encuesta, cron). `bucket` = ámbito + HMAC de la
+  // IP o del token (nunca en claro); una fila por ventana fija. El cron borra las ventanas de hace más de 2 días.
+  `create table if not exists rate_limit_hits (
+    bucket text not null,
+    window_start timestamptz not null,
+    hits integer not null default 0,
+    updated_at timestamptz not null default now(),
+    primary key (bucket, window_start)
+  )`,
+  `create index if not exists rate_limit_hits_window_idx on rate_limit_hits (window_start)`,
+  // Corrida E (punto 4): QUOTE_LLM_MODE=shadow, comparación reglas vs modelo de cada pedido (npm run quote:shadow-report).
+  // request_text es dato de cliente: solo en la base.
+  `create table if not exists quote_shadow (
+    id serial primary key,
+    phone text not null,
+    request_text text not null,
+    rules jsonb not null,
+    model jsonb,
+    diffs jsonb not null default '[]'::jsonb,
+    rejected jsonb not null default '[]'::jsonb,
+    model_error text,
+    created_at timestamptz not null default now()
+  )`,
+  `create index if not exists quote_shadow_created_idx on quote_shadow (created_at)`,
 ];
 
 /** Desde aquí empiezan las sentencias del portal: antes de ejecutarlas se pasa la guardia (migrate-guard.ts). */

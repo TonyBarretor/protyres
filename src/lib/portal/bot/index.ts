@@ -40,6 +40,7 @@ import { comingSoon } from "./commands";
 import { quoterBlocksResume } from "./commands/oc";
 import { askAgain, expirePaused, findPaused, parseResume, pauseStep, resumePaused, sendPauseReminders } from "./pause";
 import { getPausable, getPendingDrop, getPendingHandler, getPortalCommand, handleReport, registerPausable, registerPendingDrop, registerPendingHandler, replyButtons, type DropContext, type DropReason, type PortalContext } from "./registry";
+import { OFF_TOPIC_REPLY } from "../../guard/off-topic";
 import { isCancel, isQuoterCommand, mediaAccepted, parsePortalCommand, routeIntent, textSignals, type Intent, type RouteRule } from "./router";
 import { withTimeout } from "../quotes/link";
 import type { VoiceCatalog } from "../voice/catalog";
@@ -583,6 +584,12 @@ export async function routePortal(input: PortalRouteInput): Promise<boolean> {
     if (heard.ok) {
       const spoken = await spokenForRouting(ctx, heard.text);
       const vd = routeIntent({ text: spoken, state: "idle", isPortalUser: true, pendingPortalStep: live, mentionsKnownCompany: false, now });
+      if (vd.rule === "fuera_de_tema") {
+        // fuera de tema dictado: la línea fija, sin reporte ni modelo (la transcripción queda registrada)
+        await logTranscript(ctx, heard.text);
+        await ctx.reply(`${heardLine(heard.text)}\n${OFF_TOPIC_REPLY}`);
+        return finish(true, vd.rule, "fuera de tema (voz)");
+      }
       if (vd.intent === "quote") {
         if (pending) await leave(pending, "quoter");
         await startVoiceQuote(ctx, heard.text);

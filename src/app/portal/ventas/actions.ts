@@ -10,7 +10,7 @@
 import { createHash } from "node:crypto";
 import { revalidatePath } from "next/cache";
 import { requireUser } from "@/lib/portal/auth/session";
-import { readSalesXlsx, REQUIRED_SALE_FIELDS, SALE_FIELDS, type SalesXlsxResult } from "@/lib/portal/sales/xlsx";
+import { readSalesXlsx, REQUIRED_SALE_FIELDS, SALE_FIELDS, checkUploadMeta, checkXlsxBytes, SalesXlsxLimitError, type SalesXlsxResult } from "@/lib/portal/sales/xlsx";
 import { getPortalStore } from "@/lib/portal/store";
 import { canUploadSales } from "@/lib/portal/ui/permissions";
 import { formatLimaShort, formatLimaTime } from "@/lib/portal/ui/time";
@@ -39,13 +39,17 @@ async function parseUpload(formData: FormData): Promise<Parsed> {
   if (!canUploadSales(user)) return { ok: false, error: "Solo supervisor o admin pueden subir ventas." };
   const file = formData.get("file");
   if (!(file instanceof File) || file.size === 0) return { ok: false, error: "Elige un archivo .xlsx." };
-  if (!/\.xlsx$/i.test(file.name)) return { ok: false, error: "El archivo debe ser .xlsx (Excel). Si es .xls o .csv, ábrelo en Excel y guárdalo como .xlsx." };
-  if (file.size > MAX_UPLOAD_BYTES) return { ok: false, error: "El archivo pesa más de 4 MB. Divídelo en partes (por ejemplo, por mes)." };
+  // nombre y tamaño antes de leer el archivo; firma ZIP, hojas y tamaño descomprimido antes de abrirlo (corrida E, punto 5)
+  const badMeta = checkUploadMeta(file, MAX_UPLOAD_BYTES);
+  if (badMeta) return { ok: false, error: badMeta };
   const buf = Buffer.from(await file.arrayBuffer());
+  const badBytes = checkXlsxBytes(buf);
+  if (badBytes) return { ok: false, error: badBytes };
   try {
     const result = await readSalesXlsx(buf);
     return { ok: true, name: file.name, hash: createHash("sha256").update(buf).digest("hex"), result };
   } catch (err) {
+    if (err instanceof SalesXlsxLimitError) return { ok: false, error: err.message };
     return { ok: false, error: `No se pudo leer el Excel: ${err instanceof Error ? err.message : String(err)}` };
   }
 }

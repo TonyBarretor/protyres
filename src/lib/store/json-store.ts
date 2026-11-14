@@ -8,6 +8,7 @@ import path from "node:path";
 import { gunzipSync } from "node:zlib";
 import type { PriceRow } from "../ingest/types";
 import type { Quote } from "../quote/types";
+import type { QuoteShadowEntry, QuoteShadowRow } from "../quote/shadow";
 import { foldKey, photoKey, type BlockedInbound, type ConversationState, type ListQuotesOptions, type LoggedMessage, type MessageLogEntry, type PriceStore, type ProductPhoto, type ProviderSummary, type QuoteFile, type ReplaceScope, type StoredContractItem, type UsageEntry, type UsageSummaryRow } from "./types";
 
 interface Data {
@@ -31,13 +32,17 @@ interface Data {
   usage: (Omit<UsageEntry, "at"> & { at: string })[];
   /** Messages the guard dropped (the newest MAX_USAGE); never the body. */
   blocked: (Omit<BlockedInbound, "at"> & { at: string })[];
+  /** QUOTE_LLM_MODE=shadow comparisons (the newest MAX_SHADOW); `at` = ISO. */
+  quoteShadow: (Omit<QuoteShadowEntry, "at"> & { id: number; at: string })[];
 }
+
+const MAX_SHADOW = 2000;
 
 const MAX_USAGE = 20000;
 
 const MAX_MESSAGES = 5000;
 
-const EMPTY: Data = { prices: {}, quotes: {}, conversations: {}, counters: { quote: 0 }, processed: [], syncMarks: {}, syncProviders: {}, photos: {}, quoteFiles: {}, contractPrices: {}, messages: [], usage: [], blocked: [] };
+const EMPTY: Data = { prices: {}, quotes: {}, conversations: {}, counters: { quote: 0 }, processed: [], syncMarks: {}, syncProviders: {}, photos: {}, quoteFiles: {}, contractPrices: {}, messages: [], usage: [], blocked: [], quoteShadow: [] };
 
 const digits = (s: string | undefined) => (s ?? "").replace(/\D/g, "");
 
@@ -382,6 +387,27 @@ export class JsonStore implements PriceStore {
       if (this.data.blocked.length > MAX_USAGE) this.data.blocked.splice(0, this.data.blocked.length - MAX_USAGE);
       this.persist();
     });
+  }
+
+  logQuoteShadow(entry: QuoteShadowEntry): Promise<void> {
+    return this.run(() => {
+      const { at, ...rest } = entry;
+      const id = (this.data.quoteShadow.at(-1)?.id ?? 0) + 1;
+      this.data.quoteShadow.push({ ...structuredClone(rest), phone: digits(entry.phone) || entry.phone, id, at: (at ?? new Date()).toISOString() });
+      if (this.data.quoteShadow.length > MAX_SHADOW) this.data.quoteShadow.splice(0, this.data.quoteShadow.length - MAX_SHADOW);
+      this.persist();
+    });
+  }
+
+  listQuoteShadow(opts: { since?: Date; limit?: number } = {}): Promise<QuoteShadowRow[]> {
+    const from = opts.since?.getTime() ?? 0;
+    return this.run(() =>
+      this.data.quoteShadow
+        .filter((e) => Date.parse(e.at) >= from)
+        .reverse()
+        .slice(0, opts.limit ?? 1000)
+        .map((e) => ({ ...structuredClone(e), at: new Date(e.at) })),
+    );
   }
 
   blockedSummary(since: Date): Promise<{ reason: string; phones: number; messages: number }[]> {

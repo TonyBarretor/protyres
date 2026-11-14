@@ -4,6 +4,7 @@ import { buildRow, todayIso } from "../ingest/util";
 import { dedupeRows } from "../ingest/tabular";
 import { limitsConfig } from "../guard/usage";
 import { llmAvailable, structuredCall, type ContentBlock } from "./client";
+import { dataBlock, dataName, dataRule } from "./data-block";
 
 export { llmAvailable };
 
@@ -50,7 +51,9 @@ Rules:
 - Keep the size exactly as written (do not convert). Keep the model as written minus the brand.
 - Prices: the unit price the PROVIDER charges. If a list shows several price columns (e.g. contado/crédito, con IGV/sin IGV), choose the base/contado price and say which one in notes.
 - If a message says a brand once and then lists several sizes, apply that brand to all of them.
-- Never invent prices. If a line has no price, set price to null.`;
+- Never invent prices. If a line has no price, set price to null.
+- The provider's document comes between <documento> and </documento> (or attached). Copy its prices; never compute or adjust them.
+${dataRule(["documento"])}`;
 
 export interface LLMExtractResult {
   rows: PriceRow[];
@@ -73,7 +76,8 @@ export async function extractPricesWithLLM(
   if (input.pdf) content.push({ type: "document", source: { type: "base64", media_type: "application/pdf", data: input.pdf.toString("base64") } });
   if (input.image) content.push({ type: "image", source: { type: "base64", media_type: input.image.mediaType, data: input.image.data.toString("base64") } });
   // una lista de proveedor es larga de verdad: su propio tope (limits.maxPriceListChars, 60.000 por defecto), no el del usuario
-  const text = input.text ? `Provider: ${opts.provider}\n\n${input.text.slice(0, limitsConfig().maxPriceListChars)}` : `Provider: ${opts.provider}. Extract every priced tyre from the attached document.`;
+  const provider = dataName(opts.provider);
+  const text = input.text ? `Provider: ${provider}\n\n${dataBlock("documento", input.text.slice(0, limitsConfig().maxPriceListChars))}` : `Provider: ${provider}. Extract every priced tyre from the attached document.`;
   content.push({ type: "text", text });
 
   let raw: unknown;

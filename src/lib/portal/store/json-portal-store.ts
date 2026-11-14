@@ -155,6 +155,11 @@ export class JsonPortalStore implements PortalStore {
   private credit = new Map<number, CompanyCredit & { pdfData: string | null }>();
   private creditHistoryRows: CreditHistoryEntry[] = [];
   private creditHistorySeq = 0;
+  /**
+   * Límite de intentos (corrida E, punto 5): solo en memoria, no va al archivo (el store JSON es de un proceso; en
+   * producción manda la tabla rate_limit_hits de Postgres). Clave `bucket|ventana`.
+   */
+  private rateHits = new Map<string, { windowStart: number; hits: number }>();
   /** companyId -> marcas normalizadas (se invalida al cambiar la flota). */
   private marcasCache: Map<number, Set<string>> | null = null;
   private timer: NodeJS.Timeout | null = null;
@@ -1181,5 +1186,28 @@ export class JsonPortalStore implements PortalStore {
       .filter((h) => h.companyId === companyId)
       .map((h) => structuredClone(h))
       .sort((a, b) => time(b.createdAt) - time(a.createdAt) || b.id - a.id);
+  }
+
+  // ── límite de intentos (corrida E, punto 5) ──
+
+  async hitRateLimit(bucket: string, windowStart: Date): Promise<number> {
+    const key = `${bucket}|${windowStart.getTime()}`;
+    const row = this.rateHits.get(key) ?? { windowStart: windowStart.getTime(), hits: 0 };
+    row.hits += 1;
+    this.rateHits.set(key, row);
+    // sin cron en desarrollo: si crece, se olvidan las ventanas de hace más de un día
+    if (this.rateHits.size > 10_000) await this.pruneRateLimitHits(new Date(windowStart.getTime() - 24 * 3600_000));
+    return row.hits;
+  }
+
+  async pruneRateLimitHits(before: Date): Promise<number> {
+    let n = 0;
+    for (const [k, v] of this.rateHits) {
+      if (v.windowStart < before.getTime()) {
+        this.rateHits.delete(k);
+        n++;
+      }
+    }
+    return n;
   }
 }

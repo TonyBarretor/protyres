@@ -23,6 +23,9 @@
  *     conocida...) -> report, o ambiguous si además hay señales débiles de pedido (para, cliente, necesito, una marca).
  *     Cualquier otro caso -> passthrough.
  *  8. Quien no es usuario del portal nunca recibe report/ambiguous: quote o passthrough (el cotizador decide).
+ *  7b. idle sin paso pendiente y fuera de tema reconocible (guard/off-topic.ts: sin señales de pedido ni de reporte y con
+ *     una señal de fuera de tema: poema, traducir, "ignora tus instrucciones"…) -> passthrough (regla fuera_de_tema): el
+ *     cotizador responde una línea fija sin modelo. Una nota de voz con esa transcripción recibe la misma línea.
  *  9. Un paso pendiente con `captureText: true` (los ítems de `oc`) se queda con todo texto en idle, aunque tenga forma
  *     de pedido ("8 x Fenixway 315/80R22.5 a 254" son los ítems de la OC), salvo los comandos del cotizador (`ayuda`,
  *     `proveedores`...). Con `keepText: true` (las demás preguntas de `oc`) se queda con todo texto salvo esos comandos y
@@ -59,6 +62,7 @@
 import { looksLikePriceMessage } from "../../ingest/whatsapp-text";
 import { findBrandInText, fold } from "../../tyre/brands";
 import { findTyreSizes } from "../../tyre/spec";
+import { isOffTopic } from "../../guard/off-topic";
 
 export type Intent = "portal_command" | "portal_flow" | "quote" | "report" | "ambiguous" | "passthrough" | "route_choice";
 
@@ -85,6 +89,7 @@ export type RouteRule =
   | "cotizacion"
   | "reporte"
   | "ambiguo"
+  | "fuera_de_tema"
   | "cotizador";
 
 /** Paso del cotizador (ConversationState.step) o "profile": perfil elegido esperando el pedido (prosegur…). */
@@ -348,6 +353,9 @@ export function routeIntent(input: ClassifyInput): RouteDecision {
   if (!input.isPortalUser) return r(sig.strongQuote ? "quote" : "passthrough", "cotizador");
   if (isQuoterCommand(text)) return r("passthrough", "cotizador_comando");
   if (explicitQuoteStart(text)) return r("quote", "1_palabra");
+  // fuera de tema reconocible (guard/off-topic.ts): nunca a reporte (no hay nada que extraer con el modelo); el cotizador
+  // responde con una línea fija, sin modelo
+  if (isOffTopic(text)) return r("passthrough", "fuera_de_tema");
 
   // "visité X, quedamos en mandarle la cotización": la palabra sola (sin medida, cantidad, correo ni precio) con un verbo
   // de reporte es un reporte, no un pedido
