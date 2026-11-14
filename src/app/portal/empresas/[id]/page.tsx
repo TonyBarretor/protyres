@@ -1,6 +1,6 @@
 /**
  * Ficha de empresa: indicadores, flota por marca (dato MTC + medida inferida), dueño (Asignarme), temperatura,
- * oportunidad abierta, contactos, actividad y bloque de crédito.
+ * oportunidad abierta, contactos, actividad y bloque de crédito. Corrida G: bloque "Por qué este nivel" (WhyLevel).
  */
 import Link from "next/link";
 import { notFound } from "next/navigation";
@@ -18,6 +18,7 @@ import { addContact, assignCompany, deleteContact, moveOpportunityStage, release
 import { DemoTag, Flash, InferidaTag, MTC_LEGEND, MtcTag, TempChip } from "../../_components/bits";
 import { CreditBlock } from "../../_components/CreditBlock";
 import { SurveyBlock } from "./SurveyBlock";
+import { WhyLevel } from "./WhyLevel";
 
 type Props = { params: Promise<{ id: string }>; searchParams: Promise<Record<string, string | string[] | undefined>> };
 
@@ -142,6 +143,8 @@ export default async function EmpresaPage({ params, searchParams }: Props) {
 
       <div className="pt-ficha">
         <div className="pt-stack">
+          <WhyLevel company={company} />
+
           <section className="pt-card" aria-labelledby="flota-title">
             <div className="pt-section-head">
               <h2 id="flota-title">Flota por marca</h2>

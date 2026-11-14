@@ -14,10 +14,11 @@ import { isStageId, stageLabel } from "@/lib/portal/stages";
 import { loadPortalConfig } from "@/lib/portal/config";
 import { recalcScoresSafely } from "@/lib/portal/scoring/recalc";
 import { getPortalStore } from "@/lib/portal/store";
-import { getStore } from "@/lib/store";
+import { priceSizesSource } from "@/lib/store/price-sizes";
 import type { CreditPdf, PortalStore, PortalUser } from "@/lib/portal/store/types";
 import { formId, formText, isTemperatura, parseContactForm, temperaturaLabel, type FormLike } from "@/lib/portal/ui/labels";
 import { canAssignSelf, canEditOpportunity, canReassign } from "@/lib/portal/ui/permissions";
+import { assignReturnPath } from "@/lib/portal/ui/ranking";
 import { parseLimaLocal } from "@/lib/portal/ui/time";
 
 /** Solo rutas internas del portal (evita redirecciones abiertas con un "volver" manipulado). */
@@ -51,11 +52,13 @@ async function log(store: PortalStore, user: PortalUser, companyId: number, text
 
 /**
  * Asignarme (o, para supervisor/admin, asignar a otro con `userId`): fija el dueño, crea una oportunidad en Prospecto si
- * la empresa no tiene una abierta (si la tiene, pasa al nuevo dueño) y registra la actividad.
+ * la empresa no tiene una abierta (si la tiene, pasa al nuevo dueño) y registra la actividad. Vuelve a la ficha, o a Hoy
+ * con `volver=/portal/hoy`.
  */
 export async function assignCompany(formData: FormData): Promise<void> {
   const { user, store, company } = await loadCompany(formData);
-  const back = companyPath(company.id);
+  // corrida G: desde "Tus mejores flotas" de Hoy se vuelve a Hoy (lista cerrada en assignReturnPath); si no, a la ficha
+  const back = assignReturnPath(formData, company.id);
   const targetId = formId(formData, "userId") ?? user.id;
   let target: PortalUser | null = user;
   if (targetId !== user.id) {
@@ -219,7 +222,7 @@ export async function saveCompanyCredit(formData: FormData): Promise<void> {
   if (entry && entry.estadoAnterior !== entry.estadoNuevo) {
     await log(store, user, company.id, `Crédito: ${creditEstadoLabel(entry.estadoAnterior)} → ${creditEstadoLabel(entry.estadoNuevo)}.`, null, "credito");
     // corrida G: crédito observado/rechazado frena el nivel; solo esta empresa, con los cortes del último cálculo
-    await recalcScoresSafely(store, loadPortalConfig().scoring, { companyIds: [company.id], prices: await getStore().catch(() => null), why: "cambio de crédito" });
+    await recalcScoresSafely(store, loadPortalConfig().scoring, { companyIds: [company.id], prices: priceSizesSource, why: "cambio de crédito" });
   }
   revalidatePath(back);
   done(back, "aviso", plan.termsDays !== null ? `Crédito guardado. Plazo habitual: ${plan.termsDays} días.` : "Crédito guardado.");

@@ -4,7 +4,7 @@
  * Reglas (conservadoras: ante la duda, el cotizador sigue como siempre):
  *  1. Mensaje reenviado -> passthrough (pedido o lista de un tercero: lo maneja el cotizador).
  *  2. Comando explícito del portal al inicio (`portal`, `empresa …`, `asignarme …`, `contacto …`, `hoy`, `ayuda portal`,
- *     `cita …`, `oc …`, `avance`, `prepropuesta …`, `aprende X = Y`) -> portal_command, en cualquier paso del cotizador.
+ *     `cita …`, `oc …`, `avance`, `prepropuesta …`, `aprende X = Y`, `mejores`) -> portal_command, en cualquier paso del cotizador.
  *     Un número que no está en `users` solo entra con `portal` (que le dice que no está registrado).
  *  3. `cancelar` (y sinónimos) -> passthrough: el cotizador cancela; quien llama limpia además el paso del portal.
  *  4. Cotizador a mitad de un flujo (step distinto de idle) -> passthrough (sí/ok/1b/enviar... siguen yendo al cotizador).
@@ -116,7 +116,7 @@ export interface ClassifyInput {
 
 // ── comandos explícitos del portal ──
 
-export type PortalCommandName = "portal" | "ayuda_portal" | "hoy" | "empresa" | "asignarme" | "contacto" | "cita" | "oc" | "avance" | "prepropuesta" | "aprende" | "enlazar" | "reenviada" | "estado";
+export type PortalCommandName = "portal" | "ayuda_portal" | "hoy" | "empresa" | "asignarme" | "contacto" | "cita" | "oc" | "avance" | "prepropuesta" | "aprende" | "enlazar" | "reenviada" | "estado" | "mejores";
 
 interface CommandSpec {
   name: PortalCommandName;
@@ -125,6 +125,14 @@ interface CommandSpec {
   /** Con adjunto (leyenda del documento / imagen). */
   acceptsMedia?: boolean;
 }
+
+/**
+ * `mejores` (corrida G): la frase completa y nada más, para que un reporte o un pedido que dice "mejores" no lo active
+ * ("les ofrecí nuestras mejores llantas"). Escrito o dictado: "mejores", "mis mejores flotas", "¿cuáles son mis mejores
+ * flotas?", "¿qué flotas me convienen?".
+ */
+const MEJORES_RE =
+  /^(?:(?:dame|muestrame|ver)\s+)?(?:(?:mis|las)\s+)?mejores(?:\s+(?:flotas|empresas))?(?:\s+para\s+(?:mi|trabajar|llamar))?$|^(?:cuales|que)\s+son\s+(?:mis|las)\s+mejores(?:\s+(?:flotas|empresas))?(?:\s+para\s+(?:mi|trabajar|llamar))?$|^(?:que|cuales)\s+(?:flotas|empresas)\s+me\s+convienen(?:\s+mas)?$/;
 
 const COMMANDS: CommandSpec[] = [
   { name: "portal", re: /^portal$/ },
@@ -141,6 +149,7 @@ const COMMANDS: CommandSpec[] = [
   { name: "enlazar", re: /^enlazar(?:\s+\S.*)?$/ },
   { name: "reenviada", re: /^reenviad[ao](?:\s+\S.*)?$/ },
   { name: "estado", re: /^estado\s+\S/ },
+  { name: "mejores", re: MEJORES_RE },
 ];
 
 /** La palabra del comando en el texto original ("Empresa", "asignarme", "pre-propuesta"...). */
@@ -159,6 +168,8 @@ const RAW_HEAD: Record<PortalCommandName, RegExp> = {
   enlazar: /^enlazar\b/i,
   reenviada: /^reenviad[ao]\b/i,
   estado: /^estado\b/i,
+  // la frase entera es el comando: no lleva argumentos
+  mejores: /^[\s\S]*$/,
 };
 
 /** Lo que sigue a la palabra del comando cuando la línea es un campo del cotizador: ": …" o " de: …" (a/al/de/del). */

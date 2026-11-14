@@ -99,3 +99,28 @@ describe("/portal/login", () => {
     expect(html).not.toContain("PORTAL_SESSION_SECRET");
   });
 });
+
+describe("/portal/login con destino (corrida G: el aviso de validar el ranking entra directo a su pantalla)", () => {
+  const postNext = (token: string, next: string) => new Request(BASE, { method: "POST", body: new URLSearchParams({ t: token, next }), headers: { "content-type": "application/x-www-form-urlencoded" } });
+
+  it("destino de la lista cerrada: el enlace lo lleva, la página lo reenvía y el POST redirige allí", async () => {
+    const link = await createLoginLink(store, frank, { env, next: "/portal/validar-ranking" });
+    expect(link.url).toContain("&next=%2Fportal%2Fvalidar-ranking");
+    const html = await (await loginGet(new Request(link.url), { env })).text();
+    expect(html).toContain('name="next" value="/portal/validar-ranking"');
+    const res = await loginPost(postNext(link.token, "/portal/validar-ranking"), store, { env });
+    expect(res.status).toBe(303);
+    expect(res.headers.get("location")).toBe("https://portal.example.pe/portal/validar-ranking");
+  });
+
+  it("destino fuera de la lista (otro sitio, //, .., otra pantalla): se ignora y entra a /portal", async () => {
+    for (const next of ["https://evil.example.com/", "//evil.example.com", "/portal/../api/x", "/portal/empresas", "/portal/validar-ranking?x=1", " /portal/validar-ranking"]) {
+      const link = await createLoginLink(store, frank, { env, next });
+      expect(link.url, next).not.toContain("next=");
+      const html = await (await loginGet(new Request(`${link.url}&next=${encodeURIComponent(next)}`), { env })).text();
+      expect(html, next).not.toContain('name="next"');
+      const res = await loginPost(postNext(link.token, next), store, { env });
+      expect(res.headers.get("location"), next).toBe("https://portal.example.pe/portal");
+    }
+  });
+});

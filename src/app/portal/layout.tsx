@@ -7,6 +7,7 @@ import type { ReactNode } from "react";
 import { Inter, Space_Grotesk } from "next/font/google";
 import { requireUser } from "@/lib/portal/auth/session";
 import { rolLabel } from "@/lib/portal/ui/labels";
+import { canValidateRanking } from "@/lib/portal/ui/permissions";
 import { Nav } from "./_components/Nav";
 import "./portal.css";
 
@@ -30,7 +31,7 @@ export default async function PortalLayout({ children }: { children: ReactNode }
           <a className="pt-brand" href="/portal">
             360 <span>Tyres</span>
           </a>
-          <Nav />
+          <Nav validar={canValidateRanking(user)} />
           <form className="pt-user" action="/api/portal/logout" method="post">
             <span>
               {user.nombre} · {rolLabel(user.rol)}

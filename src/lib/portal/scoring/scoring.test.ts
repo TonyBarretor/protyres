@@ -416,3 +416,15 @@ describe("validación del ranking", () => {
     expect(ids.length).toBe(30);
   });
 });
+
+describe("config/portal.json", () => {
+  it("la clave scoring trae los valores iniciales de la especificación (los mismos que los por defecto)", async () => {
+    const { loadPortalConfig } = await import("../config");
+    const path = await import("node:path");
+    const { _nota, _comment, ...fromFile } = loadPortalConfig({ file: path.resolve(__dirname, "../../../../config/portal.json") }).scoring as Record<string, unknown>;
+    expect(typeof _nota).toBe("string");
+    expect(typeof _comment).toBe("string");
+    expect(fromFile).toEqual(defaultScoringConfig());
+    expect(Object.values(defaultScoringConfig().weights).reduce((a, b) => a + b, 0)).toBe(100);
+  });
+});

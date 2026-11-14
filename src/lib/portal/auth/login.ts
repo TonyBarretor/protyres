@@ -3,7 +3,8 @@
  *
  *   GET  /portal/login            -> pantalla "Sin sesión" (cómo pedir el enlace)
  *   GET  /portal/login?t=...      -> firma inválida: "Enlace vencido o ya usado"; firma válida: formulario que se envía solo
- *   POST /portal/login (t=...)    -> consume el token (un solo uso), crea la sesión, pone la cookie y redirige (303) a /portal.
+ *   POST /portal/login (t=...)    -> consume el token (un solo uso), crea la sesión, pone la cookie y redirige (303) a /portal,
+ *                                    o al destino `next` si está en la lista cerrada LOGIN_NEXT_PATHS (corrida G).
  *                                    Si trae cabecera Origin y no es el mismo host de la petición: 403 sin tocar el token.
  *   Corrida E, punto 5: token de más de publicInputs.maxTokenChars o con caracteres raros -> "Enlace vencido" sin tocar la
  *                                    base; cuerpo del POST > maxLoginBodyBytes -> 413; más intentos que rateLimits.login
@@ -13,7 +14,7 @@
  */
 import { NextResponse } from "next/server";
 import type { PortalStore } from "../store/types";
-import { HOME_PATH, LOGIN_PATH, SESSION_COOKIE } from "./constants";
+import { HOME_PATH, LOGIN_PATH, SESSION_COOKIE, safeNextPath } from "./constants";
 import { configErrorPage, confirmLoginPage, expiredLinkPage, forbiddenOriginPage, noSessionPage, payloadTooLargePage, tooManyAttemptsPage } from "./pages";
 import { checkRateLimit, clientIp, publicInputsConfig, retryText, type RateLimitDeps } from "./rate-limit";
 import { PortalAuthConfigError, createSession, destroySession, hasValidSignature, sessionCookie, verifyLoginToken, type AuthOptions } from "./tokens";
@@ -47,14 +48,15 @@ function guard(fn: () => Promise<Response>): Promise<Response> {
 
 export function loginGet(req: Request, opts: LoginOptions = {}): Promise<Response> {
   return guard(async () => {
-    const token = new URL(req.url).searchParams.get("t");
+    const params = new URL(req.url).searchParams;
+    const token = params.get("t");
     if (!token) return noSessionPage();
     if (!plausibleToken(token)) return expiredLinkPage();
     const blocked = await limited(req, token, opts);
     if (blocked) return blocked;
     if (!hasValidSignature(token, opts.env ?? process.env)) return expiredLinkPage();
     if (opts.limits) console.log(`[portal] enlace de entrada abierto (GET, no se gasta): ${browserHint(req)}`);
-    return confirmLoginPage(token);
+    return confirmLoginPage(token, safeNextPath(params.get("next")));
   });
 }
 
@@ -85,20 +87,26 @@ export async function readBodyLimited(req: Request, max: number): Promise<Uint8A
   return out;
 }
 
-/** Token del formulario (o de ?t=) y cómo se envió (`via`: auto = el JS de la página, boton = el usuario); "too_large" si el cuerpo pasa del máximo. */
-async function tokenFromBody(req: Request): Promise<{ token: string | null; via: string } | "too_large"> {
-  const fromQuery = new URL(req.url).searchParams.get("t");
+/**
+ * Token del formulario (o de ?t=), cómo se envió (`via`: auto = el JS de la página, boton = el usuario) y el destino
+ * `next` (formulario o ?next=, sin validar); "too_large" si el cuerpo pasa del máximo.
+ */
+async function tokenFromBody(req: Request): Promise<{ token: string | null; via: string; next: string | null } | "too_large"> {
+  const query = new URL(req.url).searchParams;
+  const fromQuery = query.get("t");
+  const nextQuery = query.get("next");
   const body = await readBodyLimited(req, publicInputsConfig().maxLoginBodyBytes);
   if (body === null) return "too_large";
   try {
     const form = await new Response(body as BodyInit, { headers: { "content-type": req.headers.get("content-type") ?? "" } }).formData();
     const t = form.get("t");
     const via = String(form.get("via") ?? "").slice(0, 10) || "?";
-    if (typeof t === "string" && t) return { token: t, via };
+    const n = form.get("next");
+    if (typeof t === "string" && t) return { token: t, via, next: typeof n === "string" ? n : nextQuery };
   } catch {
     // sin cuerpo de formulario: se usa ?t=
   }
-  return { token: fromQuery, via: "?" };
+  return { token: fromQuery, via: "?", next: nextQuery };
 }
 
 /**
@@ -149,7 +157,8 @@ export function loginPost(req: Request, store: PortalStore | (() => Promise<Port
     if (opts.limits) console.log(`[portal] entrada de ${user.nombre} (envío ${sent.via === "auto" ? "automático" : sent.via === "boton" ? "con el botón" : sent.via}): ${browserHint(req)}`);
     const session = await createSession(s, user.id, opts);
     await s.flush(); // store JSON: que el consumo y la sesión queden escritos antes de responder
-    const res = NextResponse.redirect(new URL(HOME_PATH, req.url), 303);
+    // destino solo de la lista cerrada (rutas exactas del mismo sitio); otro valor entra al inicio
+    const res = NextResponse.redirect(new URL(safeNextPath(sent.next) ?? HOME_PATH, req.url), 303);
     const c = sessionCookie(session, opts);
     res.cookies.set(c.name, c.value, c.options);
     res.headers.set("cache-control", "no-store");

@@ -8,11 +8,13 @@ import { canSeeAll, requireUser } from "@/lib/portal/auth/session";
 import type { ComplianceFigure } from "@/lib/portal/dashboard/compliance";
 import { formatInt, formatMoney, formatPct, monthName } from "@/lib/portal/dashboard/format";
 import { loadDashboard, type DashboardScope } from "@/lib/portal/dashboard/load";
+import { loadRankingForDashboard } from "@/lib/portal/dashboard/ranking";
 import { loadUsageForDashboard } from "@/lib/portal/dashboard/usage";
 import { getPortalStore } from "@/lib/portal/store";
 import { loadSurveySummary } from "@/lib/portal/survey/summary";
 import { DemoTag } from "../_components/bits";
 import { HBar, Legend, ProgressBar, WeekBars } from "./charts";
+import { RankingSummary } from "./RankingSummary";
 import { SurveySummary } from "./SurveySummary";
 import { UsageSummary } from "./UsageSummary";
 import "./tablero.css";
@@ -92,7 +94,8 @@ export default async function TableroPage({ searchParams }: { searchParams: Prom
   const surveys = await loadSurveySummary(store, { ownerUserId: scope.kind === "usuario" ? scope.userId : undefined });
   if (picked && !users.some((u) => u.id === picked.id)) users.push(picked);
   // corrida E: consumo del modelo y de la voz, solo para el admin (null para los demás)
-  const usage = await loadUsageForDashboard(user, store);
+  // corrida G: validación del ranking, solo para el admin (null para los demás)
+  const [usage, ranking] = await Promise.all([loadUsageForDashboard(user, store), loadRankingForDashboard(user, store)]);
 
   const { compliance, projection, goal } = d.figures;
   const cur = d.currency;
@@ -368,6 +371,9 @@ export default async function TableroPage({ searchParams }: { searchParams: Prom
 
       {/* Corrida E: consumo del asistente (solo admin; no renderiza nada para los demás). */}
       <UsageSummary data={usage} />
+
+      {/* Corrida G: validación del ranking con los vendedores (solo admin; no renderiza nada para los demás). */}
+      <RankingSummary data={ranking} />
     </div>
   );
 }

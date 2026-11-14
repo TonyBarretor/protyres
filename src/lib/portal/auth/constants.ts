@@ -18,6 +18,17 @@ export const LOGIN_PATH = "/portal/login";
 export const HOME_PATH = "/portal";
 
 /**
+ * Pantallas a las que el enlace del bot puede llevar tras entrar (`?next=`, corrida G: el aviso de validar el ranking).
+ * Lista cerrada de rutas exactas: cualquier otro valor se ignora y se entra a HOME_PATH (sin redirecciones abiertas).
+ */
+export const LOGIN_NEXT_PATHS: readonly string[] = ["/portal/validar-ranking"];
+
+/** El destino si está en la lista cerrada; si no, null. */
+export function safeNextPath(next: string | null | undefined): string | null {
+  return typeof next === "string" && LOGIN_NEXT_PATHS.includes(next) ? next : null;
+}
+
+/**
  * Política de Referer de las páginas que llevan un token en la URL y envían un formulario (login, encuesta pública).
  * same-origin: el token no viaja a otros sitios y el POST al mismo origen conserva la cabecera Origin. NUNCA no-referrer:
  * con ella el navegador manda `Origin: null` en el POST, el login lo rechaza (403) y Next aborta las server actions.

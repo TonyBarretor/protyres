@@ -56,6 +56,19 @@ estado zbuss
 # 9. Avance del mes (C2) y pre-propuesta (C1)
 avance
 prepropuesta zbuss
-# 10. Pendientes del día y ayuda
+# 10. Corrida G: sus mejores flotas para trabajar (ranking por atractivo, estimación). Sin puntajes en la copia, el
+#     simulador los calcula antes de empezar. Lista con *asignarme <RUC>* por fila; *más* trae las 5 siguientes y la
+#     fila 1 de esa tanda se asigna. La primera vez llega además el aviso de validar el ranking (una sola vez por usuario).
+mejores
+@espera-texto Tus mejores flotas
+@espera-texto estimación
+@espera-texto Nivel
+@no-texto ranking de mejores flotas aún no está listo
+más
+@espera-texto 6–10 de
+@btn 1
+@espera-texto Empresa asignada a ti
+# 11. Pendientes del día y ayuda
 hoy
 ayuda portal
+@espera-texto *mejores*

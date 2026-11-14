@@ -92,12 +92,14 @@ const AUTO_SUBMIT = [
  * un antivirus que abra la URL no lo gaste. El formulario se envía solo (JS, ver AUTO_SUBMIT) y el botón grande queda
  * por si el navegador interno de WhatsApp no ejecuta el envío automático.
  */
-export function confirmLoginPage(token: string): Response {
+/** `next`: pantalla a la que entra (ya validada con safeNextPath; null = el inicio). */
+export function confirmLoginPage(token: string, next: string | null = null): Response {
+  const nextField = next ? `<input type="hidden" name="next" value="${esc(next)}">` : "";
   return portalPage(
     "Entrar al portal",
     `<h1>Entrar al portal</h1>
 <p>Tu enlace personal está listo. Pulsa el botón para entrar (es de un solo uso y vence en 15 minutos).</p>
-<form method="post" id="f"><input type="hidden" name="t" value="${esc(token)}"><input type="hidden" name="via" value="boton"><button class="btn" type="submit">Entrar al portal</button></form>
+<form method="post" id="f"><input type="hidden" name="t" value="${esc(token)}">${nextField}<input type="hidden" name="via" value="boton"><button class="btn" type="submit">Entrar al portal</button></form>
 <p class="small" id="st" aria-live="polite"></p>`,
     200,
     { script: AUTO_SUBMIT },

@@ -1,9 +1,13 @@
-/** `hoy` -> acciones vencidas y de hoy, próximas (7 días), sin fecha y citas (misma selección que /portal/hoy). */
+/**
+ * `hoy` -> acciones vencidas y de hoy, próximas (7 días), sin fecha y citas (misma selección que /portal/hoy). Corrida G:
+ * después, una sola vez por usuario, el aviso de validar el ranking (bot/ranking-notice.ts).
+ */
 import { stageLabel } from "../../stages";
 import type { PortalStore } from "../../store/types";
 import { appointmentWindow, selectToday } from "../../ui/today";
 import { formatLimaDay, formatLimaShort, formatLimaTime } from "../../ui/time";
 import { portalBaseUrl } from "../../auth/tokens";
+import { rankingNotice } from "../ranking-notice";
 import { registerPortalCommand } from "../registry";
 import { pausedExpired, pausedOf, pausedUntil } from "../state";
 
@@ -64,4 +68,6 @@ registerPortalCommand("hoy", async (ctx) => {
   }
   out.push("", `Detalle: ${portalBaseUrl(ctx.env)}/portal/hoy`);
   await ctx.reply(out.join("\n"));
+  const notice = await rankingNotice(ctx);
+  if (notice) await ctx.reply(notice);
 });

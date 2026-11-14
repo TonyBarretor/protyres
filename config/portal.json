@@ -80,6 +80,27 @@
       "deepgramPerMinute": 0.0043
     }
   },
+  "scoring": {
+    "_nota": "HIPÓTESIS INICIAL — pesos y parámetros sin validar. Compararlos con el criterio del vendedor (/portal/validar-ranking, npm run score:validation-report), ajustarlos aquí y correr npm run portal:recalc-score.",
+    "_comment": "Puntaje de atractivo 0-100 = suma de los pesos × factor (0-1). potencial: log(1+llantas)/log(1+llantasRef). encaje: unidades con medida probable en el catálogo (conStock si hay stock propio >= minStock; enCatalogo si está en la lista o el stock propio; soloProveedor si solo en listas de proveedores). espacio: 1 si no es cliente; si lo es, 1 - vendidos 12 meses / (llantas en piso × consumoAnualPorLlanta). familiaridad: unidades de las marcas preferidas. cercania: tabla por departamento (otros = los no listados). antiguedad: 1 hasta 'mejor' años, 0 desde 'peor'. niveles: parte superior que es A y la siguiente que es B. frenos: crédito en creditoTopeC deja C como máximo; oportunidad perdida en perdidaDias baja un nivel. mejores: días sin actividad para que una empresa propia vuelva a la lista; tamaño en Hoy y por tanda en el bot.",
+    "weights": { "potencial": 30, "encaje": 25, "espacio": 20, "familiaridad": 10, "cercania": 10, "antiguedad": 5 },
+    "potencial": { "llantasRef": 3000 },
+    "encaje": { "conStock": 1, "enCatalogo": 0.7, "soloProveedor": 0.4, "minStock": 4 },
+    "espacio": { "consumoAnualPorLlanta": 0.5 },
+    "familiaridad": {
+      "marcas": ["SCANIA", "HINO", "SHACMAN", "SHAANQI", "SINOTRUK", "HOWO", "SITRAK", "CNHTC"],
+      "nombres": { "SHAANQI": "Shacman", "CNHTC": "Sinotruk", "HOWO": "Howo", "SITRAK": "Sitrak" }
+    },
+    "cercania": {
+      "departamentos": { "LIMA": 1, "CALLAO": 1, "ICA": 0.7, "JUNIN": 0.6, "ANCASH": 0.6, "LA LIBERTAD": 0.5, "AREQUIPA": 0.5, "LAMBAYEQUE": 0.4, "PIURA": 0.4 },
+      "otros": 0.25
+    },
+    "antiguedad": { "mejor": 5, "peor": 20 },
+    "niveles": { "a": 0.1, "b": 0.3 },
+    "frenos": { "creditoTopeC": ["observado", "rechazado"], "perdidaDias": 90 },
+    "mejores": { "sinActividadDias": 30, "hoy": 20, "bot": 5 },
+    "validacion": { "total": 20, "porNivel": { "A": 7, "B": 7, "C": 6 } }
+  },
   "publicInputs": {
     "_comment": "Corrida E, punto 5 — entradas públicas. Límite de intentos por ventana fija de windowMinutes, contado por IP (sha256 con PORTAL_SESSION_SECRET, nunca en claro) y por token del enlace, en la tabla rate_limit_hits (vale entre instancias de Vercel). Al pasarse: 429 con una página breve. login: cada entrada real son 2 intentos (abrir el enlace + el envío automático), así que 20 por IP en 15 min dejan ~10 entradas desde una misma oficina; 6 por token cubren la vista previa de WhatsApp y un reintento (el token es de un solo uso). surveyView/surveySubmit: un cliente abre, envía y vuelve a ver (~3-4 visitas), 20 vistas y 5 envíos por enlace en 1 h sobran (los errores de validación reenvían); 60 vistas y 30 envíos por IP permiten varios contactos de una empresa tras la misma red. cron: Vercel lo llama una vez al día; 10 por IP por hora frenan a quien adivine CRON_SECRET. maxTokenChars: los tokens reales miden 43 (encuesta) y 87 (login).",
     "rateLimits": {

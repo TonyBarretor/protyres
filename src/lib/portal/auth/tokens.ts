@@ -10,7 +10,7 @@
  */
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import type { PortalStore, PortalUser } from "../store/types";
-import { LOGIN_PATH, LOGIN_TOKEN_TTL_MS, SESSION_COOKIE, SESSION_TTL_MS } from "./constants";
+import { LOGIN_PATH, LOGIN_TOKEN_TTL_MS, SESSION_COOKIE, SESSION_TTL_MS, safeNextPath } from "./constants";
 
 type Env = Record<string, string | undefined>;
 
@@ -64,6 +64,8 @@ export interface AuthOptions {
 
 export interface LoginLinkOptions extends AuthOptions {
   ttlMs?: number;
+  /** Pantalla a la que entra tras el login (solo las de LOGIN_NEXT_PATHS; otra se ignora). */
+  next?: string;
 }
 
 export interface LoginLink {
@@ -88,7 +90,8 @@ export async function createLoginLink(store: PortalStore, user: Pick<PortalUser,
   const token = `${raw}.${sign(raw, secret)}`;
   const expiresAt = new Date(now.getTime() + (opts.ttlMs ?? LOGIN_TOKEN_TTL_MS));
   await store.saveLoginToken({ tokenHash: sha256(raw), userId: user.id, expiresAt });
-  return { url: `${portalBaseUrl(env)}${LOGIN_PATH}?t=${encodeURIComponent(token)}`, token, expiresAt };
+  const next = safeNextPath(opts.next);
+  return { url: `${portalBaseUrl(env)}${LOGIN_PATH}?t=${encodeURIComponent(token)}${next ? `&next=${encodeURIComponent(next)}` : ""}`, token, expiresAt };
 }
 
 /** Solo la firma (no toca el store ni consume): la ruta GET la usa para no mostrar el botón con enlaces falsos. */

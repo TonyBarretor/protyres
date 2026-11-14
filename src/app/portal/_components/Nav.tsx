@@ -1,5 +1,5 @@
 "use client";
-/** Navegación del portal; marca la sección actual. */
+/** Navegación del portal; marca la sección actual. `validar`: muestra "Validar" (ranking, corrida G) a quien puede. */
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
@@ -11,11 +11,14 @@ const LINKS = [
   { href: "/portal/ventas", label: "Subir ventas", match: (p: string) => p.startsWith("/portal/ventas") },
 ];
 
-export function Nav() {
+const VALIDAR = { href: "/portal/validar-ranking", label: "Validar", match: (p: string) => p.startsWith("/portal/validar-ranking") };
+
+export function Nav({ validar = false }: { validar?: boolean }) {
   const pathname = usePathname() ?? "";
+  const links = validar ? [...LINKS, VALIDAR] : LINKS;
   return (
     <nav className="pt-nav" aria-label="Secciones del portal">
-      {LINKS.map((l) => (
+      {links.map((l) => (
         <Link key={l.href} href={l.href} aria-current={l.match(pathname) ? "page" : undefined}>
           {l.label}
         </Link>

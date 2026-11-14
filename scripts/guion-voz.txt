@@ -174,3 +174,13 @@ cancelar
 @espera-texto que puede ser
 @btn 7.50R16 || 7.5R16
 cancelar
+
+# Corrida G: la pregunta del ranking por voz corre el comando `mejores` (no es un reporte ni una cotización); *más*
+# trae las siguientes 5
+@voz ¿Cuáles son mis mejores flotas?
+@espera-texto Tus mejores flotas
+@no-texto Reporte de
+@espera modelo=0
+más
+@espera-texto 6–10 de
+cancelar

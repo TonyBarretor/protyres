@@ -2,15 +2,19 @@
  * Prospectos: empresas del padrón MTC con búsqueda, filtros (por searchParams, en el servidor) y paginación.
  * Tabla en escritorio; tarjetas en el celular. Cada empresa muestra unidades, llantas en piso (MTC), medidas probables con
  * sus unidades (inferidas), participación y si es cliente, sin entrar a la ficha (corrida F, punto 2).
+ * Corrida G: por defecto ordena por atractivo; filtro por nivel y, en cada empresa, su nivel (estimación) con la
+ * explicación de una línea.
  */
 import Link from "next/link";
 import { requireUser } from "@/lib/portal/auth/session";
+import { ESTIMATE_NOTE, explainLine } from "@/lib/portal/scoring/explain";
 import { getPortalStore } from "@/lib/portal/store";
 import type { CompanyRow, MedidaCount, PortalUser } from "@/lib/portal/store/types";
 import { PortalTimeoutError } from "@/lib/portal/ui/deadline";
 import {
   BRAND_SHORTCUTS,
   FLEET_RANGES,
+  NIVELES,
   ORDERS,
   PAGE_SIZE,
   SECTORS,
@@ -22,7 +26,7 @@ import {
 } from "@/lib/portal/ui/filters";
 import { loadProspectos, type ProspectosData } from "@/lib/portal/ui/prospectos";
 import { fmtInt, sectorLabel } from "@/lib/portal/ui/labels";
-import { DemoTag, InferidaTag, MTC_LEGEND, MtcTag, TempChip } from "./_components/bits";
+import { DemoTag, ExplainLine, InferidaTag, MTC_LEGEND, MtcTag, NivelBadge, TempChip } from "./_components/bits";
 
 export const metadata = { title: "Prospectos · Portal 360 Tyres" };
 
@@ -172,6 +176,16 @@ export default async function ProspectosPage({ searchParams }: { searchParams: P
           {filters.marcas.length > 0 && <Link href={`/portal${filtersQuery(filters, { marcas: [] })}`}>Quitar marcas</Link>}
         </div>
 
+        <fieldset className="pt-nivel-pick">
+          <legend className="pt-small pt-muted">Nivel (estimación):</legend>
+          {NIVELES.map((n) => (
+            <label key={n}>
+              <input type="checkbox" name="nivel" value={n} defaultChecked={filters.nivel.includes(n)} />
+              {n}
+            </label>
+          ))}
+        </fieldset>
+
         <details className="pt-marcas" open={filters.marcas.length > 0 && !BRAND_SHORTCUTS.some((s) => isShortcutActive(filters, s.marcas))}>
           <summary>
             Elegir marcas{filters.marcas.length ? ` (${filters.marcas.length} elegida${filters.marcas.length === 1 ? "" : "s"}: ${filters.marcas.join(", ")})` : ""}
@@ -203,7 +217,7 @@ export default async function ProspectosPage({ searchParams }: { searchParams: P
       </form>
 
       <p className="pt-legend">
-        {MTC_LEGEND} Participación = neumáticos vendidos en los últimos 12 meses (al lado, llantas en piso).
+        <strong>Nivel A, B, C:</strong> {ESTIMATE_NOTE} {MTC_LEGEND} Participación = neumáticos vendidos en los últimos 12 meses (al lado, llantas en piso).
       </p>
 
       {result.rows.length === 0 ? (
@@ -237,6 +251,10 @@ export default async function ProspectosPage({ searchParams }: { searchParams: P
                       </Link>{" "}
                       <ClienteTag row={r} />
                       <div className="pt-muted pt-small pt-mono">RUC {r.ruc}</div>
+                      <div className="pt-nivel-line">
+                        <NivelBadge nivel={r.nivel} />
+                      </div>
+                      <ExplainLine text={explainLine(r.scoreDetalle)} />
                     </td>
                     <td>
                       {sectorLabel(r.sector)}
@@ -271,6 +289,10 @@ export default async function ProspectosPage({ searchParams }: { searchParams: P
                 </div>
                 <div className="pt-muted pt-small pt-mono">
                   RUC {r.ruc} · {sectorLabel(r.sector)} · {r.departamento ?? "—"} <ClienteTag row={r} />
+                </div>
+                <div>
+                  <NivelBadge nivel={r.nivel} />
+                  <ExplainLine text={explainLine(r.scoreDetalle)} />
                 </div>
                 <dl className="pt-kv">
                   <div>

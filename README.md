@@ -373,6 +373,53 @@ Resultados en la ficha (sección "Encuestas", con NPS = % promotores 9–10 − 
   Si no, deja una tarea al vendedor dueño (actividad y próxima acción de su oportunidad si no tenía una) y le manda el
   enlace por WhatsApp para que lo reenvíe.
 
+### Ranking de flotas por atractivo (corrida G)
+
+Puntaje **estimado** de 0 a 100 por empresa para decidir a quién llamar primero; el nivel orienta, no decide. Vive en
+Prospectos (orden por defecto "Atractivo", filtro por nivel, distintivo y una línea de explicación), en la ficha ("Por
+qué este nivel"), en Hoy ("Tus 20 mejores flotas para trabajar") y en el bot (`mejores`, por voz "¿cuáles son mis
+mejores flotas?", y `más`). Código: `src/lib/portal/scoring/`.
+
+**Los pesos son una hipótesis inicial, no un modelo validado.** Están en `config/portal.json`, clave `scoring` (si no
+está, rigen los valores por defecto de `src/lib/portal/scoring/config.ts`):
+
+| factor | peso | cómo se calcula |
+|---|---|---|
+| Potencial | 30 | llantas en piso en escala logarítmica: `log(1+llantas)/log(1+potencial.llantasRef)` (3.000 = 1) |
+| Encaje | 25 | unidades cuya medida probable está en el catálogo / unidades: stock propio de al menos `encaje.minStock` (4) = 1, lista o stock propio sin stock suficiente = 0,7, solo proveedores = 0,4, fuera = 0 |
+| Espacio por ganar | 20 | 1 si no es cliente; si lo es, 1 − vendidos en 12 meses / consumo anual estimado (llantas en piso × `espacio.consumoAnualPorLlanta`, 0,5: no había un supuesto previo en el repo) |
+| Familiaridad | 10 | unidades de marcas preferidas / unidades (Scania, Hino, Shacman/Shaanqi, Sinotruk/Howo/Sitrak/CNHTC) |
+| Cercanía | 10 | Lima y Callao 1; otros departamentos según `cercania.departamentos` (los no listados, `cercania.otros` = 0,25) |
+| Antigüedad | 5 | lineal entre `antiguedad.mejor` (5 años = 1) y `antiguedad.peor` (20 años = 0): una flota más nueva vale más; para premiar la vieja, invertir los números |
+
+- Si falta un dato (sin llantas, sin medida inferida, sin departamento, sin año), ese factor vale 0 y la explicación lo dice.
+- Cliente = tiene ventas reales o está marcada como cliente (p. ej. al registrar una OC). Las ventas demo no cuentan:
+  con solo ventas demo se trata como prospecto.
+- Niveles por percentil del puntaje: A el 10% superior, B el 30% siguiente, C el resto (`niveles.a`, `niveles.b`).
+- Frenos (no restan puntos, limitan el nivel): crédito `observado` o `rechazado` → C como máximo; oportunidad perdida
+  en los últimos `frenos.perdidaDias` (90) días → baja un nivel.
+- Se guarda por empresa `score`, `nivel` y `score_detalle` (aporte de cada factor y frenos); la explicación se arma al
+  mostrarla. Tablas nuevas: `score_runs` (cortes y duración de cada cálculo), `ranking_validations`, `user_notices`.
+
+| comando | qué hace |
+|---|---|
+| `npm run portal:recalc-score` | Recalcula todo, muestra la distribución por nivel, las 10 primeras y cuánto tardó (`-- --top 20`, `-- --json`). Idempotente. |
+| `npm run score:validation-report` | Coincidencia de nivel entre el vendedor y el sistema, dónde difiere más y las notas (`-- --dias 30`). |
+
+Se recalcula solo al terminar `portal:import-mtc`, al confirmar una subida de ventas (todo) y cuando cambia el estado de
+crédito de una empresa (esa sola, con los cortes del último cálculo completo). Tras cambiar los pesos, correr
+`portal:recalc-score`.
+
+**Validación con el vendedor** (`/portal/validar-ranking`, vendedor, supervisor y admin): 20 empresas (mezcla de niveles,
+primero las que ya tiene asignadas o a las que les vendió) en orden aleatorio y sin puntaje ni nivel; el vendedor marca
+A, B, C o "No la conozco" con una nota opcional. `score:validation-report` y el bloque del Tablero (admin) muestran la
+coincidencia; con eso se ajustan los pesos. El bot avisa una sola vez a cada usuario que puede hacerla.
+
+**Decisión pendiente del supervisor — reparto por zona.** "Tus mejores flotas" no reparte por zona: muestra a cada
+vendedor las de mayor puntaje sin dueño y las suyas sin actividad en 30 días; las de otro vendedor nunca aparecen en la
+lista de nadie más, y el primero que se asigna una empresa se la queda. Con más de un vendedor activo, el supervisor debe
+decidir si se reparte por departamento, por sector o por cartera antes de que compitan por las mismas empresas A.
+
 ## Límites conocidos del piloto
 
 - Sin LLM: las fotos de llantas y las capturas de pantalla no se leen (se usa solo el texto del mensaje), y los

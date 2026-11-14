@@ -1,5 +1,6 @@
 /** Piezas pequeñas de la UI del portal (componentes de servidor). */
-import type { Temperatura } from "@/lib/portal/store/types";
+import { ESTIMATE_NOTE, NIVEL_LABEL } from "@/lib/portal/scoring/explain";
+import type { Nivel, Temperatura } from "@/lib/portal/store/types";
 import { temperaturaLabel } from "@/lib/portal/ui/labels";
 
 export function TempChip({ t }: { t: Temperatura | null | undefined }) {
@@ -28,6 +29,27 @@ export function InferidaTag() {
       inferida
     </span>
   );
+}
+
+/** Nivel del puntaje de atractivo (corrida G), siempre como estimación; "sin nivel" si aún no se calculó. */
+export function NivelBadge({ nivel }: { nivel: Nivel | null | undefined }) {
+  if (!nivel) {
+    return (
+      <span className="pt-nivel pt-nivel-none" title="El nivel de esta empresa aún no se ha calculado.">
+        sin nivel
+      </span>
+    );
+  }
+  return (
+    <span className={`pt-nivel pt-nivel-${nivel.toLowerCase()}`} title={ESTIMATE_NOTE}>
+      {NIVEL_LABEL[nivel]} <span className="pt-nivel-est">· estimación</span>
+    </span>
+  );
+}
+
+/** La explicación de una línea del nivel (explainLine); nada si no hay. */
+export function ExplainLine({ text }: { text: string }) {
+  return text ? <div className="pt-explain">{text}</div> : null;
 }
 
 /** Mensaje de resultado que llega por ?aviso=... / ?error=... tras una server action. */

@@ -9,6 +9,7 @@ export const PORTAL_HELP = [
   "• *asignarme ZBUSS* (o el RUC; también por voz) — la empresa pasa a ti, con su ficha",
   "• *contacto ZBUSS: Juan Pérez, jefe de flota, 987654321* — guarda un contacto",
   "• *hoy* — acciones y citas pendientes",
+  "• *mejores* — tus 5 mejores flotas para trabajar (estimación), para asignártelas; *más* trae otras 5",
   "• *cita ZBUSS martes 10am en su base con danyer* — agenda una cita",
   "• *enlazar* — une la cotización recién armada a la empresa del portal",
   "• *reenviada 032* — ya le reenvié la cotización 032 al cliente",

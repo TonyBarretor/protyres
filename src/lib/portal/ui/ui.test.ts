@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
 import type { Appointment, FleetGroup, Opportunity, PortalUser } from "../store/types";
-import { filtersQuery, isShortcutActive, pageCount, parseProspectFilters, toCompanySearch, BRAND_SHORTCUTS } from "./filters";
+import { filtersQuery, hasActiveFilters, isShortcutActive, ORDERS, pageCount, parseProspectFilters, toCompanySearch, BRAND_SHORTCUTS } from "./filters";
 import { groupByBrand, yearRange } from "./fleet";
 import { parseContactForm } from "./labels";
-import { canAssignSelf, canEditOpportunity, canReassign, canUploadSales } from "./permissions";
+import { canAssignSelf, canEditOpportunity, canReassign, canSeeRankingReport, canUploadSales, canValidateRanking } from "./permissions";
 import { groupPipeline, pipelineTotals } from "./pipeline";
 import { limaDateKey, limaStartOfDay, parseLimaLocal, toLimaLocalInput } from "./time";
 import { selectToday } from "./today";
@@ -36,10 +36,11 @@ function appt(p: Partial<Appointment> & { id: number; startsAt: Date }): Appoint
 describe("filtros de prospectos", () => {
   it("lee searchParams, ignora valores inválidos y arma CompanySearch", () => {
     const f = parseProspectFilters({ q: " zbuss ", dep: "LIMA", sector: "pasajeros", flota: "50-99", marca: ["scania", "Hino, howo", "SCANIA"], tipo: "prospecto", orden: "llantas", p: "3" });
-    expect(f).toEqual({ q: "zbuss", departamento: "LIMA", sector: "pasajeros", flota: "50-99", marcas: ["SCANIA", "HINO", "HOWO"], tipo: "prospecto", orden: "llantas", page: 3 });
+    expect(f).toEqual({ q: "zbuss", departamento: "LIMA", sector: "pasajeros", flota: "50-99", marcas: ["SCANIA", "HINO", "HOWO"], nivel: [], tipo: "prospecto", orden: "llantas", page: 3 });
     expect(toCompanySearch(f)).toEqual({ q: "zbuss", departamento: ["LIMA"], sector: ["pasajeros"], minUnits: 50, maxUnits: 99, marcas: ["SCANIA", "HINO", "HOWO"], esCliente: false, orderBy: "llantas", page: 3, pageSize: 50 });
     const bad = parseProspectFilters({ sector: "aereo", flota: "1-2", tipo: "x", orden: "nombre", p: "-1" });
-    expect(bad).toMatchObject({ sector: null, flota: null, tipo: null, orden: "unidades", page: 1, marcas: [] });
+    // corrida G: el orden por defecto pasa de "unidades" a "atractivo" (lo pide la especificación, punto 4)
+    expect(bad).toMatchObject({ sector: null, flota: null, tipo: null, orden: "atractivo", page: 1, marcas: [] });
     expect(toCompanySearch(parseProspectFilters({ flota: "300+" }))).toMatchObject({ minUnits: 300 });
     expect(toCompanySearch(parseProspectFilters({ flota: "300+" })).maxUnits).toBeUndefined();
   });
@@ -59,6 +60,31 @@ describe("filtros de prospectos", () => {
     expect(filtersQuery(parseProspectFilters({}))).toBe("");
     expect(pageCount(0)).toBe(1);
     expect(pageCount(101)).toBe(3);
+  });
+});
+
+describe("Prospectos por atractivo (corrida G)", () => {
+  it("orden por defecto: atractivo; los demás órdenes se mantienen", () => {
+    expect(ORDERS.map((o) => o.id)).toEqual(["atractivo", "unidades", "llantas", "participacion"]);
+    expect(ORDERS[0].label).toBe("Atractivo");
+    expect(parseProspectFilters({}).orden).toBe("atractivo");
+    expect(toCompanySearch(parseProspectFilters({})).orderBy).toBe("atractivo");
+    expect(filtersQuery(parseProspectFilters({}))).toBe("");
+    expect(filtersQuery(parseProspectFilters({ orden: "unidades" }))).toBe("?orden=unidades");
+    expect(parseProspectFilters({ orden: "unidades" }).orden).toBe("unidades");
+  });
+
+  it("filtro por nivel: repetible o con comas, sin repetir, ignora lo inválido; los enlaces lo conservan", () => {
+    const f = parseProspectFilters({ nivel: ["c", "A,b", "A", "Z", ""] });
+    expect(f.nivel).toEqual(["A", "B", "C"]);
+    expect(toCompanySearch(f).nivel).toEqual(["A", "B", "C"]);
+    expect(toCompanySearch(parseProspectFilters({})).nivel).toBeUndefined();
+    expect(parseProspectFilters({ nivel: "x" }).nivel).toEqual([]);
+    const b = parseProspectFilters({ q: "bus", nivel: "B" });
+    expect(filtersQuery(b, { page: 2 })).toBe("?q=bus&nivel=B&p=2");
+    expect(filtersQuery(f)).toBe("?nivel=A&nivel=B&nivel=C");
+    expect(hasActiveFilters(parseProspectFilters({ nivel: "A" }))).toBe(true);
+    expect(hasActiveFilters(parseProspectFilters({ orden: "llantas" }))).toBe(false);
   });
 });
 
@@ -174,6 +200,19 @@ describe("permisos de acciones", () => {
     expect(canEditOpportunity(user(3, "supervisor"), { ownerUserId: 2 })).toBe(true);
     expect(canUploadSales(user(1, "vendedor"))).toBe(false);
     expect(canUploadSales(user(3, "supervisor"))).toBe(true);
+  });
+
+  it("validar el ranking: vendedor, supervisor y admin activos; técnico no. El informe en el tablero: solo admin", () => {
+    expect(canValidateRanking(user(1, "vendedor"))).toBe(true);
+    expect(canValidateRanking(user(3, "supervisor"))).toBe(true);
+    expect(canValidateRanking(user(5, "admin"))).toBe(true);
+    expect(canValidateRanking(user(4, "tecnico"))).toBe(false);
+    expect(canValidateRanking(user(1, "vendedor", false))).toBe(false);
+    expect(canValidateRanking(null)).toBe(false);
+    expect(canSeeRankingReport(user(5, "admin"))).toBe(true);
+    expect(canSeeRankingReport(user(5, "admin", false))).toBe(false);
+    expect(canSeeRankingReport(user(3, "supervisor"))).toBe(false);
+    expect(canSeeRankingReport(user(1, "vendedor"))).toBe(false);
   });
 });
 

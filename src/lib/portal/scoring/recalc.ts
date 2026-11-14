@@ -7,7 +7,12 @@
  * por percentil, aplica frenos, guarda por lotes y registra el cálculo en score_runs (cortes, conteo, duración).
  * Puntual: usa los cortes del último cálculo completo (si no hay ninguno, hace el completo).
  */
-import type { PriceStore } from "../../store/types";
+import type { PriceRow } from "../../ingest/types";
+
+/** Lo que el puntaje necesita de las listas de precios (lo cumple PriceStore y src/lib/store/price-sizes.ts). */
+export interface PriceSizesSource {
+  allRows(): Promise<Pick<PriceRow, "size" | "kind" | "stock" | "isTyre">[]>;
+}
 import { defaultSince, normMarca } from "../store/shared";
 import type { Nivel, PortalStore, ScoreRun, ScoreUpdate } from "../store/types";
 import type { ScoringConfig } from "./config";
@@ -31,11 +36,11 @@ export interface RecalcOptions {
   companyIds?: number[];
   /** Catálogo de medidas; si no se pasa, se lee de `prices` (PriceStore) o queda vacío. */
   catalog?: CatalogSizes;
-  prices?: Pick<PriceStore, "allRows"> | null;
+  prices?: PriceSizesSource | null;
   log?: (msg: string) => void;
 }
 
-export async function loadCatalogSizes(prices: Pick<PriceStore, "allRows"> | null | undefined, cfg: ScoringConfig, log?: (m: string) => void): Promise<CatalogSizes> {
+export async function loadCatalogSizes(prices: PriceSizesSource | null | undefined, cfg: ScoringConfig, log?: (m: string) => void): Promise<CatalogSizes> {
   if (!prices) return EMPTY_CATALOG;
   try {
     return catalogSizesFromRows(await prices.allRows(), cfg.encaje.minStock);

@@ -123,7 +123,7 @@ function toCompany(r: Row): Company {
   };
 }
 
-const SCORE_BATCH = 500;
+const SCORE_BATCH = 1000;
 
 function toScoreRun(r: Row): ScoreRun {
   const conteo = jsonOf<Record<Nivel, number>>(r.conteo) ?? { A: 0, B: 0, C: 0 };

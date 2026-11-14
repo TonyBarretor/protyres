@@ -2,9 +2,10 @@
  * Filtros de "Prospectos" (/portal): searchParams de la URL <-> CompanySearch del store, y enlaces que conservan los
  * filtros (paginación, accesos rápidos de marca). Puro: sin Next ni store.
  *
- * Parámetros: q, dep, sector, flota (rango), marca (repetible), tipo (cliente|prospecto), orden, p (página).
+ * Parámetros: q, dep, sector, flota (rango), marca (repetible), nivel (A|B|C, repetible o con comas), tipo
+ * (cliente|prospecto), orden (por defecto "atractivo", corrida G), p (página).
  */
-import type { CompanyOrder, CompanySearch, Sector } from "../store/types";
+import type { CompanyOrder, CompanySearch, Nivel, Sector } from "../store/types";
 
 export type SearchParamsLike = Record<string, string | string[] | undefined>;
 
@@ -27,10 +28,16 @@ export const SECTORS: { id: Sector; label: string }[] = [
 ];
 
 export const ORDERS: { id: CompanyOrder; label: string }[] = [
+  { id: "atractivo", label: "Atractivo" },
   { id: "unidades", label: "Unidades" },
   { id: "llantas", label: "Llantas en piso" },
   { id: "participacion", label: "Participación" },
 ];
+
+export const DEFAULT_ORDER: CompanyOrder = "atractivo";
+
+/** Niveles del puntaje de atractivo (corrida G), en su orden. */
+export const NIVELES: Nivel[] = ["A", "B", "C"];
 
 /**
  * Accesos rápidos de marca: cada uno selecciona exactamente esas marcas. El padrón registra algunas con el nombre del
@@ -50,6 +57,8 @@ export interface ProspectFilters {
   flota: FleetRangeId | null;
   /** Mayúsculas, sin repetir, en el orden recibido. */
   marcas: string[];
+  /** Niveles elegidos, en orden A, B, C. */
+  nivel: Nivel[];
   tipo: "cliente" | "prospecto" | null;
   orden: CompanyOrder;
   page: number;
@@ -76,6 +85,12 @@ export function parseMarcas(v: string | string[] | undefined): string[] {
   return out;
 }
 
+/** Niveles de la URL: "A", ["a", "B,C"]...; sin repetir, en orden A, B, C; ignora lo inválido. */
+export function parseNiveles(v: string | string[] | undefined): Nivel[] {
+  const got = new Set(all(v).flatMap((raw) => raw.split(",").map((x) => x.trim().toUpperCase())));
+  return NIVELES.filter((n) => got.has(n));
+}
+
 export function parseProspectFilters(sp: SearchParamsLike): ProspectFilters {
   const sector = one(sp.sector);
   const flota = one(sp.flota);
@@ -88,8 +103,9 @@ export function parseProspectFilters(sp: SearchParamsLike): ProspectFilters {
     sector: SECTORS.some((s) => s.id === sector) ? (sector as Sector) : null,
     flota: FLEET_RANGES.some((r) => r.id === flota) ? (flota as FleetRangeId) : null,
     marcas: parseMarcas(sp.marca),
+    nivel: parseNiveles(sp.nivel),
     tipo: tipo === "cliente" || tipo === "prospecto" ? tipo : null,
-    orden: ORDERS.some((o) => o.id === orden) ? (orden as CompanyOrder) : "unidades",
+    orden: ORDERS.some((o) => o.id === orden) ? (orden as CompanyOrder) : DEFAULT_ORDER,
     page: Number.isFinite(page) && page >= 1 ? page : 1,
   };
 }
@@ -105,6 +121,7 @@ export function toCompanySearch(f: ProspectFilters, now?: Date): CompanySearch {
     if (range.max !== undefined) s.maxUnits = range.max;
   }
   if (f.marcas.length) s.marcas = f.marcas;
+  if (f.nivel.length) s.nivel = f.nivel;
   if (f.tipo) s.esCliente = f.tipo === "cliente";
   if (now) s.now = now;
   return s;
@@ -119,8 +136,9 @@ export function filtersQuery(f: ProspectFilters, patch: Partial<ProspectFilters>
   if (g.sector) p.set("sector", g.sector);
   if (g.flota) p.set("flota", g.flota);
   for (const m of g.marcas) p.append("marca", m);
+  for (const n of g.nivel) p.append("nivel", n);
   if (g.tipo) p.set("tipo", g.tipo);
-  if (g.orden !== "unidades") p.set("orden", g.orden);
+  if (g.orden !== DEFAULT_ORDER) p.set("orden", g.orden);
   if (g.page > 1) p.set("p", String(g.page));
   const s = p.toString();
   return s ? `?${s}` : "";
@@ -132,7 +150,7 @@ export function isShortcutActive(f: ProspectFilters, marcas: string[]): boolean 
 }
 
 export function hasActiveFilters(f: ProspectFilters): boolean {
-  return !!(f.q || f.departamento || f.sector || f.flota || f.marcas.length || f.tipo);
+  return !!(f.q || f.departamento || f.sector || f.flota || f.marcas.length || f.nivel.length || f.tipo);
 }
 
 export function pageCount(total: number, pageSize = PAGE_SIZE): number {

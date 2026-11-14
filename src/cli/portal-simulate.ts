@@ -55,6 +55,8 @@
  * Datos: por defecto store JSON del portal (PORTAL_STORE=json) y del cotizador, sin DATABASE_URL (salvo --db). Trabaja
  * sobre COPIAS en out/simulacion/ (data/ queda intacto); --persist escribe en data/portal-store.json y data/store.json.
  * Sin PORTAL_SESSION_SECRET usa uno de simulación. Sale con código 1 si algún mensaje termina en "Ocurrió un error" (guion).
+ * Corrida G: si la copia no tiene puntajes de atractivo (`mejores` diría que el ranking no está listo), se calculan en la
+ * copia con el catálogo de la copia del cotizador (recalcScores), como `npm run portal:recalc-score` en la base.
  * Contadores (corrida E): tras cada mensaje, cuántas llamadas al modelo, a Deepgram (también las de @voz, que en
  * producción irían a Deepgram) y descargas de medios provocó, y si alguna se bloqueó por un tope; los totales al final.
  */
@@ -345,6 +347,15 @@ async function main() {
 
   const portal = await getPortalStore();
   const store = await getStore();
+  // corrida G: puntajes en la copia si no los tiene (solo sobre la copia: nunca en data/ ni en la base)
+  const onCopy = !args.db && !args.persist && process.env.PORTAL_STORE_PATH === path.join(outDir, "portal-store.sim.json");
+  if (onCopy && !(await portal.latestScoreRun())) {
+    const { recalcScores } = await import("../lib/portal/scoring/recalc");
+    const { loadPortalConfig } = await import("../lib/portal/config");
+    const r = await recalcScores(portal, loadPortalConfig().scoring, { prices: store, log: (m) => console.error(`[puntaje] ${m}`) });
+    await portal.flush();
+    notes.push(`Puntajes calculados en la copia: ${r.empresas} empresas (A ${r.conteo.A} · B ${r.conteo.B} · C ${r.conteo.C}) en ${r.durationMs} ms.`);
+  }
   let me = await resolvePhone(args.as, () => portal.listUsers());
   currentPhone = me.phone;
   const client = new ConsoleWhatsAppClient();

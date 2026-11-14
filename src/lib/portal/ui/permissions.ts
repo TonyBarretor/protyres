@@ -1,7 +1,7 @@
 /**
  * Reglas de las acciones del portal que no cubre auth/permissions.ts. Las server actions las vuelven a comprobar.
  */
-import { canEditCompany, canSeeAll } from "../auth/permissions";
+import { canEditCompany, canSeeAll, canSeeUsage } from "../auth/permissions";
 import type { Company, Opportunity, PortalUser } from "../store/types";
 
 type UserLike = Pick<PortalUser, "id" | "rol" | "activo">;
@@ -35,4 +35,17 @@ export function canEditOpportunity(user: UserLike | null | undefined, opp: Pick<
  */
 export function canUploadSales(user: UserLike | null | undefined): boolean {
   return canSeeAll(user);
+}
+
+/**
+ * Validar el ranking de atractivo (/portal/validar-ranking, corrida G): vendedor, supervisor y admin. El técnico no
+ * trabaja la cartera.
+ */
+export function canValidateRanking(user: UserLike | null | undefined): boolean {
+  return !!user && user.activo && (user.rol === "vendedor" || user.rol === "supervisor" || user.rol === "admin");
+}
+
+/** Bloque "Validación del ranking" del Tablero (coincidencia, diferencias y notas): solo el administrador. */
+export function canSeeRankingReport(user: UserLike | null | undefined): boolean {
+  return canSeeUsage(user);
 }
