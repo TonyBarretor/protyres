@@ -29,6 +29,27 @@
  *   @cron [ventana]              corre el resumen diario (runDailyDigest, como /api/cron/daily) con este WhatsApp de
  *                                consola, para todos los usuarios; con `ventana` cada envío falla como fuera de las 24 h
  *                                (131047) y el resumen queda como aviso pendiente para el siguiente mensaje del usuario
+ *   @pausa <segundos>            avanza el reloj del tope por minuto (p. ej. @pausa 60 antes de una @rafaga: la ventana
+ *                                empieza vacía y el número de mensajes procesados no depende de las líneas anteriores)
+ *   @texto-largo <n> <semilla>   un mensaje de texto de exactamente <n> caracteres (la semilla repetida)
+ *   @empresa-prueba <RUC> <razón social>
+ *                                crea en la copia de datos una empresa inventada como lo hace el import del padrón MTC
+ *                                (upsertCompanies; la razón social es dato de terceros: HTML, instrucciones…), sin dueño
+ *   @encuesta <comentario>       crea (en la copia) una encuesta para una empresa de prueba inventada y la responde con
+ *                                ese comentario en "¿qué deberíamos mejorar?" por la MISMA función que la server action
+ *                                (surveyFormTooLarge + submitSurvey); cuenta modelo/Deepgram igual que un mensaje
+ * Verificación (corrida E, punto 6): sobre el mensaje anterior (o el bloque anterior de @rafaga / @encuesta). Si alguna
+ * no se cumple, el guion sale con código 1 y al final se imprime la tabla de casos.
+ *   @espera <clave><op><n> …     claves: modelo (llamadas medidas), deepgram, descargas, respuestas (mensajes al
+ *                                remitente), admin (al administrador), otros (a cualquier otro número), bloqueadas (por
+ *                                tope); op: = (exacto), <= o >=
+ *   @espera-texto <fragmento>    alguna respuesta (a cualquier destinatario) contiene el fragmento (sin distinguir mayúsculas)
+ *   @no-texto <fragmento>        ninguna respuesta lo contiene
+ *   @sin-cambios [salvo t1 t2…]  los datos de negocio (store del portal y del cotizador) no cambiaron; `salvo` permite
+ *                                cambios en esas tablas (p. ej. la respuesta de @encuesta). Ver BUSINESS_EXCLUDED
+ * `modelo` y `deepgram` cuentan lo que pasó por el medidor (guard/usage.ts) o por el fetch de Deepgram del simulador, y
+ * también las peticiones de red a api.anthropic.com / api.deepgram.com (fetch global envuelto): vale el mayor de los dos,
+ * así una llamada que se saltara el medidor también cuenta.
  * En modo interactivo valen las mismas formas y /quit.
  *
  * Datos: por defecto store JSON del portal (PORTAL_STORE=json) y del cotizador, sin DATABASE_URL (salvo --db). Trabaja
@@ -38,6 +59,7 @@
  * producción irían a Deepgram) y descargas de medios provocó, y si alguna se bloqueó por un tope; los totales al final.
  */
 import "./env";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import readline from "node:readline";
@@ -136,27 +158,35 @@ class ConsoleWhatsAppClient implements WhatsAppClient {
   texts = 0;
   files = 0;
   errors: string[] = [];
+  /** Todo lo enviado (destinatario y texto visible), para @espera / @espera-texto / @no-texto. */
+  outbox: { to: string; text: string }[] = [];
   private save(name: string, data: Buffer): string {
     const p = path.join(outDir, `${String(++this.seq).padStart(3, "0")}-${safe(name)}`);
     fs.writeFileSync(p, data);
     this.files++;
     return p;
   }
+  /** @rafaga: no imprime cada respuesta (se cuentan igual). */
+  quiet = false;
   private print(m: OutboundMessage, to: string, extra = ""): void {
+    if (this.quiet) return;
     const who = to === currentPhone ? "" : ` (→ ${to})`;
     if (m.kind === "text") console.log(`\n🤖${who} ${m.body}\n`);
     else console.log(`\n🤖${who} 📎 ${m.fileName ?? m.link ?? m.kind}${m.caption ? `  «${m.caption}»` : "  (sin leyenda)"}${extra}\n`);
   }
   async sendText(to: string, body: string): Promise<void> {
     this.texts++;
+    this.outbox.push({ to, text: body });
     if (/^Ocurrió un error/.test(body)) this.errors.push(body);
     this.print({ to, kind: "text", body }, to);
   }
   async sendDocument(to: string, file: Buffer, fileName: string, caption?: string, mimeType?: string): Promise<void> {
+    this.outbox.push({ to, text: `${fileName}${caption ? ` ${caption}` : ""}` });
     const p = this.save(fileName, file);
     this.print({ to, kind: "document", fileName, caption, mimeType }, to, `\n   guardado en ${path.relative(process.cwd(), p)}`);
   }
   async sendImage(to: string, image: { link?: string; data?: Buffer; mimeType?: string }, caption?: string): Promise<void> {
+    this.outbox.push({ to, text: caption ?? "" });
     const p = image.data ? this.save(`imagen${image.mimeType === "image/png" ? ".png" : ".jpg"}`, image.data) : null;
     this.print({ to, kind: "image", link: image.link, caption, fileName: p ? path.basename(p) : image.link }, to, p ? `\n   guardado en ${path.relative(process.cwd(), p)}` : "");
   }
@@ -164,6 +194,8 @@ class ConsoleWhatsAppClient implements WhatsAppClient {
   lastInteractive: InteractiveMessage | null = null;
   async sendInteractive(to: string, message: InteractiveMessage): Promise<void> {
     this.texts++;
+    const titles = message.type === "button" ? message.buttons.map((b) => b.title) : message.sections.flatMap((sec) => sec.rows).map((r) => `${r.title} ${r.description ?? ""}`);
+    this.outbox.push({ to, text: [message.body, ...titles].join("\n") });
     if (to === currentPhone) this.lastInteractive = message;
     const who = to === currentPhone ? "" : ` (→ ${to})`;
     const opts =
@@ -173,7 +205,7 @@ class ConsoleWhatsAppClient implements WhatsAppClient {
             .flatMap((sec) => sec.rows)
             .map((r, i) => `   ${i + 1}. ${r.title}${r.description ? ` — ${r.description}` : ""}  (id: ${r.id})`)
             .join("\n")}`;
-    console.log(`\n🤖${who} ${message.body}\n   ${opts}\n`);
+    if (!this.quiet) console.log(`\n🤖${who} ${message.body}\n   ${opts}\n`);
   }
   /** Descargas de medios (contador de la corrida E). */
   downloads = 0;
@@ -227,9 +259,84 @@ async function resolvePhone(as: string, listUsers: () => Promise<{ nombre: strin
   throw new Error(`No encontré al usuario «${as}» (ni en users del portal ni en config/pilot.json). Usa --as <número>.`);
 }
 
+/** Peticiones de red al modelo y a Deepgram (fetch global envuelto antes de crear los clientes). */
+const net = { llm: 0, deepgram: 0 };
+function watchNetwork(): void {
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = ((input: string | URL | Request, init?: RequestInit) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    if (/^https?:\/\/[^/]*anthropic\.com\//i.test(url)) net.llm++;
+    if (/^https?:\/\/[^/]*deepgram\.com\//i.test(url)) net.deepgram++;
+    return realFetch(input, init);
+  }) as typeof fetch;
+}
+
+/**
+ * Tablas que NO son datos de negocio para @sin-cambios (registro o estado de la conversación):
+ *  - cotizador: messages (registro de WhatsApp), processed (ids procesados y marcas de la puerta / avisos de tope),
+ *    usage (llm_usage + audio_usage), blocked (blocked_inbound), quoteShadow (quote_shadow), conversations (el paso del
+ *    diálogo del cotizador: cambia con cada mensaje —updatedAt, "cancelar"— y no es un dato guardado; lo que el vendedor
+ *    confirma termina en quotes / counters, que sí se comparan).
+ *  - portal: portalConversations (paso pendiente, borrador del reporte por confirmar, pausas: estado del diálogo; lo
+ *    confirmado va a activities / contacts / opportunities…, que sí se comparan).
+ * Todo lo demás (precios, cotizaciones, contadores, contratos, fotos, empresas, flota, ventas, usuarios, tokens de
+ * acceso, sesiones, contactos, oportunidades, historial, actividades, citas, encuestas, vocabulario, OC, crédito) cuenta.
+ * rate_limit_hits vive solo en memoria en el store JSON (no está en la instantánea).
+ */
+const BUSINESS_EXCLUDED: Record<"cotizador" | "portal", Set<string>> = {
+  cotizador: new Set(["messages", "processed", "usage", "blocked", "quoteShadow", "conversations"]),
+  portal: new Set(["portalConversations"]),
+};
+
+type Snapshot = Map<string, string>;
+
+/** Huella por tabla de los datos de negocio de los dos stores JSON (en memoria; no escribe los archivos). */
+function businessSnapshot(portal: unknown, store: unknown): Snapshot {
+  const p = portal as { snapshot?: () => Record<string, unknown> };
+  const q = store as { data?: Record<string, unknown> };
+  if (typeof p.snapshot !== "function" || !q.data || typeof q.data !== "object") throw new Error("@sin-cambios necesita los stores JSON (sin --db)");
+  const out: Snapshot = new Map();
+  const add = (side: "cotizador" | "portal", data: Record<string, unknown>) => {
+    for (const [k, v] of Object.entries(data)) {
+      if (BUSINESS_EXCLUDED[side].has(k)) continue;
+      out.set(`${side}.${k}`, createHash("sha1").update(JSON.stringify(v) ?? "").digest("hex"));
+    }
+  };
+  add("portal", p.snapshot.call(portal));
+  add("cotizador", q.data);
+  return out;
+}
+
+/** Tablas cuya huella cambió entre dos instantáneas. */
+function changedTables(a: Snapshot, b: Snapshot): string[] {
+  const keys = new Set([...a.keys(), ...b.keys()]);
+  return [...keys].filter((k) => a.get(k) !== b.get(k)).sort();
+}
+
+/** Un caso del guion: un mensaje, un bloque de @rafaga o una @encuesta, con lo que provocó. */
+interface Unit {
+  label: string;
+  lineNo: number;
+  from: string;
+  modelo: number;
+  deepgram: number;
+  descargas: number;
+  bloqueadas: number;
+  out: { to: string; text: string }[];
+  before: Snapshot | null;
+  checked: boolean;
+  unchanged: boolean | null;
+  failures: string[];
+}
+
+const CHECK_KEYS = ["modelo", "deepgram", "descargas", "respuestas", "admin", "otros", "bloqueadas"] as const;
+type CheckKey = (typeof CHECK_KEYS)[number];
+const isCheckLine = (l: string) => /^@(?:espera|espera-texto|no-texto|sin-cambios)(?:\s|$)/.test(l);
+
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   const notes = prepareEnv(args);
+  watchNetwork();
   // después de preparar el entorno (los stores leen las variables al crearse)
   const { loadSettings } = await import("../lib/settings");
   const { getStore } = await import("../lib/store");
@@ -399,13 +506,22 @@ async function main() {
   const burst = async (count: number, body: string) => {
     const before = { ...totalsRun };
     const textsBefore = client.texts;
-    for (let i = 0; i < count; i++) await send(body, { quiet: true });
+    const outBefore = client.outbox.length;
+    client.quiet = true;
+    try {
+      for (let i = 0; i < count; i++) await send(body, { quiet: true });
+    } finally {
+      client.quiet = false;
+    }
+    const outs = client.outbox.slice(outBefore).filter((o) => o.to === currentPhone);
+    const distinct = [...new Map(outs.map((o) => [o.text, 0])).keys()];
+    for (const t of distinct) console.log(`   🤖 ×${outs.filter((o) => o.text === t).length}: ${t.split("\n")[0].slice(0, 100)}`);
     const blocked = totalsRun.blocked - before.blocked;
     console.log(`👤 [ráfaga] ${count} × «${body.slice(0, 60)}» → ${client.texts - textsBefore} respuesta(s)`);
     console.log(`   📊 modelo ${totalsRun.llm - before.llm} · Deepgram ${totalsRun.deepgram - before.deepgram} · descargas ${totalsRun.downloads - before.downloads}${blocked ? ` · bloqueadas por tope ${blocked}` : ""}`);
   };
 
-  const send = async (line: string, opts: { quiet?: boolean } = {}): Promise<void> => {
+  const send = async (line: string, opts: { quiet?: boolean; shown?: string } = {}): Promise<void> => {
     const cron = line.match(/^@cron\b\s*(.*)$/);
     if (cron) return runCron(cron[1]);
     const como = line.match(/^@como\s+(\S.*)$/);
@@ -419,7 +535,7 @@ async function main() {
     const msg = toMessage(line);
     if (!msg) return;
     const shown = msg.type === "audio" && /^@voz\s/.test(line) ? `[voz] «${line.replace(/^@voz\s+/, "")}»` : msg.media ? `[${msg.type}] ${msg.media.fileName ?? ""} ${msg.text ?? ""}`.trim() : msg.forwarded ? `[reenviado] ${msg.text}` : msg.type === "interactive" ? `[botón] ${msg.interactiveTitle ?? ""} (id: ${msg.interactiveId ?? ""} → «${msg.text ?? ""}»)` : msg.text;
-    if (!opts.quiet) console.log(`👤 ${shown}`);
+    if (!opts.quiet) console.log(`👤 ${opts.shown ?? shown}`);
     sent++;
     counts.llm = counts.deepgram = counts.blocked = counts.tokens = 0;
     const downloadsBefore = client.downloads;
@@ -438,27 +554,201 @@ async function main() {
     if (!opts.quiet) console.log(`   📊 modelo ${counts.llm}${counts.tokens ? ` (${counts.tokens} tokens)` : ""} · Deepgram ${counts.deepgram} · descargas ${dl}${counts.blocked ? ` · bloqueadas por tope ${counts.blocked}` : ""}`);
   };
 
-  const lines: string[] = [];
+  // ── casos y verificación (corrida E, punto 6) ──
+  const adminNumber = [process.env.PORTAL_ADMIN_NUMBER, process.env.ADMIN_NUMBERS].map((v) => (v ?? "").split(",").map((x) => x.replace(/\D/g, "")).find(Boolean)).find(Boolean) ?? "";
+  const units: Unit[] = [];
+  let last: Unit | null = null;
+  const checkFailures: string[] = [];
+
+  /** Abre un caso: guarda los contadores y, si el guion lo va a pedir, la instantánea de los datos de negocio. */
+  const beginUnit = (label: string, lineNo: number, snapshot: boolean) => {
+    const base = { llm: totalsRun.llm, deepgram: totalsRun.deepgram, downloads: totalsRun.downloads, blocked: totalsRun.blocked, netLlm: net.llm, netDeepgram: net.deepgram, out: client.outbox.length };
+    const before = snapshot ? businessSnapshot(portal, store) : null;
+    return () => {
+      const u: Unit = {
+        label,
+        lineNo,
+        from: me.phone,
+        modelo: Math.max(totalsRun.llm - base.llm, net.llm - base.netLlm),
+        deepgram: Math.max(totalsRun.deepgram - base.deepgram, net.deepgram - base.netDeepgram),
+        descargas: totalsRun.downloads - base.downloads,
+        bloqueadas: totalsRun.blocked - base.blocked,
+        out: client.outbox.slice(base.out),
+        before,
+        checked: false,
+        unchanged: null,
+        failures: [],
+      };
+      units.push(u);
+      last = u;
+      return u;
+    };
+  };
+
+  const valueOf = (u: Unit, key: CheckKey): number => {
+    if (key === "respuestas") return u.out.filter((o) => o.to === u.from).length;
+    if (key === "admin") return u.out.filter((o) => o.to === adminNumber && o.to !== u.from).length;
+    if (key === "otros") return u.out.filter((o) => o.to !== u.from && o.to !== adminNumber).length;
+    return u[key];
+  };
+  const foldText = (t: string) => t.normalize("NFC").toLowerCase();
+
+  /** @espera / @espera-texto / @no-texto / @sin-cambios sobre el último caso. */
+  const runCheck = (line: string, lineNo: number) => {
+    const u = last as Unit | null;
+    const fail = (why: string) => {
+      const msg = `línea ${lineNo}: ${line.slice(0, 80)} → ${why}`;
+      checkFailures.push(msg);
+      if (u) u.failures.push(why);
+      console.log(`   ✗ ${why}`);
+    };
+    if (!u) return fail("no hay un mensaje anterior que verificar");
+    u.checked = true;
+    const espera = line.match(/^@espera\s+(.+)$/);
+    if (espera) {
+      for (const tok of espera[1].trim().split(/\s+/)) {
+        const m = tok.match(/^([a-z]+)(<=|>=|=)(\d+)$/);
+        if (!m || !(CHECK_KEYS as readonly string[]).includes(m[1])) {
+          fail(`@espera: «${tok}» no se entiende (claves: ${CHECK_KEYS.join(", ")}; op =, <=, >=)`);
+          continue;
+        }
+        const got = valueOf(u, m[1] as CheckKey);
+        const want = Number(m[3]);
+        const ok = m[2] === "=" ? got === want : m[2] === "<=" ? got <= want : got >= want;
+        if (ok) console.log(`   ✔ ${m[1]}=${got}`);
+        else fail(`${m[1]}: se esperaba ${m[2]}${want} y hubo ${got}`);
+      }
+      return;
+    }
+    const all = u.out.map((o) => foldText(o.text)).join("\n");
+    const has = line.match(/^@espera-texto\s+(.+)$/);
+    if (has) {
+      if (all.includes(foldText(has[1].trim()))) console.log(`   ✔ contiene «${has[1].trim()}»`);
+      else fail(`ninguna respuesta contiene «${has[1].trim()}»`);
+      return;
+    }
+    const hasNot = line.match(/^@no-texto\s+(.+)$/);
+    if (hasNot) {
+      if (!all.includes(foldText(hasNot[1].trim()))) console.log(`   ✔ no contiene «${hasNot[1].trim()}»`);
+      else fail(`una respuesta contiene «${hasNot[1].trim()}»`);
+      return;
+    }
+    const same = line.match(/^@sin-cambios(?:\s+salvo\s+(.+))?\s*$/);
+    if (same) {
+      if (!u.before) return fail("@sin-cambios sin instantánea previa (va justo después del caso)");
+      const allowed = new Set((same[1] ?? "").split(/[\s,]+/).filter(Boolean));
+      const changed = changedTables(u.before, businessSnapshot(portal, store)).filter((k) => !allowed.has(k.replace(/^(?:portal|cotizador)\./, "")) && !allowed.has(k));
+      u.unchanged = changed.length === 0;
+      if (u.unchanged) console.log(`   ✔ datos de negocio sin cambios${allowed.size ? ` (salvo ${[...allowed].join(", ")})` : ""}`);
+      else fail(`cambiaron datos de negocio: ${changed.join(", ")}`);
+      return;
+    }
+    fail("directiva de verificación desconocida");
+  };
+
+  /** @pausa <s>: el reloj del tope por minuto avanza (la ventana de la siguiente ráfaga empieza vacía). */
+  const pause = (sec: number) => {
+    burstNow += sec * 1000;
+    console.log(`⏳ pausa de ${sec} s (reloj del tope por minuto)`);
+  };
+
+  /** @empresa-prueba <RUC> <razón social>: como el import del padrón MTC (upsertCompanies), en la copia de datos. */
+  const testCompany = async (ruc: string, razonSocial: string) => {
+    if (!args.db && !args.persist) {
+      const r = await portal.upsertCompanies([{ ruc, razonSocial, sector: null, departamento: "LIMA", unidades: 12, llantasPiso: 0, antiguedadMedia: null }]);
+      console.log(`🏢 empresa de prueba ${ruc} (${r.inserted ? "nueva" : "ya existía"}): ${razonSocial}`);
+    } else thrown.push("@empresa-prueba solo sobre la copia de datos (sin --db ni --persist)");
+  };
+
+  /** @encuesta <comentario>: encuesta nueva para una empresa inventada, respondida por la función de la server action. */
+  const SURVEY_RUC = "20999999901";
+  const survey = async (comment: string, lineNo: number, snapshot: boolean) => {
+    if (args.db || args.persist) {
+      thrown.push("@encuesta solo sobre la copia de datos (sin --db ni --persist)");
+      return;
+    }
+    const { createSurveyLink, submitSurvey } = await import("../lib/portal/survey/service");
+    const { surveyFormTooLarge, MAX_MEJORAR } = await import("../lib/portal/survey/questions");
+    await portal.upsertCompanies([{ ruc: SURVEY_RUC, razonSocial: "EMPRESA DE PRUEBA ENCUESTA S.A.C.", sector: null, departamento: "LIMA", unidades: 5, llantasPiso: 0, antiguedadMedia: null }]);
+    const company = await portal.getCompanyByRuc(SURVEY_RUC);
+    const link = company ? await createSurveyLink(portal, { companyId: company.id, canal: "whatsapp_vendedor" }) : null;
+    if (!company || !link) {
+      thrown.push("@encuesta: no pude crear la encuesta de prueba");
+      return;
+    }
+    console.log(`📝 [encuesta] empresa de prueba ${SURVEY_RUC}, comentario «${comment.slice(0, 80)}»`);
+    const sender = me.phone;
+    me = { ...me, phone: "encuesta" };
+    const end = beginUnit(`[encuesta] ${comment}`, lineNo, snapshot);
+    counts.llm = counts.deepgram = counts.blocked = counts.tokens = 0;
+    const form = new FormData();
+    for (const [k, v] of [["token", link.token], ["nps", "9"], ["valora", "precio"], ["satisfaccion", "5"], ["referencia", "si"], ["mejorar", comment]]) form.append(k, v);
+    let result: string;
+    if (surveyFormTooLarge(form)) result = "error=tamano";
+    else {
+      const r = await submitSurvey(portal, link.token, form);
+      result = r.ok ? "r=ok" : r.reason === "datos" ? `error=${r.errors.join(",")}` : `r=${r.reason}`;
+      if (r.ok && r.answer.mejorar !== comment.replace(/\r\n/g, "\n").trim().slice(0, MAX_MEJORAR)) thrown.push("@encuesta: el comentario no se guardó tal cual (texto)");
+    }
+    // la server action redirige a /encuesta/<token>?<resultado>: esa es la "respuesta" del caso
+    client.outbox.push({ to: "encuesta", text: `redirect ?${result}` });
+    totalsRun.llm += counts.llm;
+    totalsRun.deepgram += counts.deepgram;
+    totalsRun.blocked += counts.blocked;
+    totalsRun.tokens += counts.tokens;
+    const u = end();
+    me = { ...me, phone: sender };
+    console.log(`   → ${result}\n   📊 modelo ${u.modelo} · Deepgram ${u.deepgram} · descargas ${u.descargas}`);
+  };
+
+  const lines: { t: string; no: number }[] = [];
   if (args.script) {
     const raw = fs.readFileSync(path.resolve(process.cwd(), args.script), "utf8");
-    for (const l of raw.split(/\r?\n/)) {
+    raw.split(/\r?\n/).forEach((l, i) => {
       const t = l.trim();
-      if (!t || t.startsWith("#")) continue;
-      lines.push(t);
-    }
+      if (!t || t.startsWith("#")) return;
+      lines.push({ t, no: i + 1 });
+    });
   }
-  if (args.audio) lines.push(`@audio ${args.audio}`);
+  if (args.audio) lines.push({ t: `@audio ${args.audio}`, no: 0 });
+
+  /** Una línea: verificación, preparación (@pausa, @empresa-prueba) o un caso (mensaje, @rafaga, @encuesta…). */
+  const step = async (line: string, lineNo: number, wantsSnapshot: boolean) => {
+    if (isCheckLine(line)) return runCheck(line, lineNo);
+    const pausa = line.match(/^@pausa\s+(\d+)\s*$/);
+    if (pausa) return pause(Number(pausa[1]));
+    const empresa = line.match(/^@empresa-prueba\s+(\d{11})\s+(\S.*)$/);
+    if (empresa) return testCompany(empresa[1], empresa[2].trim());
+    const encuesta = line.match(/^@encuesta\s+(\S.*)$/);
+    if (encuesta) return survey(encuesta[1].replace(/\\n/g, "\n"), lineNo, wantsSnapshot);
+    const largo = line.match(/^@texto-largo\s+(\d+)\s+(\S.*)$/);
+    if (largo) {
+      const n = Math.min(Number(largo[1]), 200_000);
+      const seed = `${largo[2].trim()} `;
+      line = seed.repeat(Math.ceil(n / seed.length)).slice(0, n);
+      console.log(`📏 texto de ${n} caracteres («${seed.trim().slice(0, 50)}…» repetido)`);
+    }
+    if (/^@como\s/.test(line)) return send(line);
+    const end = beginUnit(line.length > 120 ? `${line.slice(0, 117)}…` : line, lineNo, wantsSnapshot);
+    await send(line, largo ? { shown: `[texto de ${line.length} caracteres]` } : {});
+    end();
+  };
 
   if (lines.length) {
-    for (const l of lines) await send(l);
+    for (let i = 0; i < lines.length; i++) {
+      // ¿pide @sin-cambios alguna verificación que sigue a este caso? entonces la instantánea va antes
+      let wants = false;
+      for (let j = i + 1; j < lines.length && isCheckLine(lines[j].t); j++) if (/^@sin-cambios\b/.test(lines[j].t)) wants = true;
+      await step(lines[i].t, lines[i].no, wants);
+    }
   } else {
-    console.log('Modo interactivo: escribe un mensaje ("@doc <archivo> [leyenda]", "@audio <archivo>", "@voz <transcripción>", "@fwd <texto>", "@btn <botón>", "@como <número|alias>", "@rafaga <n> <texto>", "@cron [ventana]", "/quit").');
+    console.log('Modo interactivo: escribe un mensaje ("@doc <archivo> [leyenda]", "@audio <archivo>", "@voz <transcripción>", "@fwd <texto>", "@btn <botón>", "@como <número|alias>", "@rafaga <n> <texto>", "@cron [ventana]", "@encuesta <comentario>", "@espera modelo=0 …", "/quit").');
     const rl = readline.createInterface({ input: process.stdin, output: process.stdout, prompt: "> " });
     rl.prompt();
     for await (const line of rl) {
       const t = line.trim();
       if (t === "/quit" || t === "/exit") break;
-      if (t) await send(t);
+      if (t) await step(t, 0, !args.db);
       rl.prompt();
     }
     rl.close();
@@ -467,8 +757,16 @@ async function main() {
   await portal.flush();
   await portal.close();
   await store.close();
-  const errors = [...client.errors, ...thrown];
-  console.log(`\n── Resumen ──\nMensajes enviados al bot: ${sent}${skipped ? ` (saltados: ${skipped})` : ""}\nRespuestas de texto: ${client.texts} · archivos guardados: ${client.files}\nLlamadas: modelo ${totalsRun.llm} (${totalsRun.tokens} tokens) · Deepgram ${totalsRun.deepgram} · descargas ${totalsRun.downloads}${totalsRun.blocked ? ` · bloqueadas por tope ${totalsRun.blocked}` : ""}\nErrores: ${errors.length}`);
+  const checkedUnits = units.filter((u) => u.checked);
+  if (checkedUnits.length) {
+    console.log("\n── Casos verificados ──\nlínea | caso | modelo | deepgram | descargas | respuestas | sin cambios | resultado");
+    for (const u of checkedUnits) {
+      const unchanged = u.unchanged === null ? "—" : u.unchanged ? "sí" : "NO";
+      console.log(`${u.lineNo} | ${u.label.replace(/\|/g, "¦").slice(0, 70)} | ${u.modelo} | ${u.deepgram} | ${u.descargas} | ${valueOf(u, "respuestas")} | ${unchanged} | ${u.failures.length ? `FALLA: ${u.failures.join("; ")}` : "ok"}`);
+    }
+  }
+  const errors = [...client.errors, ...thrown, ...checkFailures];
+  console.log(`\n── Resumen ──\nMensajes enviados al bot: ${sent}${skipped ? ` (saltados: ${skipped})` : ""}\nRespuestas de texto: ${client.texts} · archivos guardados: ${client.files}\nLlamadas: modelo ${totalsRun.llm} (${totalsRun.tokens} tokens) · Deepgram ${totalsRun.deepgram} · descargas ${totalsRun.downloads}${totalsRun.blocked ? ` · bloqueadas por tope ${totalsRun.blocked}` : ""} · red: anthropic ${net.llm}, deepgram ${net.deepgram}\nVerificaciones fallidas: ${checkFailures.length}\nErrores: ${errors.length}`);
   for (const e of errors) console.log(`  ✗ ${e.split("\n")[0]}`);
   if (errors.length && lines.length) process.exit(1);
   process.exit(0);
