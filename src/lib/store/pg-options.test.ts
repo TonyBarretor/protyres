@@ -21,10 +21,13 @@ describe("serverlessPgOptions", () => {
     expect(o.max_lifetime).toBeGreaterThan(0);
   });
 
-  it("la usan el store del portal y el del cotizador", () => {
-    for (const f of ["src/lib/portal/store/pg-portal-store.ts", "src/lib/store/pg-store.ts"]) {
+  // Corrida H: los clientes salen de serverlessPostgres() (estas opciones + begin seguro, reservedBegin), no de
+  // postgres(url, serverlessPgOptions(...)) directo: con max_pipeline 0, el sql.begin de la lib fallaba (UNSAFE_TRANSACTION).
+  it("la usan el store del portal y el del cotizador (con begin seguro)", () => {
+    for (const f of ["src/lib/portal/store/pg-portal-store.ts", "src/lib/store/pg-store.ts", "src/lib/store/price-sizes.ts"]) {
       const src = fs.readFileSync(path.resolve(process.cwd(), f), "utf8");
-      expect(src, f).toMatch(/postgres\(url, serverlessPgOptions\(/);
+      expect(src, f).toMatch(/serverlessPostgres\(url, \{ max: \d+ \}\)/);
+      expect(src, f).not.toMatch(/\bpostgres\(url/);
     }
   });
 });

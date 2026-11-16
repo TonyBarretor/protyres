@@ -10,6 +10,8 @@ export default defineConfig({
   resolve: { alias: { "@": path.resolve(root, "src") } },
   test: {
     include: ["src/**/*.test.ts", "src/**/*.test.tsx"],
+    // las de Postgres real van aparte (npm run test:pg, vitest.pg.config.mts)
+    exclude: ["**/node_modules/**", "src/**/*.pg.test.ts"],
     environment: "node",
     testTimeout: 30_000,
   },

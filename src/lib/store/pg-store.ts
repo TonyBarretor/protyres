@@ -4,7 +4,7 @@
 import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import { drizzle, type PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
-import { serverlessPgOptions } from "./pg-options";
+import { serverlessPostgres } from "./pg-options";
 import * as schema from "../../db/schema";
 import type { PriceRow, PriceSource } from "../ingest/types";
 import type { Quote } from "../quote/types";
@@ -76,12 +76,19 @@ export class PgStore implements PriceStore {
   private constructor(
     private db: Db,
     private sqlClient: ReturnType<typeof postgres>,
+    private ormClient: ReturnType<typeof postgres>,
   ) {}
 
   static async connect(url: string): Promise<PgStore> {
-    const client = postgres(url, serverlessPgOptions({ max: 5 })); // pooler de Supabase: sin sentencias preparadas ni pipelining (pg-options.ts)
-    const db = drizzle(client, { schema });
-    return new PgStore(db, client);
+    // pooler de Supabase: sin sentencias preparadas ni pipelining, begin seguro (pg-options.ts).
+    // Dos clientes (corrida H): drizzle cambia los serializadores de fechas y JSON del cliente que envuelve (los deja
+    // pasar tal cual porque él los convierte antes); en las consultas sueltas (uso de audio y de modelo, bloqueados,
+    // sombra) un Date o un objeto llegaba crudo y fallaba: "Received an instance of Date". Las consultas sueltas van por
+    // su propio cliente, con los serializadores normales.
+    const ormClient = serverlessPostgres(url, { max: 2 });
+    const rawClient = serverlessPostgres(url, { max: 5 });
+    const db = drizzle(ormClient, { schema });
+    return new PgStore(db, rawClient, ormClient);
   }
 
   async upsertRows(rows: PriceRow[], opts?: { replace?: ReplaceScope }): Promise<{ inserted: number; removed: number }> {
@@ -593,6 +600,6 @@ export class PgStore implements PriceStore {
   }
 
   async close(): Promise<void> {
-    await this.sqlClient.end({ timeout: 5 });
+    await Promise.all([this.sqlClient.end({ timeout: 5 }), this.ormClient.end({ timeout: 5 })]);
   }
 }

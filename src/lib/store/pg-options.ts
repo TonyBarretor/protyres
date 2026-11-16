@@ -14,7 +14,7 @@
  * (`connection: { statement_timeout }` y `options=-c ...` quedan en el valor del rol, 2 min; comprobado). El tope por
  * página lo pone withDeadline() (src/lib/portal/ui/deadline.ts) y el de la ruta, maxDuration (src/app/portal/layout.tsx).
  */
-import type postgres from "postgres";
+import postgres from "postgres";
 
 export interface ServerlessPgOptionsInput {
   /** Conexiones por instancia. */
@@ -33,4 +33,52 @@ export function serverlessPgOptions({ max }: ServerlessPgOptionsInput): postgres
     onnotice: () => undefined,
   };
   return opts as postgres.Options<Record<string, postgres.PostgresType>>;
+}
+
+type Client = postgres.Sql<Record<string, postgres.PostgresType>>;
+
+/**
+ * Corrida H, punto 1 (16/11 en producción: "UNSAFE_TRANSACTION: Only use sql.begin, sql.reserved or max: 1" al hacer
+ * `asignarme`). Con max_pipeline: 0 la lib nunca llama al `onexecute` del BEGIN de `sql.begin` (en connection.js va
+ * detrás de `sent.length < max_pipeline`, siempre falso), así que la conexión no queda reservada y, con más de una en
+ * el pool, el BEGIN se rechaza y la conexión queda con la transacción abierta. Pasaba con todo `sql.begin` (portal) y
+ * con las transacciones de drizzle (carga de listas de precios), que usan el mismo `begin`.
+ *
+ * Este `begin` reserva una conexión del pool (`sql.reserve()`, que no depende del pipelining), corre BEGIN / la función
+ * / COMMIT en ella y, si algo falla, ROLLBACK; siempre la devuelve al pool. Con el pooler de Supabase en modo
+ * transacción, todo lo de BEGIN a COMMIT va por la misma conexión del servidor. Sin savepoints (nadie los usa).
+ */
+export async function reservedBegin<T>(sql: Client, fn: (tx: postgres.TransactionSql<Record<string, postgres.PostgresType>>) => T | Promise<T>, mode = ""): Promise<T> {
+  const conn = await sql.reserve();
+  let open = false;
+  try {
+    await conn.unsafe(`begin ${mode.replace(/[^a-z ]/gi, "")}`);
+    open = true;
+    const tx = Object.assign(conn, {
+      savepoint: () => {
+        throw new Error("savepoint no está soportado (pg-options.ts reservedBegin)");
+      },
+      prepare: () => {
+        throw new Error("prepare no está soportado (pg-options.ts reservedBegin)");
+      },
+    }) as unknown as postgres.TransactionSql<Record<string, postgres.PostgresType>>;
+    const out = await fn(tx);
+    const result = (Array.isArray(out) ? await Promise.all(out) : out) as T;
+    await conn.unsafe("commit");
+    open = false;
+    return result;
+  } catch (err) {
+    if (open) await conn.unsafe("rollback").catch(() => undefined);
+    throw err;
+  } finally {
+    conn.release();
+  }
+}
+
+/** Cliente `postgres` para los stores: opciones de arriba y `begin` seguro (reservedBegin). */
+export function serverlessPostgres(url: string, input: ServerlessPgOptionsInput): Client {
+  const sql = postgres(url, serverlessPgOptions(input)) as Client;
+  const begin = ((modeOrFn: string | ((tx: postgres.TransactionSql<Record<string, postgres.PostgresType>>) => unknown), maybeFn?: (tx: postgres.TransactionSql<Record<string, postgres.PostgresType>>) => unknown) =>
+    typeof modeOrFn === "function" ? reservedBegin(sql, modeOrFn) : reservedBegin(sql, maybeFn!, modeOrFn)) as Client["begin"];
+  return Object.assign(sql, { begin });
 }

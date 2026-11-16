@@ -23,7 +23,7 @@ import { BotHandler } from "../whatsapp/handler";
 import type { InboundMessage } from "../whatsapp/webhook";
 import { JsonPortalStore } from "../portal/store";
 import { configureReportBot } from "../portal/bot/report";
-import { hasTechText, TECH_TEXT_RE, userErrorText } from "./user-text";
+import { CONFIG_ERROR_TEXT, hasTechText, TECH_TEXT_RE, TEMP_ERROR_TEXT, userErrorText } from "./user-text";
 
 const ROOT = path.resolve(__dirname, "../../..");
 
@@ -95,6 +95,24 @@ describe("textos visibles sin comandos ni variables (escaneo)", () => {
     for (const t of ["Cotización COT-0012 lista", "295/80R22.5 x8 a US$ 254", "*Reporte de visita* — ZBUSS", "Contacta al administrador", "IGV 18%"]) expect(hasTechText(t), t).toBe(false);
     expect(userErrorText("falta la tabla contract_prices: corre npm run db:migrate")).toBe("falta configurar algo en el servidor (contacta al administrador)");
     expect(userErrorText("base caída")).toBe("base caída");
+  });
+
+  it("un error técnico que no es de configuración dice 'problema temporal', no 'falta configurar' (corrida H, 16/11)", () => {
+    // lo que vio el vendedor con asignarme: el error de la lib postgres parecía un nombre de variable
+    const tx = Object.assign(new Error("UNSAFE_TRANSACTION: Only use sql.begin, sql.reserved or max: 1"), { code: "UNSAFE_TRANSACTION" });
+    expect(userErrorText(tx)).toBe(TEMP_ERROR_TEXT);
+    expect(userErrorText(tx.message)).toBe(TEMP_ERROR_TEXT);
+    // errores de la base o de la red, aunque no tengan forma de variable
+    const pg = Object.assign(new Error('null value in column "price_date" of relation "prices" violates not-null constraint'), { name: "PostgresError", code: "23502" });
+    expect(userErrorText(pg)).toBe(TEMP_ERROR_TEXT);
+    expect(userErrorText(Object.assign(new Error("connect ETIMEDOUT 10.0.0.1:6543"), { code: "ETIMEDOUT" }))).toBe(TEMP_ERROR_TEXT);
+    expect(userErrorText(new Error("write CONNECTION_CLOSED aws-0.pooler.supabase.com:6543"))).toBe(TEMP_ERROR_TEXT);
+    // falta de verdad algo: variable o migración
+    expect(userErrorText(new Error("WHATSAPP_TOKEN / WHATSAPP_PHONE_NUMBER_ID not set"))).toBe(CONFIG_ERROR_TEXT);
+    expect(userErrorText(Object.assign(new Error('relation "contract_prices" does not exist'), { name: "PostgresError", code: "42P01" }))).toBe(CONFIG_ERROR_TEXT);
+    expect(userErrorText(new Error("falta la tabla contract_prices: corre npm run db:migrate"))).toBe(CONFIG_ERROR_TEXT);
+    // un mensaje pensado para el usuario sigue tal cual
+    expect(userErrorText(new Error("No encontré la empresa ZBUSS"))).toBe("No encontré la empresa ZBUSS");
   });
 
   it("pantallas del portal y de la encuesta (src/app)", () => {

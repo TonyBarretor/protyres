@@ -4,17 +4,16 @@
  * Postgres: una consulta con conexión propia que se cierra al terminar. JSON: el mismo archivo que getStore().
  */
 import path from "node:path";
-import postgres from "postgres";
 import type { PriceRow } from "../ingest/types";
 import { JsonStore } from "./json-store";
-import { serverlessPgOptions } from "./pg-options";
+import { serverlessPostgres } from "./pg-options";
 
 export type PriceSizeRow = Pick<PriceRow, "size" | "kind" | "stock" | "isTyre">;
 
 export async function readPriceSizes(): Promise<PriceSizeRow[]> {
   const url = process.env.DATABASE_URL;
   if (url) {
-    const sql = postgres(url, serverlessPgOptions({ max: 1 }));
+    const sql = serverlessPostgres(url, { max: 1 });
     try {
       const rows = await sql`select size, kind, stock, is_tyre from prices where is_tyre and size <> ''`;
       return rows.map((r) => ({ size: String(r.size), kind: String(r.kind) as PriceRow["kind"], stock: r.stock === null ? null : Number(r.stock), isTyre: Boolean(r.is_tyre) }));

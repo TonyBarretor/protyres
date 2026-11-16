@@ -8,7 +8,7 @@ import "./env";
 import postgres from "postgres";
 import { checkExistingTables, expectedSchema, type ColumnRow } from "../lib/portal/store/migrate-guard";
 
-const STATEMENTS = [
+export const STATEMENTS = [
   `create table if not exists prices (
     id text primary key,
     provider text not null,
@@ -485,28 +485,33 @@ const STATEMENTS = [
 const PORTAL_FROM = STATEMENTS.findIndex((s) => /^create table if not exists companies\b/.test(s));
 if (PORTAL_FROM < 0) throw new Error("migrate: no se encontró el inicio de las tablas del portal (create table companies)");
 
+/** Aplica todas las sentencias (con la guardia del portal) a una conexión. La usan main() y las pruebas de Postgres. */
+export async function applyMigrations(sql: postgres.Sql, log: (m: string) => void = console.log): Promise<void> {
+  const run = async (stmt: string) => {
+    const head = stmt.replace(/\s+/g, " ").slice(0, 70);
+    await sql.unsafe(stmt);
+    log(`ok   ${head}…`);
+  };
+  for (const stmt of STATEMENTS.slice(0, PORTAL_FROM)) await run(stmt);
+
+  // Guardia: si una tabla del portal ya existe y no tiene nuestras columnas, es de otra cosa: no se toca nada del portal.
+  const expected = expectedSchema(STATEMENTS.slice(PORTAL_FROM));
+  const cols = await sql<ColumnRow[]>`
+    select table_name, column_name from information_schema.columns
+    where table_schema = 'public' and table_name in ${sql([...expected.keys()])}`;
+  const guard = checkExistingTables(expected, [...cols]);
+  if (!guard.ok) throw new Error(guard.message);
+  if (guard.existing.length) log(`Portal: tablas ya creadas en una corrida anterior: ${guard.existing.join(", ")}`);
+
+  for (const stmt of STATEMENTS.slice(PORTAL_FROM)) await run(stmt);
+}
+
 async function main() {
   const url = process.env.DATABASE_URL;
   if (!url) throw new Error("DATABASE_URL no está definida (ponla en .env)");
   const sql = postgres(url, { prepare: false, max: 1, connect_timeout: 20, onnotice: () => undefined }); // "already exists, skipping" notices are expected
   try {
-    const run = async (stmt: string) => {
-      const head = stmt.replace(/\s+/g, " ").slice(0, 70);
-      await sql.unsafe(stmt);
-      console.log(`ok   ${head}…`);
-    };
-    for (const stmt of STATEMENTS.slice(0, PORTAL_FROM)) await run(stmt);
-
-    // Guardia: si una tabla del portal ya existe y no tiene nuestras columnas, es de otra cosa: no se toca nada del portal.
-    const expected = expectedSchema(STATEMENTS.slice(PORTAL_FROM));
-    const cols = await sql<ColumnRow[]>`
-      select table_name, column_name from information_schema.columns
-      where table_schema = 'public' and table_name in ${sql([...expected.keys()])}`;
-    const guard = checkExistingTables(expected, [...cols]);
-    if (!guard.ok) throw new Error(guard.message);
-    if (guard.existing.length) console.log(`Portal: tablas ya creadas en una corrida anterior: ${guard.existing.join(", ")}`);
-
-    for (const stmt of STATEMENTS.slice(PORTAL_FROM)) await run(stmt);
+    await applyMigrations(sql);
     const [{ photos }] = await sql`select count(*)::int as photos from prices where photo_url is not null`;
     const [{ rows }] = await sql`select count(*)::int as rows from prices`;
     const [{ files }] = await sql`select count(*)::int as files from quote_files`;
@@ -527,7 +532,10 @@ async function main() {
   }
 }
 
-main().catch((e) => {
-  console.error(e.message ?? e);
-  process.exit(1);
-});
+// solo al ejecutarlo (npm run db:migrate), no al importarlo desde las pruebas
+if (/migrate\.ts$/.test(process.argv[1] ?? "")) {
+  main().catch((e) => {
+    console.error(e.message ?? e);
+    process.exit(1);
+  });
+}

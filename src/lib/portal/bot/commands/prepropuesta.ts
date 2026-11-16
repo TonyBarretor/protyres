@@ -24,7 +24,7 @@ async function sendPrepropuesta(ctx: PortalContext, company: Company): Promise<v
     gen = await generatePrepropuesta(ctx.store, company.id, ctx.user, ctx.now);
   } catch (err) {
     if (err instanceof PrepropuestaError) {
-      await ctx.reply(`⚠️ No pude generar la pre-propuesta de *${company.razonSocial}*. ${userErrorText(err.message)}`);
+      await ctx.reply(`⚠️ No pude generar la pre-propuesta de *${company.razonSocial}*. ${userErrorText(err)}`);
       return;
     }
     throw err;

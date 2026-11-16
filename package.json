@@ -10,6 +10,7 @@
     "start": "next start",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:pg": "vitest run -c vitest.pg.config.mts",
     "typecheck": "tsc --noEmit -p tsconfig.cli.json",
     "ingest": "tsx --tsconfig tsconfig.cli.json src/cli/ingest.ts",
     "quote": "tsx --tsconfig tsconfig.cli.json src/cli/quote.ts",

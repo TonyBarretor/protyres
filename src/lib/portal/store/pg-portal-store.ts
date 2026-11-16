@@ -3,7 +3,7 @@
  * El import masivo usa inserciones por lotes (`sql(rows, cols)`) con `on conflict`.
  */
 import postgres from "postgres";
-import { serverlessPgOptions } from "../../store/pg-options";
+import { serverlessPostgres } from "../../store/pg-options";
 import { isClosedStage, stageProbability, type StageId } from "../stages";
 import { dedupeBy, defaultSince, digits, groupFleet, normMarca, pageOf, searchRucPrefix, searchTerms, toIsoDate, topMedidas, ttlCache, type FleetAggRow } from "./shared";
 import type { BestCompaniesQuery, BestCompany, Nivel, RankingValidation, RankingValidationInput, ScoreDetail, ScoreInput, ScoreInputQuery, ScoreRun, ScoreRunInput, ScoreUpdate, ValidationAnswer } from "./types";
@@ -305,7 +305,8 @@ export class PgPortalStore implements PortalStore {
   static connect(url: string): PgPortalStore {
     // Pooler de Supabase en modo transacción: sin sentencias preparadas y sin pipelining (una consulta encolada en una
     // conexión ocupada no volvía nunca: Prospectos colgado 300 s, corrida F). Ver src/lib/store/pg-options.ts.
-    return new PgPortalStore(postgres(url, serverlessPgOptions({ max: 5 })));
+    // begin seguro con este pool (corrida H, reservedBegin en pg-options.ts).
+    return new PgPortalStore(serverlessPostgres(url, { max: 5 }));
   }
 
   async flush(): Promise<void> {}

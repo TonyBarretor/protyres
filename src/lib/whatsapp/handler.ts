@@ -601,7 +601,7 @@ export class BotHandler {
       return this.startRequest(from, text, undefined, { profile: profileNext?.profile, header: profileNext?.header, ...(voice ? { voice } : {}) });
     } catch (err) {
       this.log(`error handling ${msg.id}: ${(err as Error).stack ?? err}`);
-      await this.reply(from, `Ocurrió un error: ${userErrorText((err as Error).message)}. Intenta de nuevo o escribe *cancelar*.`);
+      await this.reply(from, `Ocurrió un error: ${userErrorText(err)}. Intenta de nuevo o escribe *cancelar*.`);
     } finally {
       this.client.setQuote(from, undefined);
     }
