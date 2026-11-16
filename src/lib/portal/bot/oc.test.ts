@@ -186,6 +186,9 @@ describe("oc: con cotización enlazada y PDF adjunto", () => {
     out = await say("letras 90, recoge en almacén Lurín");
     expect(lastText(out)).toContain("Observaciones?");
     out = await say("entregar en horario de oficina");
+    // corrida H: observaciones al pie de cada bloque (stock / proveedor), una vez por pedido
+    expect(lastText(out)).toContain("Observaciones del despacho para Patricia");
+    out = await say("despachar en agencia");
 
     // Excel sin leyenda y luego el resumen con el recordatorio
     const doc = out.find((m) => m.kind === "document")!;
@@ -219,14 +222,22 @@ describe("oc: con cotización enlazada y PDF adjunto", () => {
     expect(cell(ws, "I19")).toBe(271.4);
     expect(cell(ws, "J25")).toBe(3483.36);
     expect(cell(ws, "C27")).toBe("Observaciones: entregar en horario de oficina");
-    expect(cell(ws, "G29")).toBe("LLANTAS DEL SUR");
-    expect(cell(ws, "G33")).toBe("315/80R22.5 18PR");
-    expect(cell(ws, "G36")).toBe(236);
-    expect(cell(ws, "G37")).toBe("LETRAS 90");
-    expect(cell(ws, "G38")).toBe("ALMACÉN LURÍN");
-    expect(cell(ws, "C41")).toBe("CONTACTO DE PERSONA EN AGENCIA ANDESKAR");
-    expect(cell(ws, "C42")).toBe("Luis Pérez");
-    expect(cell(ws, "D43")).toBe("987 654 321");
+    // corrida H: un bloque por producto. El propio (Valor 87) como stock propio; el del proveedor debajo, 13 filas más abajo
+    expect(cell(ws, "G29")).toBe("STOCK 360PT");
+    expect(cell(ws, "G30")).toBe("PATRICIA");
+    expect(cell(ws, "G33")).toBe("295/80R22.5 18PR");
+    expect(cell(ws, "G36")).toBe(0);
+    expect(cell(ws, "G38")).toBe("SAN LUIS STOCK");
+    expect(cell(ws, "C39")).toBe("Observaciones: despachar en agencia");
+    expect(cell(ws, "G42")).toBe("LLANTAS DEL SUR");
+    expect(cell(ws, "G46")).toBe("315/80R22.5 18PR");
+    expect(cell(ws, "G49")).toBe(236);
+    expect(cell(ws, "G50")).toBe("LETRAS 90");
+    expect(cell(ws, "G51")).toBe("ALMACÉN LURÍN");
+    expect(cell(ws, "C52")).toBe("Observaciones: despachar en agencia");
+    expect(cell(ws, "C54")).toBe("CONTACTO DE PERSONA EN AGENCIA ANDESKAR");
+    expect(cell(ws, "C55")).toBe("Luis Pérez");
+    expect(cell(ws, "D56")).toBe("987 654 321");
 
     // oportunidad, actividad con la venta esperada, cliente, plazo, memoria y OC
     const o = (await portal.getOpportunity(opp.id))!;
@@ -259,7 +270,7 @@ describe("oc: sin cotización previa", () => {
     expect(t).toContain("8 × 315/80R22.5 18PR FENIXWAY FLAMA 77 — US$ 299.72 c/u _(LLANTAS DEL SUR)_"); // 254 + IGV
     expect(t).toContain("4 × 295/80R22.5 18PR FENIXWAY VALOR 87 — US$ 472.00 c/u"); // lista propia
     expect(t).toContain("Dirección fiscal de *E.T. LA ROCA*?");
-    const answers = ["Av. Industrial 300, Lurín", "la misma", "Pedro Soto 999888777", "ninguna", "20/11", "sí", "no", "cliente", "contado", "contado, recoge en almacén del proveedor", "ninguna"];
+    const answers = ["Av. Industrial 300, Lurín", "la misma", "Pedro Soto 999888777", "ninguna", "20/11", "sí", "no", "cliente", "contado", "contado, recoge en almacén del proveedor", "ninguna", "ninguna"];
     for (const a of answers) out = await say(a);
     const doc = out.find((m) => m.kind === "document")!;
     const ws = await sheetOf(doc);
@@ -273,7 +284,8 @@ describe("oc: sin cotización previa", () => {
     expect(cell(ws, "G29")).toBe("LLANTAS DEL SUR");
     expect(cell(ws, "G36")).toBe(236);
     expect(cell(ws, "G38")).toBe("ALMACÉN DEL PROVEEDOR");
-    expect(cell(ws, "C41")).toBe("CONTACTO DE PERSONA EN AGENCIA");
+    expect(cell(ws, "G42")).toBe("STOCK 360PT"); // Valor 87 de la lista propia
+    expect(cell(ws, "C54")).toBe("CONTACTO DE PERSONA EN AGENCIA");
     expect(lastText(out)).toContain("(OC 7788)");
     // sin oportunidad previa: se crea y queda en Cerrado ganado
     const opps = await portal.listOpportunities({ companyId: roca.id });
@@ -282,24 +294,29 @@ describe("oc: sin cotización previa", () => {
     expect((await portal.getCompany(roca.id))!.creditTermsDays).toBe(0);
   });
 
-  it("más de 7 ítems: lo dice y pide dividir; el paso sigue esperando los ítems", async () => {
+  // corrida H: el formato ya no se limita a 7 filas (se insertan con el formato de la fila 24); antes se pedía dividir la OC
+  it("más de 7 ítems: el Excel inserta las filas que faltan", async () => {
     await say("oc roca");
     const lines = Array.from({ length: 8 }, (_, i) => `${i + 1} x Fenixway Valor 87 295/80R22.5 precio ${200 + i}`).join("\n");
-    const out = await say(lines);
-    expect(lastText(out)).toContain("tiene 7 filas de ítems y escribiste 8");
-    expect(lastText(out)).toContain("Divide la OC en dos pedidos");
-    const step = (await getPending(portal, FRANK, new Date())) as OcStep;
-    expect(step.kind).toBe(OC_STEP);
-    expect(step.phase).toBe("items");
-    expect(out.some((m) => m.kind === "document")).toBe(false);
+    let out = await say(lines);
+    expect(lastText(out)).toContain("Entendí:");
+    for (const a of ["Av. Industrial 300, Lurín", "la misma", "Pedro Soto 999888777", "ninguna", "20/11", "sí", "no", "cliente", "contado", "ninguna", "ninguna"]) out = await say(a);
+    const ws = await sheetOf(out.find((m) => m.kind === "document")!);
+    expect(cell(ws, "E25")).toBe(8); // octava línea, en una fila insertada
+    expect(ws.getCell("E26").formula).toBe("SUM(E18:E25)");
+    expect(cell(ws, "E26")).toBe(36);
+    expect(cell(ws, "G30")).toBe("STOCK 360PT"); // un solo producto: un bloque, una fila más abajo
   });
 
-  it("cotización enlazada de más de 7 ítems: avisa y pide los ítems", async () => {
+  it("cotización enlazada de más de 7 ítems sin origen identificable: la propone y pregunta de dónde sale", async () => {
     const item = (i: number): QuoteItem => ({ description: `Llanta ${i}`, brand: "Fenixway", model: "Valor 87", size: "295/80R22.5", sizeDisplay: "295/80R22.5", quantity: 1, unitPrice: 250 + i, discountPct: 0, total: 250 + i, origin: "manual", provider: "manual", priceDate: TODAY, available: null });
     await seedQuote(Array.from({ length: 8 }, (_, i) => item(i)));
-    const out = await say("oc andes 4500999");
-    expect(lastText(out)).toContain("La cotización *032* tiene 8 ítems. El formato de pedido tiene 7 filas de ítems y este pedido tiene 8. Divídelo en dos pedidos.");
-    expect(lastText(out)).toContain("Escríbeme los ítems de la OC");
+    let out = await say("oc andes 4500999");
+    expect(lastText(out)).toContain("Uso la cotización *032*");
+    out = await say("sí");
+    expect(lastText(out)).toContain("¿De dónde sale *295/80R22.5 FENIXWAY VALOR 87*");
+    out = await say("propio"); // ("stock …" es un comando del cotizador)
+    expect(lastText(out)).toContain("Dirección fiscal"); // el mismo producto en las otras líneas sale del mismo lugar: una sola pregunta
   });
 });
 
@@ -344,6 +361,8 @@ describe("oc: preguntas con botones (corrida D)", () => {
     out = await say("letras 90, almacén Steel");
     expect(titles(out)).toEqual(["Ninguna"]);
     out = await say(press("Ninguna"));
+    expect(titles(out)).toEqual(["Ninguna"]); // observaciones del despacho (corrida H)
+    out = await say(press("Ninguna"));
     const ws = await sheetOf(out.find((m) => m.kind === "document")!);
     expect(cell(ws, "G8")).toBe("Av. Los Andes 450, Ate");
     expect(cell(ws, "G9")).toBe("Av. Los Andes 450, Ate");
@@ -384,6 +403,8 @@ describe("oc: memoria del cliente", () => {
     out = await say("igual");
     expect(lastText(out)).toContain("(la última vez: llamar antes — responde *igual*");
     out = await say("igual"); // sin ítems de terceros no pregunta por el proveedor
+    expect(lastText(out)).toContain("Observaciones del despacho");
+    out = await say("ninguna");
     const ws = await sheetOf(out.find((m) => m.kind === "document")!);
     expect(cell(ws, "G8")).toBe("Av. Industrial 300, Lurín");
     expect(cell(ws, "G9")).toBe("Almacén Chilca km 62");
@@ -395,7 +416,7 @@ describe("oc: memoria del cliente", () => {
     expect(cell(ws, "G15")).toBe("AGENCIA");
     expect(cell(ws, "J15")).toBe("VALOR FLETE: 15 SOLES X LLANTA");
     expect(cell(ws, "C27")).toBe("Observaciones: llamar antes");
-    expect(cell(ws, "G29")).toBeNull();
+    expect(cell(ws, "G29")).toBe("STOCK 360PT"); // corrida H: el producto propio también lleva su bloque
     expect((await portal.getCompany(roca.id))!.creditTermsDays).toBe(30); // aceptó el plazo de la empresa: no cambia
   });
 
@@ -410,7 +431,7 @@ describe("oc: memoria del cliente", () => {
     out = await say("tal vez");
     expect(lastText(out)).toContain("Responde *sí* o *no*.");
     expect(lastText(out)).toContain("Servicio de enllante?");
-    for (const a of ["no", "no", "cliente", "15", "ninguna"]) out = await say(a);
+    for (const a of ["no", "no", "cliente", "15", "ninguna", "ninguna"]) out = await say(a);
     const ws = await sheetOf(out.find((m) => m.kind === "document")!);
     expect(cell(ws, "G9")).toBe("Av. Nueva 500, Callao");
     expect(cell(ws, "G8")).toBe("Av. Industrial 300, Lurín");
@@ -622,6 +643,7 @@ describe("revisión B: el pedido de la OC no se queda con lo que no es suyo", ()
     await prices.setConversation(FRANK, null);
     await say("oc roca");
     out = await say("llamar antes de llegar");
+    out = await say("ninguna"); // observaciones del despacho (corrida H)
     expect(out.some((m) => m.kind === "document")).toBe(true);
     expect(lastText(out)).toContain("Obs.: llamar antes de llegar");
   });
@@ -690,7 +712,7 @@ describe("revisión B: oc y el cotizador, permisos, plazo y cancelar", () => {
     await say("oc roca 7788");
     await say("4 x Fenixway Valor 87 295/80R22.5");
     let out: OutboundMessage[] = [];
-    for (const a of ["Av. Industrial 300, Lurín", "la misma", "Pedro Soto 999888777", "ninguna", "20/11", "sí", "no", "cliente", "60", "ninguna"]) out = await say(a);
+    for (const a of ["Av. Industrial 300, Lurín", "la misma", "Pedro Soto 999888777", "ninguna", "20/11", "sí", "no", "cliente", "60", "ninguna", "ninguna"]) out = await say(a);
     const ws = await sheetOf(out.find((m) => m.kind === "document")!);
     expect(cell(ws, "G11")).toBe("CREDITO 60 DÍAS"); // el pedido lleva lo que dijo el vendedor
     expect(lastText(out)).toContain("El plazo habitual sigue en 30 días; cámbialo en el portal si corresponde.");

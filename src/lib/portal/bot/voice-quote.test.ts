@@ -491,3 +491,134 @@ describe("medidas dictadas con voz real (corrida F, punto 9)", () => {
     expect(picked).toContain("Entendí:");
   });
 });
+
+// ── corrida H, puntos 5 y 6: varias llantas por voz, correcciones dirigidas y Prosegur con UB (transcripciones reales) ──
+describe("varias llantas en una nota de voz (corrida H, punto 5)", () => {
+  beforeEach(async () => {
+    await prices.upsertRows([row("own-valor99-11", "Valor 99", "11R22.5", 400), row("own-flama77-315", "Flama 77", "315/80R22.5", 455), row("own-valor89-235", "Valor 89", "235/75R17.5", 200), row("own-valor99-12", "Valor 99", "12R22.5", 410)]);
+    await prices.saveQuote({ number: "COT-0900", date: "2026-10-01", validUntil: "2026-10-08", validityDays: 7, currency: "USD", customer: { company: "Transportes Beta" }, items: [], subtotal: 0, taxPct: 18, taxLabel: "IGV", tax: 0, total: 0 } as never);
+  });
+
+  it("una nota con dos llantas (números pegados por Deepgram) -> dos ítems; cliente y plazo para toda la cotización; sin PDF", async () => {
+    const out = bodies(await say(voice("Cotízame 8 valor 99 en 295 80 r 22.5 y 4 Flama 77 en 315, 80 r 22.5 a 255 para transportes beta a 30 días."))).join("\n");
+    expect(out).toContain("Entendí:");
+    expect(out).toMatch(/1\. Fenixway 295\/80R22\.5 VALOR 99 x8/i);
+    expect(out).toMatch(/2\. Fenixway 315\/80R22\.5 FLAMA 77 x4/i);
+    expect(out).toContain("plazo: 30 días");
+    expect(await step()).toBe("choose");
+  });
+
+  it("correcciones dirigidas por voz: «El 2º eran 10.», «Al 1º ponle precio 259.», «Elemena el 2º.»; «Súmale …» agrega", async () => {
+    await say(voice("Cotízame 8 valor 99 en 295 80 r 22.5 y 4 Flama 77 en 315 80 r 22.5 para transportes beta."));
+    expect(bodies(await say(voice("El 2º eran 10."))).join("\n")).toMatch(/Flama 77 315\/80R22\.5 18PR x10/);
+    expect(bodies(await say(voice("Al 1º ponle precio 259."))).join("\n")).toMatch(/Valor 99 295\/80R22\.5 18PR x8 @ US\$ 259\.00 \(precio manual\)/);
+    const added = bodies(await say(voice("Súmale 6 valor 89 en 235 75 r 17.5."))).join("\n");
+    expect(added).toMatch(/3\. Fenixway Valor 89 235\/75R17\.5 18PR x6/);
+    const removedOut = await say(voice("Elemena el 2º."));
+    expect(bodies(removedOut).join("\n")).toMatch(/2\. .*Flama 77.*_\(quitado\)_/);
+    expect(docs(removedOut)).toHaveLength(0);
+    const [last] = await portal.listVoiceTranscripts({ limit: 1 });
+    expect(last).toMatchObject({ context: "correccion", outcome: "ok" });
+  });
+
+  it("pasada real: «Cotita 8, valor 99, …» (cotiza mal oído) es una cotización, no un reporte", async () => {
+    const out = bodies(await say(voice("Cotita 8, valor 99, 295, 80 r 22.5. Otra, 4 Flama 77, 315, 80 r 22.5. Para transportes beta."))).join("\n");
+    expect(out).not.toContain("🎙️ Entendí: «");
+    expect(out).toMatch(/1\. Fenixway 295\/80R22\.5 VALOR 99 x8/i);
+    expect(out).toMatch(/2\. Fenixway 315\/80R22\.5 FLAMA 77 x4/i);
+  });
+
+  it("pasada real: con «¿cambio, agregar o nueva?» abierto, «Súmale …» por voz agrega y una corrección dirigida espera la respuesta", async () => {
+    await say(voice("Cotízame 8 valor 99 en 295 80 r 22.5 y 4 Flama 77 en 315 80 r 22.5 para transportes beta."));
+    // Deepgram oyó «Padre A 4 …» por «Agrega cuatro …»: es un pedido con medida y el cotizador pregunta
+    expect(bodies(await say(voice("Padre A 4 Flama 77 en 275 80 r 22.5"))).join("\n")).toContain("¿Es un *cambio* en esa, una llanta para *agregar*, o una cotización *nueva*?");
+    expect(await step()).toBe("confirm_new");
+    expect(bodies(await say(voice("El 3º que sea 12."))).join("\n")).toContain("Antes dime qué hago con el pedido anterior");
+    // otro pedido dictado sin verbo («Valor 99 en 12 r 22.5 a 280»): el precio es precio, no 280 llantas
+    const again = bodies(await say(voice("Valor 99 en 12 r 22.5 a 280"))).join("\n");
+    expect(again).not.toMatch(/x280/);
+    expect(await step()).toBe("confirm_new");
+    const added = bodies(await say(voice("Súmale 6 valor 89 en 235 75 r 17.5."))).join("\n");
+    expect(added).toMatch(/Valor 89 235\/75R17\.5 18PR x6/);
+    expect(added).not.toContain("Responde *cambiar*");
+  });
+
+  it("no se pudo separar con seguridad: muestra lo entendido y pregunta; *Sí* sigue al cotizador", async () => {
+    const out = bodies(await say(voice("Cotiza 8, Westlake CM 958, en 11 r 22.5 a 198, Valor 99 en 11 r 22.5 a 185 para transportes beta.")));
+    const asked = out.join("\n");
+    expect(asked).toContain("Entendí estas llantas:");
+    expect(asked).toContain("no dice cantidad");
+    expect((await getPending(portal, FRANK, new Date()))?.kind).toBe("voice_split");
+    expect(await step()).toBe("idle");
+    const go = bodies(await say(press("Sí, así está bien"))).join("\n");
+    expect(go).toContain("Entendí:");
+    expect(await step()).toBe("choose");
+  });
+});
+
+describe("cotización de Prosegur por voz (corrida H, punto 6)", () => {
+  const pSettings: Settings = SettingsSchema.parse({
+    company: { name: "Professional Tyres", tradeName: "360° Tyres", signatureName: "360 by Professional Tyres", taxId: "RUC: 20565716396" },
+    pricing: { currency: "USD", taxPct: 18, provider: { marginPct: 15, pricesIncludeTax: false }, stalePriceDays: 30 },
+    quote: { numberFormat: "COT-{NNNN}", counterStart: 1, validityDays: 7, paymentType: "Factura crédito", paymentTerm: "30 días", deliveryTerm: "48 hrs post OC" },
+    customers: loadCustomerProfiles(),
+    salespeople: { [FRANK]: { name: "Frank Rodríguez" } },
+  });
+  // la cotización 471 (Juliaca), dictada y transcrita por Deepgram (fixtures/deepgram-varios-items.json, p02)
+  const P471 = "Cotízame para Prosegur Julíaca 4 valor 99 en 215 75 R 17.5 para la V 1231. 4 valor 89 para la v 1812, 2 valor 99 para la v 1911, 4 valor 89 para la v 2005 y 4 valor 89 para la v 2201.";
+  beforeEach(async () => {
+    await prices.upsertRows([row("own-valor99-215", "Valor 99", "215/75R17.5", 150), row("own-valor89-215", "Valor 89", "215/75R17.5", 155)]);
+    // una cotización anterior de Prosegur en Juliaca: la sucursal dictada se compara con las conocidas
+    await prices.saveQuote({ number: "COT-0471", date: "2026-11-13", validUntil: "2026-11-20", validityDays: 7, currency: "USD", customer: { company: "PROSEGUR SA" }, customerProfile: "prosegur", unit: "Juliaca", items: [], subtotal: 0, taxPct: 18, taxLabel: "IGV", tax: 0, total: 0 } as never);
+    bot = new BotHandler({ client, store: prices, settings: pSettings, portalStore: portal });
+  });
+
+  it("cliente y sucursal (como dirección), precios de contrato sin dictarlos, cada línea con su UB y la medida heredada; sin PDF hasta el ok escrito", async () => {
+    const out = bodies(await say(voice(P471)));
+    const all = out.join("\n");
+    expect(all).toContain("👤 Entendí: cliente *Prosegur* · sucursal *Juliaca* (va como dirección) · precios de contrato; abajo cada línea con su UB.");
+    expect(all).toContain("📏 Las líneas 2, 3, 4 y 5 no dicen medida: uso 215/75R17.5, la de la línea anterior.");
+    for (const l of [
+      "1. 215/75R17.5 18PR Fenixway Valor 99 MIXT UB 1231 x4 · US$ 123.17",
+      "2. 215/75R17.5 18PR Fenixway Valor 89 POST UB 1812 x4 · US$ 126.42",
+      "3. 215/75R17.5 18PR Fenixway Valor 99 MIXT UB 1911 x2 · US$ 123.17",
+      "4. 215/75R17.5 18PR Fenixway Valor 89 POST UB 2005 x4 · US$ 126.42",
+      "5. 215/75R17.5 18PR Fenixway Valor 89 POST UB 2201 x4 · US$ 126.42",
+    ])
+      expect(all).toContain(l);
+    expect(docs(await say(text("solicitante: Cesar Hilario")))).toHaveLength(0);
+    // una corrección dirigida antes del ok: cambia la línea, sigue sin PDF
+    expect(bodies(await say(voice("El 2º eran 10."))).join("\n")).toMatch(/Valor 89 .*UB 1812.* x10|10 × Valor 89/);
+    const ok = await say(text("ok"));
+    expect(docs(ok).length).toBeGreaterThan(0);
+    const q = (await prices.listQuotes(1))[0];
+    expect(q.customer.address).toBe("Juliaca");
+    expect(q.items.map((it) => [it.ub, it.quantity, it.unitPrice])).toEqual([
+      ["1231", 4, 123.17],
+      ["1812", 10, 126.42],
+      ["1911", 2, 123.17],
+      ["2005", 4, 126.42],
+      ["2201", 4, 126.42],
+    ]);
+  });
+
+  it("UB mal oída o que falta (siempre 4 cifras): pregunta por línea, escrita o dictada, o *sin ub*", async () => {
+    const out = bodies(await say(voice("Cotízame para proseguir jubiaca. 4 valor 99 para la UVNI 231. 4 valor 89 para la UVNI 812, 2 valor 99 para la UVNI 911."))).join("\n");
+    expect(out).toContain("Entendí la UB «231» en la línea 1 (Fenixway valor 99 x4), pero una UB tiene 4 cifras.");
+    expect((await getPending(portal, FRANK, new Date()))?.kind).toBe("voice_ub");
+    expect(bodies(await say(text("123"))).join("\n")).toContain("«123» no tiene 4 cifras");
+    expect(bodies(await say(text("1231"))).join("\n")).toContain("«812» en la línea 2");
+    expect(bodies(await say(voice("mil ochocientos doce"))).join("\n")).toContain("«911» en la línea 3");
+    const done = bodies(await say(text("sin ub"))).join("\n");
+    expect(done).toContain("UB 1231 x4");
+    expect(done).toContain("UB 1812 x4");
+    expect(await getPending(portal, FRANK, new Date())).toBeNull();
+  });
+
+  it("sin «cotízame»: «Prosegur, Juliaca. 4, valor 99, …, unidad 1812 …» también es una cotización (no un reporte)", async () => {
+    const out = bodies(await say(voice("Prosegur, Juliaca. 4, valor 99, un llegado 1231. 4 valor 89, unidad 1812. 2 valor 99, unidad 1911."))).join("\n");
+    expect(out).toContain("sucursal *Juliaca*");
+    expect(out).toContain("UB 1812 x4");
+    expect(out).not.toContain("🎙️ Entendí:");
+  });
+});

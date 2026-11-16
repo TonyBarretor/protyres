@@ -15,8 +15,9 @@
  */
 import { fold } from "../../tyre/brands";
 import { findTyreSizes } from "../../tyre/spec";
-import { checkSizes, displaySize, normalizeDictation, normalizeSpoken, normalizeVoiceCorrection, spokenToDigits, type DictatedQuote } from "../voice/dictation";
+import { checkSizes, dictatedProfileQuote, displaySize, fixQuoteVerb, normalizeDictation, normalizeSpoken, normalizeVoiceCorrection, spokenToDigits, type DictatedQuote } from "../voice/dictation";
 import { isSizeOnly, resolveSpokenSizes, type AmbiguousSize } from "../voice/sizes";
+import { joinUbDigits, parseVoiceEdit, type VoiceEdit } from "../voice/items";
 import { recordVoice, understoodOf } from "./voice-log";
 import { applyVocabulary } from "../voice/vocabulary";
 import { askAgain } from "./pause";
@@ -69,7 +70,15 @@ async function learned(ctx: PortalContext) {
 
 /** La transcripción con el vocabulario aprendido, números y medidas normalizados (para la precedencia del router). */
 export async function spokenForRouting(ctx: PortalContext, transcript: string): Promise<string> {
-  return normalizeSpoken(applyVocabulary(transcript, await learned(ctx)));
+  // "Cotita 8, valor 99 …" (cotiza mal oído; pasada real 2026-11-16) se enruta como "Cotiza …"
+  return normalizeSpoken(fixQuoteVerb(applyVocabulary(transcript, await learned(ctx))));
+}
+
+/** La nota empieza con un cliente con contrato y trae llantas ("Prosegur Juliaca: cuatro Valor 99 unidad 1231…"): cotización. */
+export async function isProfileVoiceQuote(ctx: PortalContext, transcript: string): Promise<boolean> {
+  const catalog = await catalogOf(ctx);
+  if (!catalog?.profiles?.length) return false;
+  return dictatedProfileQuote(applyVocabulary(transcript, await learned(ctx)), { designs: catalog.designs, brands: catalog.brands, sizes: catalog.sizes, profiles: catalog.profiles });
 }
 
 /** Nota de voz que es una cotización: `🎙 Escuché: …` y al cotizador (o la pregunta por la medida). */
@@ -77,35 +86,219 @@ export async function startVoiceQuote(ctx: PortalContext, transcript: string): P
   await logTranscript(ctx, transcript);
   await ctx.reply(heardLine(transcript));
   const catalog = await catalogOf(ctx);
-  const d = normalizeDictation(applyVocabulary(transcript, await learned(ctx)), { designs: catalog?.designs, brands: catalog?.brands, sizes: catalog?.sizes });
+  const d = normalizeDictation(applyVocabulary(transcript, await learned(ctx)), { designs: catalog?.designs, brands: catalog?.brands, sizes: catalog?.sizes, profiles: catalog?.profiles });
   const notes = d.fixes.length ? [`🔤 Corregí lo que oí: ${d.fixes.map((f) => `«${f.from}» → ${f.to}`).join(", ")}.`] : [];
-  const extra: SizeExtra = { choices: d.sizeChoices, unheard: d.unheardSizes, dictated: d };
-  if (!d.customer) {
+  if (d.profile) notes.push(profileNote(d.profile));
+  if (d.inherited.length) notes.push(inheritedNote(d.inherited));
+  const extra: SizeExtra = { choices: d.sizeChoices, unheard: d.unheardSizes, dictated: d, raw: !!d.profile };
+  const flow: SplitFlow = { text: d.text, transcript, customer: d.customer, profile: !!d.profile, ubIssues: d.ubIssues, offset: d.profile ? 1 : 0, sizeChoices: d.sizeChoices, unheard: d.unheardSizes };
+  // varias llantas que no se pudieron separar con seguridad: lo entendido y la pregunta (nunca se mezclan ni se descartan)
+  if (d.doubts.length) {
     if (notes.length) await ctx.reply(notes.join("\n"));
-    return continueVoiceQuote(ctx, d.text, transcript, extra);
-  }
-  // el cliente dictado contra las empresas del vendedor y los clientes de cotizaciones anteriores (nunca a ciegas)
-  const known = await knownCustomers(ctx, catalog?.customers ?? []);
-  const exact = known.find((k) => foldName(k.name) === foldName(d.customer));
-  const m = exact ? null : matchSpokenName(d.customer, known);
-  if (m?.kind === "clear" && m.best) {
-    notes.push(`👤 Cliente: entendí «${d.customer}» → *${m.best.name}*`);
-    await ctx.reply(notes.join("\n"));
-    return continueVoiceQuote(ctx, withCustomer(d.text, d.customer, m.best.name), transcript, { ...extra, customer: m.best.name });
-  }
-  if (m?.kind === "doubt") {
-    if (notes.length) await ctx.reply(notes.join("\n"));
-    const options = m.candidates.slice(0, 2).map((c) => c.name);
-    const step: Omit<VoiceCustomerStep, "createdAt"> = { kind: VOICE_CUSTOMER, text: d.text, transcript, spoken: d.customer, options, captureText: true, sizeChoices: d.sizeChoices, unheard: d.unheardSizes };
+    const step: Omit<VoiceSplitStep, "createdAt"> = { kind: VOICE_SPLIT, captureText: true, ...flow, doubts: d.doubts };
     await setPending(ctx.store, ctx.from, step, ctx.now);
-    await replyButtons(ctx, customerQuestion(d.customer, options), customerButtons(d.customer, options));
-    await recordVoice(ctx, { transcript, context: "cotizacion", understood: understoodOf(d, { questions: [`cliente: ${options.join(" / ")}`] }), outcome: "pregunta" });
+    await replyButtons(ctx, splitQuestion({ text: flow.text, offset: flow.offset, doubts: d.doubts }), SPLIT_BUTTONS);
+    await recordVoice(ctx, { transcript, context: "cotizacion", understood: understoodOf(d, { questions: d.doubts }), outcome: "pregunta" });
     return;
   }
-  if (!exact) notes.push(`⚠️ «${d.customer}» no está entre tus empresas ni los clientes conocidos: lo dejo tal cual. Si no es así, corrígelo (p. ej. *para ZBUSS*).`);
   if (notes.length) await ctx.reply(notes.join("\n"));
-  await continueVoiceQuote(ctx, d.text, transcript, extra);
+  return afterSplit(ctx, flow, extra);
 }
+
+/** Lo dictado ya separado en llantas: falta la UB de alguna línea, el cliente contra los conocidos, y al cotizador. */
+interface SplitFlow {
+  text: string;
+  transcript: string;
+  /** El cliente como se dictó ("" si no se dijo o es un cliente con perfil, que va en la cabecera). */
+  customer: string;
+  /** La primera línea del texto es la cabecera de un cliente con perfil ("prosegur Juliaca"). */
+  profile: boolean;
+  /** Líneas de llanta (índice desde 0) con la UB mal oída o sin UB cuando el cliente la pide. */
+  ubIssues: { item: number; heard?: string }[];
+  /** Cuántas líneas hay antes de la primera llanta (la cabecera). */
+  offset: number;
+  sizeChoices?: AmbiguousSize[];
+  unheard?: string[];
+}
+
+async function afterSplit(ctx: PortalContext, flow: SplitFlow, extra: SizeExtra = {}): Promise<void> {
+  if (flow.ubIssues.length) return askUb(ctx, flow);
+  if (!flow.customer || flow.profile) return continueVoiceQuote(ctx, flow.text, flow.transcript, { ...extra, choices: flow.sizeChoices, unheard: flow.unheard, raw: flow.profile });
+  const catalog = await catalogOf(ctx);
+  const notes: string[] = [];
+  // el cliente dictado contra las empresas del vendedor y los clientes de cotizaciones anteriores (nunca a ciegas)
+  const known = await knownCustomers(ctx, catalog?.customers ?? []);
+  const exact = known.find((k) => foldName(k.name) === foldName(flow.customer));
+  const m = exact ? null : matchSpokenName(flow.customer, known);
+  if (m?.kind === "clear" && m.best) {
+    await ctx.reply(`👤 Cliente: entendí «${flow.customer}» → *${m.best.name}*`);
+    return continueVoiceQuote(ctx, withCustomer(flow.text, flow.customer, m.best.name), flow.transcript, { ...extra, choices: flow.sizeChoices, unheard: flow.unheard, customer: m.best.name });
+  }
+  if (m?.kind === "doubt") {
+    const options = m.candidates.slice(0, 2).map((c) => c.name);
+    const step: Omit<VoiceCustomerStep, "createdAt"> = { kind: VOICE_CUSTOMER, text: flow.text, transcript: flow.transcript, spoken: flow.customer, options, captureText: true, sizeChoices: flow.sizeChoices, unheard: flow.unheard };
+    await setPending(ctx.store, ctx.from, step, ctx.now);
+    await replyButtons(ctx, customerQuestion(flow.customer, options), customerButtons(flow.customer, options));
+    await recordVoice(ctx, { transcript: flow.transcript, context: extra.context ?? "cotizacion", understood: extra.dictated ? understoodOf(extra.dictated, { questions: [`cliente: ${options.join(" / ")}`] }) : understoodOf(null, { questions: [`cliente: ${options.join(" / ")}`], text: flow.text }), outcome: "pregunta" });
+    return;
+  }
+  if (!exact) notes.push(`⚠️ «${flow.customer}» no está entre tus empresas ni los clientes conocidos: lo dejo tal cual. Si no es así, corrígelo (p. ej. *para ZBUSS*).`);
+  if (notes.length) await ctx.reply(notes.join("\n"));
+  await continueVoiceQuote(ctx, flow.text, flow.transcript, { ...extra, choices: flow.sizeChoices, unheard: flow.unheard });
+}
+
+/** "👤 Entendí: cliente *Prosegur* · sucursal *Juliaca* (va como dirección) (entendí «Prosegul Juliaca») · precios de contrato…". */
+function profileNote(p: NonNullable<DictatedQuote["profile"]>): string {
+  const said = `${p.name}${p.branch ? ` ${p.branch}` : ""}`;
+  const heard = foldName(p.heard) !== foldName(said) ? ` (entendí «${p.heard}»)` : "";
+  return p.branch
+    ? `👤 Entendí: cliente *${p.name}* · sucursal *${p.branch}* (va como dirección)${heard} · precios de contrato; abajo cada línea con su UB.`
+    : `👤 Entendí: cliente *${p.name}*${heard} · ⚠️ no entendí la sucursal: escríbela como *unidad: Juliaca* · precios de contrato; abajo cada línea con su UB.`;
+}
+
+/** "📏 Las líneas 2 y 3 no dicen medida: uso 215/75R17.5, la de la línea anterior." */
+function inheritedNote(inherited: { item: number; size: string }[]): string {
+  const n = inherited.map((x) => x.item + 1);
+  const which = n.length === 1 ? `La línea ${n[0]} no dice medida` : `Las líneas ${n.slice(0, -1).join(", ")} y ${n[n.length - 1]} no dicen medida`;
+  const sizes = [...new Set(inherited.map((x) => displaySize(x.size)))];
+  return `📏 ${which}: uso ${sizes.join(" / ")}, la de la línea anterior.`;
+}
+
+// ── varias llantas que no se pudieron separar (corrida H, punto 5) ──
+
+export const VOICE_SPLIT = "voice_split";
+
+/** Esperando que el vendedor confirme cómo se separaron las llantas dictadas (o lo dicte / escriba de nuevo). */
+export interface VoiceSplitStep extends PendingStep, SplitFlow {
+  kind: typeof VOICE_SPLIT;
+  doubts: string[];
+  captureText: true;
+}
+
+const SPLIT_BUTTONS = [
+  { id: "sí", title: "Sí, así está bien" },
+  { id: "no", title: "No, lo repito" },
+];
+
+function itemLinesOf(text: string, offset: number): string[] {
+  return text
+    .split("\n")
+    .slice(offset)
+    .filter((l) => !/^(?:para\s|plazo:|margen\s|dscto\s|con\s+igv|sin\s+igv)/i.test(l));
+}
+
+function splitQuestion(s: Pick<VoiceSplitStep, "text" | "offset" | "doubts">): string {
+  const lines = itemLinesOf(s.text, s.offset).map((l, i) => `${i + 1}. ${l}`);
+  return `Entendí estas llantas:\n${lines.join("\n")}\n\n⚠️ No estoy seguro de cómo separarlas: ${s.doubts.join("; ")}.\n¿Está bien así? Si no, díctalo de nuevo separando cada llanta (p. ej. «ocho Valor 99 en 295 80 22.5, y doce Flama 89 en 11 R 22.5») o escríbelo, una llanta por línea.`;
+}
+
+registerPendingHandler(VOICE_SPLIT, async (ctx, step, rawText) => {
+  const s = step as VoiceSplitStep;
+  if (ctx.msg.type === "audio") return false; // otra nota de voz: el pedido dictado de nuevo
+  const t = foldName(rawText);
+  if (/^(?:si|sí|ok|dale|correcto|asi esta bien|si asi esta bien|esta bien|listo)$/.test(t)) {
+    await clearPending(ctx.store, ctx.from);
+    await afterSplit(ctx, s, { context: "seguimiento" });
+    return true;
+  }
+  if (/^(?:no|no lo repito|no esta bien)$/.test(t)) {
+    await clearPending(ctx.store, ctx.from);
+    await ctx.reply("Listo, no lo cotizo. Díctalo de nuevo separando cada llanta, o escríbelo (una llanta por línea).");
+    return true;
+  }
+  return false; // lo escribió de nuevo: va al cotizador como un pedido escrito
+});
+
+registerPausable(VOICE_SPLIT, {
+  async describe(_ctx, step) {
+    const t = oneLine(String((step as VoiceSplitStep).transcript ?? ""));
+    return { companyId: null, label: `cotización por voz «${t.length > 40 ? `${t.slice(0, 39).trimEnd()}…` : t}»`, missing: "falta confirmar las llantas" };
+  },
+  async resume(ctx, step, prefix) {
+    await askAgain(ctx, step, prefix, splitQuestion(step as VoiceSplitStep), SPLIT_BUTTONS);
+  },
+});
+
+// ── UB de cada línea (corrida H, punto 6: siempre 4 cifras) ──
+
+export const VOICE_UB = "voice_ub";
+
+/** Esperando la UB de una línea (no se dijo, o lo oído no tiene 4 cifras). */
+export interface VoiceUbStep extends PendingStep, SplitFlow {
+  kind: typeof VOICE_UB;
+  captureText: true;
+}
+
+function ubQuestion(s: SplitFlow): string {
+  const issue = s.ubIssues[0];
+  const line = itemLinesOf(s.text, s.offset)[issue.item] ?? "";
+  const what = `la línea ${issue.item + 1} (${line})`;
+  const head = issue.heard ? `Entendí la UB «${issue.heard}» en ${what}, pero una UB tiene 4 cifras.` : `Falta la UB de ${what}.`;
+  return `${head} ¿Cuál es? Escríbela o díctala (p. ej. *1812*), o *sin ub* para seguir sin ella.`;
+}
+
+async function askUb(ctx: PortalContext, flow: SplitFlow): Promise<void> {
+  const step: Omit<VoiceUbStep, "createdAt"> = { kind: VOICE_UB, captureText: true, ...flow };
+  await setPending(ctx.store, ctx.from, step, ctx.now);
+  await ctx.reply(ubQuestion(flow));
+  await recordVoice(ctx, { transcript: flow.transcript, context: "cotizacion", understood: understoodOf(null, { questions: [`ub de la línea ${flow.ubIssues[0].item + 1}`], text: flow.text }), outcome: "pregunta" });
+}
+
+/** El texto con la UB puesta en la línea de llanta `item` (cambia la que tenía). */
+export function withUb(text: string, offset: number, item: number, ub: string | null): string {
+  const lines = text.split("\n");
+  const at = offset + item;
+  if (!lines[at]) return text;
+  const base = lines[at].replace(/\s+ub\s+\d+\b/i, "");
+  lines[at] = ub ? `${base} ub ${ub}` : base;
+  return lines.join("\n");
+}
+
+registerPendingHandler(VOICE_UB, async (ctx, step, rawText) => {
+  const s = step as VoiceUbStep;
+  let answer = rawText.trim();
+  if (ctx.msg.type === "audio" && ctx.msg.media) {
+    const r = await fetchVoice(ctx, { id: ctx.msg.media.id, mimeType: ctx.msg.media.mimeType });
+    if (!r.ok) {
+      await ctx.reply(r.reply.replace(/el reporte/, "la UB"));
+      return true;
+    }
+    answer = r.text;
+    await logTranscript(ctx, answer);
+    await ctx.reply(heardLine(answer));
+  }
+  const f = foldName(answer);
+  let ub: string | null = null;
+  if (!/^(?:sin ub|sin|ninguna|no tiene|no se|no sé)$/.test(f)) {
+    const digits = spokenToDigits(joinUbDigits(answer)).replace(/^\s*(?:la\s+)?(?:u\.?\s?b\.?|u\s+be|ube|unidad(?:\s+blindada)?)\s*:?\s*/i, "");
+    const only = digits.replace(/[^\d]/g, "");
+    if (!/^[\d\s.,]+[.]?$/.test(digits.trim()) || !only) {
+      if (ctx.msg.type !== "audio" && (explicitQuoteStart(answer) || findTyreSizes(answer).length)) return false; // otro pedido
+      await ctx.reply(`No entendí «${oneLine(answer).slice(0, 40)}» como una UB. ${ubQuestion(s)}`);
+      return true;
+    }
+    if (only.length !== 4) {
+      await ctx.reply(`«${only}» no tiene 4 cifras. ${ubQuestion(s)}`);
+      return true;
+    }
+    ub = only;
+  }
+  const flow: SplitFlow = { ...s, text: withUb(s.text, s.offset, s.ubIssues[0].item, ub), ubIssues: s.ubIssues.slice(1) };
+  await recordVoice(ctx, { transcript: answer, context: "ub", voiced: ctx.msg.type === "audio", understood: understoodOf(null, { questions: [], text: ub ? `ub ${ub}` : "sin ub" }), outcome: "ok" });
+  await clearPending(ctx.store, ctx.from);
+  await afterSplit(ctx, flow, { context: "seguimiento" });
+  return true;
+});
+
+registerPausable(VOICE_UB, {
+  async describe(_ctx, step) {
+    const t = oneLine(String((step as VoiceUbStep).transcript ?? ""));
+    return { companyId: null, label: `cotización por voz «${t.length > 40 ? `${t.slice(0, 39).trimEnd()}…` : t}»`, missing: "falta una UB" };
+  },
+  async resume(ctx, step, prefix) {
+    await askAgain(ctx, step, prefix, ubQuestion(step as VoiceUbStep));
+  },
+});
 
 // ── cliente dictado (prueba con Deepgram real, 2026-11-13: "ZBUSS" llegó como "Septa BUSS") ──
 
@@ -196,6 +389,8 @@ interface SizeExtra {
   customer?: string;
   /** El contexto del registro ("cotizacion", "medida", "correccion"); por defecto "cotizacion". */
   context?: string;
+  /** El texto empieza con la cabecera de un cliente con perfil ("prosegur Juliaca"): va al cotizador tal cual. */
+  raw?: boolean;
 }
 
 const sizeChoiceQuestion = (spoken: string, options: string[]) =>
@@ -220,7 +415,8 @@ async function continueVoiceQuote(ctx: PortalContext, text: string, transcript: 
     await record("pregunta", [`medida «${choice.from}»: ${choice.options.join(" / ")}`]);
     return ask(choice.options[0], sizeChoiceQuestion(choice.from, choice.options), choice.options, choice);
   }
-  if (!sizes.length) {
+  // un cliente con contrato (cabecera "prosegur Juliaca") no necesita medida: el contrato la trae
+  if (!sizes.length && !extra.raw) {
     const heard = extra.unheard?.[0];
     await record("fallo", [heard ? `medida no reconocida «${heard}»` : "sin medida"]);
     const head = heard ? `No encontré la medida «${heard}» en el catálogo.` : "No entendí la medida.";
@@ -236,7 +432,7 @@ async function continueVoiceQuote(ctx: PortalContext, text: string, transcript: 
     return ask(m.size, `${which} Escríbeme o díctame la medida correcta (p. ej. *295/80R22.5*), o *cancelar*.`);
   }
   await record("ok");
-  await ctx.requote(asRequest(text), { voice: transcript });
+  await ctx.requote(extra.raw ? text : asRequest(text), { voice: transcript });
 }
 
 /**
@@ -334,6 +530,14 @@ registerPausable(VOICE_SIZE, {
   },
 });
 
+/** El cotizador espera los datos del formato del cliente (Prosegur: solicitante) antes de mostrar la cotización. */
+const NEED_FIELDS = "need_fields";
+/** El cotizador preguntó si el pedido nuevo es un cambio, otra llanta para agregar o una cotización nueva. */
+const CONFIRM_NEW = "confirm_new";
+export const VOICE_EDIT_AFTER_EMAIL = "La cotización ya está armada y espero el correo del cliente: escríbelo (o *cancelar*); luego corrige con *cantidad 2 10* o *precio 1 259*.";
+export const VOICE_EDIT_AFTER_CONFIRM_NEW = "Antes dime qué hago con el pedido anterior: *cambiar*, *agregar* o *nueva* (o *cancelar*); luego dicta la corrección, p. ej. «el segundo eran diez».";
+export const VOICE_EDIT_AFTER_FIELDS = "Primero completa lo que falta (o responde *ok* para seguir sin eso); luego dicta la corrección, p. ej. «el segundo eran diez».";
+
 /** Pasos del cotizador con una cotización a la vista: una nota de voz es una corrección ("eran doce", "precio 259"). */
 const CORRECTION_STEPS = new Set(["choose", "review_quote", "need_email"]);
 
@@ -371,6 +575,43 @@ export async function voiceInQuote(ctx: PortalContext, transcript: string, quote
     return { what: "confirmación dictada" };
   }
   const spoken = normalizeSpoken(fixed);
+  // corrida H, punto 5: correcciones dirigidas ("el segundo eran diez", "quita el tercero", "al primero ponle precio 259") y
+  // "agrega / añade / súmale / también …" con la cotización a la vista: el comando escrito equivalente
+  const edit = CORRECTION_STEPS.has(quoteStep) || quoteStep === NEED_FIELDS || quoteStep === CONFIRM_NEW ? parseVoiceEdit(spokenToDigits(fixed)) : null;
+  if (edit && quoteStep === CONFIRM_NEW) {
+    // el cotizador preguntó "¿cambio, agregar o nueva?" por un pedido anterior: "súmale …" es agregar (a la abierta); una
+    // corrección dirigida espera a que se responda esa pregunta (si no, se queda repitiéndola; pasada real 2026-11-16)
+    if (edit.kind !== "add") {
+      await ctx.reply(VOICE_EDIT_AFTER_CONFIRM_NEW);
+      return { what: "corrección por voz en espera de cambio/agregar/nueva" };
+    }
+    const written = await editCommand(ctx, edit, transcript);
+    if (written) await ctx.requote(written, { voice: transcript });
+    return { what: "agregar por voz" };
+  }
+  if (edit && edit.kind !== "add" && quoteStep === "need_email") {
+    // la cotización ya está armada y el cotizador espera el correo (pasada real 2026-11-16: "El 2º eran 10." no hacía nada)
+    await ctx.reply(VOICE_EDIT_AFTER_EMAIL);
+    return { what: "corrección por voz en espera del correo" };
+  }
+  if (edit && quoteStep === NEED_FIELDS) {
+    // faltan datos del formato del cliente (solicitante…): las llantas se agregan como líneas; las correcciones, después
+    if (edit.kind !== "add") {
+      await ctx.reply(VOICE_EDIT_AFTER_FIELDS);
+      return { what: "corrección por voz en espera de datos" };
+    }
+    const written = await editCommand(ctx, edit, transcript);
+    if (written) await ctx.requote(written.replace(/^agregar\s+/, ""), { voice: transcript });
+    return { what: "agregar por voz" };
+  }
+  if (edit) {
+    const written = await editCommand(ctx, edit, transcript);
+    if (written) {
+      await ctx.requote(written, { voice: transcript });
+      return { what: edit.kind === "add" ? "agregar por voz" : "corrección por voz" };
+    }
+    return { what: "corrección por voz sin aplicar" };
+  }
   const asIdle = routeIntent({ text: spoken, state: "idle", isPortalUser: true, pendingPortalStep: null, mentionsKnownCompany: false, now: ctx.now });
   const reportish = asIdle.intent === "report" || asIdle.intent === "ambiguous";
   const correction = CORRECTION_STEPS.has(quoteStep);
@@ -387,6 +628,16 @@ export async function voiceInQuote(ctx: PortalContext, transcript: string, quote
   }
   // la respuesta a una pregunta del cotizador (aplicación, campos, proveedor, perfil esperando el pedido)
   if (!correction && !reportish && spoken.trim()) {
+    // con medida es un pedido: lo dictado normalizado ("a 280" -> "precio 280"; pasada real 2026-11-16: el cotizador leyó
+    // "Valor 99 en 12R22.5 a 280" como 280 llantas)
+    if (findTyreSizes(spoken).length) {
+      const catalog = await catalogOf(ctx);
+      const d = normalizeDictation(fixed, { designs: catalog?.designs, brands: catalog?.brands, sizes: catalog?.sizes, ubLevel: 1 });
+      if (d.items.length) {
+        await ctx.requote(d.text, { voice: transcript });
+        return { what: "pedido por voz" };
+      }
+    }
     await ctx.requote(spoken, { voice: transcript });
     return { what: "respuesta por voz" };
   }
@@ -396,4 +647,31 @@ export async function voiceInQuote(ctx: PortalContext, transcript: string, quote
   }
   await ctx.reply(`No entendí «${oneLine(transcript).slice(0, 80)}» como un cambio de la cotización. ${VOICE_CORRECTION_HELP}`);
   return { what: "no entendida" };
+}
+
+/**
+ * La corrección dirigida o lo agregado por voz como el comando escrito del cotizador ("cantidad 2 10", "quitar 3",
+ * "precio 1 259", "agregar Fenixway Flama 77 275/80R22.5 x4"). null si no se puede (ya se respondió por qué).
+ */
+async function editCommand(ctx: PortalContext, edit: VoiceEdit, transcript: string): Promise<string | null> {
+  if (edit.kind === "add") {
+    const catalog = await catalogOf(ctx);
+    const d = normalizeDictation(applyVocabulary(edit.text, await learned(ctx)), { designs: catalog?.designs, brands: catalog?.brands, sizes: catalog?.sizes, ubLevel: 1 });
+    if (!d.items.length || d.doubts.length) {
+      const lines = d.items.map((l, i) => `${i + 1}. ${l}`).join("\n");
+      await ctx.reply(`No pude separar con seguridad lo que quieres agregar${lines ? `:\n${lines}` : ""}${d.doubts.length ? `\n⚠️ ${d.doubts.join("; ")}.` : ""}\nDíctalo de nuevo (p. ej. «agrega cuatro Flama 77 en 275 80 22.5») o escríbelo: *agregar 275/80R22.5 Flama 77 x4*.`);
+      await recordVoice(ctx, { transcript, context: "correccion", understood: understoodOf(d, { questions: d.doubts }), outcome: "pregunta" });
+      return null;
+    }
+    if (d.inherited.length) await ctx.reply(inheritedNote(d.inherited));
+    await recordVoice(ctx, { transcript, context: "correccion", understood: understoodOf(d, { text: `agregar ${d.items.join("\n")}` }), outcome: "ok" });
+    return `agregar ${d.items.join("\n")}`;
+  }
+  if (edit.line === -1) {
+    await ctx.reply("¿Qué línea es? Dímelo con su número (p. ej. «el tercero eran diez») o escríbelo: *cantidad 3 10*.");
+    return null;
+  }
+  const written = edit.kind === "quantity" ? `cantidad ${edit.line} ${edit.value}` : edit.kind === "price" ? `precio ${edit.line} ${edit.value}` : `quitar ${edit.line}`;
+  await recordVoice(ctx, { transcript, context: "correccion", understood: understoodOf(null, { text: written }), outcome: "ok" });
+  return written;
 }

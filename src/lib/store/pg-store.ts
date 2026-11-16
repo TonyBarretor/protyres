@@ -9,7 +9,7 @@ import * as schema from "../../db/schema";
 import type { PriceRow, PriceSource } from "../ingest/types";
 import type { Quote } from "../quote/types";
 import type { QuoteShadowEntry, QuoteShadowRow } from "../quote/shadow";
-import { foldKey, photoKey, type BlockedInbound, type ConversationState, type ListQuotesOptions, type LoggedMessage, type MessageLogEntry, type PriceStore, type ProductPhoto, type ProviderSummary, type QuoteFile, type ReplaceScope, type StoredContractItem, type UsageEntry, type UsageSummaryRow } from "./types";
+import { foldKey, photoKey, stockOriginKey, type BlockedInbound, type ConversationState, type ListQuotesOptions, type LoggedMessage, type MessageLogEntry, type PriceStore, type ProductPhoto, type ProviderSummary, type QuoteFile, type ReplaceScope, type StoredContractItem, type StockDeduction, type StockDeductionInput, type Supplier, type UsageEntry, type UsageSummaryRow } from "./types";
 
 type Db = PostgresJsDatabase<typeof schema>;
 
@@ -172,6 +172,7 @@ export class PgStore implements PriceStore {
           });
       }
     });
+    await this.recordStockLoads(rows);
     return { inserted: rows.length, removed };
   }
 
@@ -279,24 +280,33 @@ export class PgStore implements PriceStore {
   async nextQuoteCounter(start = 1, key?: string): Promise<number> {
     const s = Math.max(1, start);
     const bump = sql`greatest(${schema.counters.value}, ${s - 1}) + 1`;
-    if (key && key !== "quote") {
-      // the salesman's own counter, once it exists
-      const [own] = await this.db.update(schema.counters).set({ value: bump }).where(eq(schema.counters.name, key)).returning({ value: schema.counters.value });
-      if (own) return own.value;
+    const global = (db: Pick<Db, "insert">) =>
+      db
+        .insert(schema.counters)
+        .values({ name: "quote", value: s })
+        .onConflictDoUpdate({ target: schema.counters.name, set: { value: bump } })
+        .returning({ value: schema.counters.value });
+    if (!key || key === "quote") {
+      const [row] = await global(this.db);
+      return row.value;
     }
-    const [row] = await this.db
-      .insert(schema.counters)
-      .values({ name: "quote", value: s })
-      .onConflictDoUpdate({ target: schema.counters.name, set: { value: bump } })
-      .returning({ value: schema.counters.value });
-    if (key && key !== "quote") {
+    // Corrida H (test:pg, quote-store.pg.test.ts): las primeras cotizaciones de un vendedor que llegan a la vez desde
+    // instancias distintas repetían número. Una llamada no encontraba su contador, otra lo creaba y una tercera lo
+    // avanzaba al mismo valor que la primera tomaba del global. Ahora todo el paso va en una transacción con un bloqueo
+    // por vendedor (se suelta en el commit): las llamadas del mismo vendedor van una tras otra; las de otros, no esperan.
+    return this.db.transaction(async (tx) => {
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${`counters:${key}`}))`);
+      // the salesman's own counter, once it exists
+      const [own] = await tx.update(schema.counters).set({ value: bump }).where(eq(schema.counters.name, key)).returning({ value: schema.counters.value });
+      if (own) return own.value;
+      const [row] = await global(tx);
       // first quote of this salesman: his counter starts from the global value just taken
-      await this.db
+      await tx
         .insert(schema.counters)
         .values({ name: key, value: row.value })
         .onConflictDoUpdate({ target: schema.counters.name, set: { value: sql`greatest(${schema.counters.value}, ${row.value})` } });
-    }
-    return row.value;
+      return row.value;
+    });
   }
 
   async setQuoteCounter(value: number, key = "quote"): Promise<void> {
@@ -596,6 +606,119 @@ export class PgStore implements PriceStore {
       if (!isMissingColumn(err)) throw err;
       // sync_marks.provider not migrated yet: keep the Drive sync working without it
       await this.sqlClient`insert into sync_marks (file_id, modified_time) values (${fileId}, ${modifiedTime}) on conflict (file_id) do update set modified_time = excluded.modified_time`;
+    }
+  }
+
+  // ---------- corrida H: proveedores y contador de stock (tablas suppliers, stock_loads, stock_deductions) ----------
+
+  /** Hora de la carga de cada origen de las filas (una lista nueva reinicia el contador de stock de ese origen). */
+  private async recordStockLoads(rows: PriceRow[]): Promise<void> {
+    const origins = [...new Set(rows.map((r) => stockOriginKey(r.provider, r.kind)))];
+    if (!origins.length) return;
+    try {
+      const at = new Date();
+      for (const o of origins) await this.sqlClient`insert into stock_loads (origin, loaded_at) values (${o}, ${at}) on conflict (origin) do update set loaded_at = excluded.loaded_at`;
+    } catch (err) {
+      if (!isMissingTable(err)) throw err;
+      console.warn("[store] stock_loads no existe: corre npm run db:migrate (el contador de stock no se reinicia con la carga)");
+    }
+  }
+
+  async listSuppliers(): Promise<Supplier[]> {
+    try {
+      const rows = await this.sqlClient<{ key: string; name: string; contact: string | null; phone: string | null; email: string | null; brands: unknown; provider: string | null; last_payment: string | null; last_delivery: string | null; updated_at: Date }[]>`
+        select key, name, contact, phone, email, brands, provider, last_payment, last_delivery, updated_at from suppliers order by name`;
+      return rows.map((r) => ({
+        key: r.key,
+        name: r.name,
+        contact: r.contact ?? undefined,
+        phone: r.phone ?? undefined,
+        email: r.email ?? undefined,
+        brands: Array.isArray(r.brands) ? r.brands.map(String) : [],
+        provider: r.provider ?? undefined,
+        lastPayment: r.last_payment ?? undefined,
+        lastDelivery: r.last_delivery ?? undefined,
+        updatedAt: new Date(r.updated_at).toISOString(),
+      }));
+    } catch (err) {
+      if (!isMissingTable(err)) throw err;
+      return [];
+    }
+  }
+
+  async upsertSuppliers(list: Supplier[]): Promise<{ inserted: number; updated: number }> {
+    let inserted = 0;
+    let updated = 0;
+    await this.sqlClient.begin(async (tx) => {
+      for (const x of list) {
+        const [r] = await tx<{ inserted: boolean }[]>`
+          insert into suppliers (key, name, contact, phone, email, brands, provider, last_payment, last_delivery, updated_at)
+          values (${x.key}, ${x.name}, ${x.contact ?? null}, ${x.phone ?? null}, ${x.email ?? null}, ${tx.json(x.brands)}, ${x.provider ?? null}, ${x.lastPayment ?? null}, ${x.lastDelivery ?? null}, now())
+          on conflict (key) do update set name = excluded.name, contact = excluded.contact, phone = excluded.phone, email = excluded.email,
+            brands = excluded.brands, provider = excluded.provider, last_payment = coalesce(suppliers.last_payment, excluded.last_payment),
+            last_delivery = coalesce(suppliers.last_delivery, excluded.last_delivery), updated_at = now()
+          returning (xmax = 0) as inserted`;
+        if (r?.inserted) inserted++;
+        else updated++;
+      }
+    });
+    return { inserted, updated };
+  }
+
+  async setSupplierTerms(key: string, terms: { payment?: string; delivery?: string }): Promise<void> {
+    if (terms.payment === undefined && terms.delivery === undefined) return;
+    const setPayment = terms.payment !== undefined;
+    const setDelivery = terms.delivery !== undefined;
+    await this.sqlClient`
+      update suppliers set
+        last_payment = case when ${setPayment} then ${terms.payment ?? null}::text else last_payment end,
+        last_delivery = case when ${setDelivery} then ${terms.delivery ?? null}::text else last_delivery end,
+        updated_at = now()
+      where key = ${key}`;
+  }
+
+  async setStockDeductions(orderKey: string, label: string, entries: StockDeductionInput[], at: Date = new Date()): Promise<void> {
+    await this.sqlClient.begin(async (tx) => {
+      // el mismo pedido nunca descuenta dos veces: un candado por pedido (dos "rehacer" a la vez van uno tras otro) y lo
+      // anterior de ese pedido se devuelve
+      await tx`select pg_advisory_xact_lock(hashtext(${"stock:" + orderKey}))`;
+      await tx`update stock_deductions set released_at = ${at} where order_key = ${orderKey} and released_at is null`;
+      for (const e of entries) {
+        if (!(e.quantity > 0)) continue;
+        await tx`
+          insert into stock_deductions (order_key, label, row_id, origin, warehouse, quantity, description, load_at, created_at)
+          values (${orderKey}, ${label}, ${e.rowId}, ${e.origin}, ${e.warehouse}, ${Math.round(e.quantity)}, ${e.description},
+                  (select loaded_at from stock_loads where origin = ${e.origin}), ${at})`;
+      }
+    });
+  }
+
+  async releaseStockDeductions(orderKey: string, at: Date = new Date()): Promise<number> {
+    const rows = await this.sqlClient`update stock_deductions set released_at = ${at} where order_key = ${orderKey} and released_at is null returning id`;
+    return rows.length;
+  }
+
+  async listStockDeductions(): Promise<StockDeduction[]> {
+    try {
+      const rows = await this.sqlClient<{ id: number; order_key: string; label: string | null; row_id: string; origin: string; warehouse: string; quantity: number; description: string; created_at: Date }[]>`
+        select d.id, d.order_key, d.label, d.row_id, d.origin, d.warehouse, d.quantity, d.description, d.created_at
+        from stock_deductions d left join stock_loads l on l.origin = d.origin
+        where d.released_at is null and d.load_at is not distinct from l.loaded_at
+        order by d.id`;
+      return rows.map((r) => ({
+        id: r.id,
+        orderKey: r.order_key,
+        label: r.label ?? "",
+        rowId: r.row_id,
+        origin: r.origin,
+        warehouse: r.warehouse,
+        quantity: r.quantity,
+        description: r.description,
+        createdAt: new Date(r.created_at).toISOString(),
+      }));
+    } catch (err) {
+      if (!isMissingTable(err)) throw err;
+      return [];
     }
   }
 

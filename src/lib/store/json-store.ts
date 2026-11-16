@@ -9,7 +9,7 @@ import { gunzipSync } from "node:zlib";
 import type { PriceRow } from "../ingest/types";
 import type { Quote } from "../quote/types";
 import type { QuoteShadowEntry, QuoteShadowRow } from "../quote/shadow";
-import { foldKey, photoKey, type BlockedInbound, type ConversationState, type ListQuotesOptions, type LoggedMessage, type MessageLogEntry, type PriceStore, type ProductPhoto, type ProviderSummary, type QuoteFile, type ReplaceScope, type StoredContractItem, type UsageEntry, type UsageSummaryRow } from "./types";
+import { foldKey, photoKey, stockOriginKey, type BlockedInbound, type ConversationState, type ListQuotesOptions, type LoggedMessage, type MessageLogEntry, type PriceStore, type ProductPhoto, type ProviderSummary, type QuoteFile, type ReplaceScope, type StoredContractItem, type StockDeduction, type StockDeductionInput, type Supplier, type UsageEntry, type UsageSummaryRow } from "./types";
 
 interface Data {
   prices: Record<string, PriceRow>;
@@ -34,6 +34,12 @@ interface Data {
   blocked: (Omit<BlockedInbound, "at"> & { at: string })[];
   /** QUOTE_LLM_MODE=shadow comparisons (the newest MAX_SHADOW); `at` = ISO. */
   quoteShadow: (Omit<QuoteShadowEntry, "at"> & { id: number; at: string })[];
+  /** Corrida H: proveedores de la lista de contactos, por key. */
+  suppliers: Record<string, Supplier>;
+  /** Corrida H: origen (stockOriginKey) -> ISO de su última carga. */
+  stockLoads: Record<string, string>;
+  /** Corrida H: descuentos de stock por pedidos (loadAt = la carga sobre la que se hicieron; releasedAt = devueltos). */
+  stockDeductions: (StockDeduction & { loadAt: string | null; releasedAt?: string })[];
 }
 
 const MAX_SHADOW = 2000;
@@ -42,7 +48,7 @@ const MAX_USAGE = 20000;
 
 const MAX_MESSAGES = 5000;
 
-const EMPTY: Data = { prices: {}, quotes: {}, conversations: {}, counters: { quote: 0 }, processed: [], syncMarks: {}, syncProviders: {}, photos: {}, quoteFiles: {}, contractPrices: {}, messages: [], usage: [], blocked: [], quoteShadow: [] };
+const EMPTY: Data = { prices: {}, quotes: {}, conversations: {}, counters: { quote: 0 }, processed: [], syncMarks: {}, syncProviders: {}, photos: {}, quoteFiles: {}, contractPrices: {}, messages: [], usage: [], blocked: [], quoteShadow: [], suppliers: {}, stockLoads: {}, stockDeductions: [] };
 
 const digits = (s: string | undefined) => (s ?? "").replace(/\D/g, "");
 
@@ -122,6 +128,14 @@ export class JsonStore implements PriceStore {
         }
       }
       for (const row of rows) this.data.prices[row.id] = row;
+      // corrida H: hora de la carga de cada origen (una lista nueva reinicia el contador de stock de ese origen)
+      // la marca de cada carga es única aunque dos cargas caigan en el mismo milisegundo (en Postgres cada carga cambia
+      // loaded_at): hora + número de carga del origen
+      const at = new Date().toISOString();
+      for (const o of new Set(rows.map((r) => stockOriginKey(r.provider, r.kind)))) {
+        const n = Number(this.data.stockLoads[o]?.split("#")[1] ?? 0) + 1;
+        this.data.stockLoads[o] = `${at}#${n}`;
+      }
       this.persist();
       return { inserted: rows.length, removed };
     });
@@ -435,6 +449,71 @@ export class JsonStore implements PriceStore {
       if (provider) this.data.syncProviders[fileId] = provider;
       this.persist();
     });
+  }
+
+  listSuppliers(): Promise<Supplier[]> {
+    return this.run(() => Object.values(this.data.suppliers).map((x) => ({ ...x, brands: [...x.brands] })).sort((a, b) => a.name.localeCompare(b.name)));
+  }
+
+  upsertSuppliers(list: Supplier[]): Promise<{ inserted: number; updated: number }> {
+    return this.run(() => {
+      let inserted = 0;
+      let updated = 0;
+      const at = new Date().toISOString();
+      for (const x of list) {
+        const prev = this.data.suppliers[x.key];
+        if (prev) updated++;
+        else inserted++;
+        this.data.suppliers[x.key] = { ...x, brands: [...x.brands], lastPayment: prev?.lastPayment ?? x.lastPayment, lastDelivery: prev?.lastDelivery ?? x.lastDelivery, updatedAt: at };
+      }
+      this.persist();
+      return { inserted, updated };
+    });
+  }
+
+  setSupplierTerms(key: string, terms: { payment?: string; delivery?: string }): Promise<void> {
+    return this.run(() => {
+      const x = this.data.suppliers[key];
+      if (!x) return;
+      if (terms.payment !== undefined) x.lastPayment = terms.payment;
+      if (terms.delivery !== undefined) x.lastDelivery = terms.delivery;
+      x.updatedAt = new Date().toISOString();
+      this.persist();
+    });
+  }
+
+  setStockDeductions(orderKey: string, label: string, entries: StockDeductionInput[], at: Date = new Date()): Promise<void> {
+    return this.run(() => {
+      const iso = at.toISOString();
+      for (const d of this.data.stockDeductions) if (d.orderKey === orderKey && !d.releasedAt) d.releasedAt = iso;
+      let id = this.data.stockDeductions.reduce((m, d) => Math.max(m, d.id), 0);
+      for (const e of entries) {
+        if (!(e.quantity > 0)) continue;
+        this.data.stockDeductions.push({ ...e, id: ++id, orderKey, label, createdAt: iso, loadAt: this.data.stockLoads[e.origin] ?? null });
+      }
+      this.persist();
+    });
+  }
+
+  releaseStockDeductions(orderKey: string, at: Date = new Date()): Promise<number> {
+    return this.run(() => {
+      let n = 0;
+      for (const d of this.data.stockDeductions) {
+        if (d.orderKey !== orderKey || d.releasedAt) continue;
+        d.releasedAt = at.toISOString();
+        n++;
+      }
+      if (n) this.persist();
+      return n;
+    });
+  }
+
+  listStockDeductions(): Promise<StockDeduction[]> {
+    return this.run(() =>
+      this.data.stockDeductions
+        .filter((d) => !d.releasedAt && d.loadAt === (this.data.stockLoads[d.origin] ?? null))
+        .map(({ loadAt: _l, releasedAt: _r, ...d }) => d),
+    );
   }
 
   async close(): Promise<void> {

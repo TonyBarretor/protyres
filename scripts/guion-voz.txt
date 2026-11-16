@@ -184,3 +184,39 @@ cancelar
 más
 @espera-texto 6–10 de
 cancelar
+
+# Corrida H, punto 5: varias llantas en una nota (transcripciones reales de Deepgram, con números pegados), correcciones
+# dirigidas y "súmale …" por voz; sin PDF hasta el ok escrito
+@voz Cotiza 2 Flama 77 en 215, 75 r 17.54 valor 89 en 235, 75 r 17.5, y 6 valor 99 en 12 r 22.5.
+@espera-texto 215/75R17.5
+@espera-texto 235/75R17.5
+@espera-texto 12R22.5
+@voz El 2º eran 10.
+@espera-texto x10
+@voz Al 1º ponle precio 259.
+@espera-texto precio manual
+@voz Súmale 6 valor 89 en 235 75 r 17.5.
+@voz Elemena el 2º.
+@espera-texto quitado
+cancelar
+# no se pudo separar con seguridad: muestra lo entendido y pregunta (Sí sigue)
+@voz Cotiza 2 double Coin Reverendos 902 en 315 80 r 22.52 Doublestar DSR 168 en 315 80 r 22.5 y 2 Westlake centímetro 990 y y 3 en 315 80 r 22.5.
+@espera-texto Entendí estas llantas
+@btn Sí, así está bien || sí
+cancelar
+
+# Corrida H, punto 6: Prosegur por voz (cotización 471): cliente y sucursal, precios de contrato, UB por línea, medida heredada
+@voz Cotízame para Prosegur Julíaca 4 valor 99 en 215 75 R 17.5 para la V 1231. 4 valor 89 para la v 1812, 2 valor 99 para la v 1911, 4 valor 89 para la v 2005 y 4 valor 89 para la v 2201.
+@espera-texto (va como dirección)
+@espera-texto UB 1231 x4
+@espera-texto UB 2201 x4
+@espera-texto US$ 126.42
+cancelar
+# UB mal oída: pregunta por línea
+@voz Cotízame para proseguir jubiaca. 4 valor 99 para la UVNI 231. 4 valor 89 para la UVNI 812, 2 valor 99 para la UVNI 911.
+@espera-texto una UB tiene 4 cifras
+1231
+@voz mil ochocientos doce
+sin ub
+@espera-texto UB 1812 x4
+cancelar

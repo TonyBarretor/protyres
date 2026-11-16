@@ -202,5 +202,26 @@ export function rankRequest(rows: PriceRow[], req: QuoteRequest, pricing: Pricin
 /** Convenience: load the rows from the store and rank every line of the request. */
 export async function findCandidates(store: PriceStore, req: QuoteRequest, pricing: PricingSettings, opts: MatchOptions = {}): Promise<LineCandidates[]> {
   const all = await store.allRows();
-  return rankRequest(all, req, pricing, opts);
+  const lcs = rankRequest(all, req, pricing, opts);
+  await markCommitted(store, lcs);
+  return lcs;
+}
+
+/** Units committed by orders per stock row id (active deductions: since the row's last load, not released). */
+export async function committedByRow(store: PriceStore): Promise<Map<string, number>> {
+  const out = new Map<string, number>();
+  const list = await store.listStockDeductions().catch(() => []);
+  for (const d of list) out.set(d.rowId, (out.get(d.rowId) ?? 0) + d.quantity);
+  return out;
+}
+
+/**
+ * Corrida H, punto 4: own-stock candidates get the units committed by orders (`committed`). Only the chat text uses it
+ * ("stock 4 (12 cargadas − 8 en pedidos)"): order and default option stay as they were. No deductions, no change.
+ */
+async function markCommitted(store: PriceStore, lcs: LineCandidates[]): Promise<void> {
+  if (!lcs.some((lc) => lc.candidates.some((c) => c.stockRow))) return;
+  const committed = await committedByRow(store);
+  if (!committed.size) return;
+  for (const lc of lcs) for (const c of lc.candidates) if (c.stockRow && committed.get(c.stockRow.id)) c.committed = committed.get(c.stockRow.id);
 }

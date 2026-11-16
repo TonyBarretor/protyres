@@ -46,7 +46,7 @@ import { withTimeout } from "../quotes/link";
 import type { VoiceCatalog } from "../voice/catalog";
 import { deepgramKeyFromEnv } from "../voice/deepgram";
 import { fetchVoice, logTranscript, VOICE_EMPTY, VOICE_TOO_SHORT } from "./report";
-import { heardLine, spokenForRouting, startVoiceQuote, voiceInQuote } from "./voice-quote";
+import { heardLine, isProfileVoiceQuote, spokenForRouting, startVoiceQuote, voiceInQuote } from "./voice-quote";
 import { clearNotices, clearPending, noticesOf, pausedOf, pendingOf, rawPendingOf, setPending, type IntentChoiceStep, type PendingStep } from "./state";
 import { fold } from "../../tyre/brands";
 
@@ -625,10 +625,12 @@ export async function routePortal(input: PortalRouteInput): Promise<boolean> {
         await ctx.reply(`${heardLine(heard.text)}\n${OFF_TOPIC_REPLY}`);
         return finish(true, vd.rule, "fuera de tema (voz)");
       }
-      if (vd.intent === "quote") {
+      // corrida H, punto 6: "Prosegur Juliaca: cuatro Valor 99 unidad 1231…" (sin "cotízame" ni medida) es una cotización,
+      // como "prosegur ayacucho …" escrito
+      if (vd.intent === "quote" || (!live && (await isProfileVoiceQuote(ctx, heard.text)))) {
         if (pending) await leave(pending, "quoter");
         await startVoiceQuote(ctx, heard.text);
-        return finish(true, vd.rule, "cotización por voz");
+        return finish(true, vd.intent === "quote" ? vd.rule : "voz", "cotización por voz");
       }
       if (vd.intent === "route_choice" && live && getPausable(live.kind)) {
         await ctx.reply(heardLine(heard.text));

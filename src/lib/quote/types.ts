@@ -77,6 +77,11 @@ export interface Candidate {
   available: number | null;
   /** Provider stock per warehouse, from the row (JCH); shown in the chat options only, never on the quote. */
   stockByWarehouse?: Record<string, number>;
+  /**
+   * Units of `stockRow` already committed by orders since its last load (corrida H, contador de stock); shown in the chat
+   * options only. `available` stays the loaded quantity, so the ranking and the default option do not change.
+   */
+  committed?: number;
   /** List price per unit before discount, net of tax, in the quote currency (own items). */
   listNet?: number;
   /** Discount applied to the list price (own items). */

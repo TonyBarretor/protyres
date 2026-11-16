@@ -389,6 +389,16 @@ function warehouseSuffix(total: number, byWarehouse: Record<string, number> | un
   return list ? ` (${list})` : "";
 }
 
+/**
+ * Corrida H, punto 4 (contador de stock): " · stock 4 (12 cargadas − 8 en pedidos)" / " · sin stock (12 cargadas − 12 en
+ * pedidos)" when orders committed units of an own-stock row since its last load. Without orders the text is as before.
+ */
+export function stockWithOrders(loaded: number, committed: number): string {
+  const left = loaded - committed;
+  const why = `(${loaded} cargadas − ${committed} en pedidos)`;
+  return left > 0 ? ` · stock ${left} ${why}` : ` · sin stock ${why}`;
+}
+
 const COMMAND_WORD = /^(?:enviar|send|ayuda|help|hola|menu|inicio|gracias|listo|dale|si|no|ok|cancelar|seguir|continuar|cotizar|confirmar|proveedores|listas|cotizaciones|contrato|contratos|fotos?|precios?|stock|cantidad|cant|quitar|quita|eliminar|aplicacion|archivo|nombre|numero|nro|reenviar|reenvia|archivos|pdf|correo|email|borrar|proveedor|dscto|descuento|margen|historial|agregar|agrega|anadir|anade)\b/;
 
 /** The question for a contract item without APLICACIÓN yet ("Flama 77"). */
@@ -493,7 +503,7 @@ export class BotHandler {
       // reciba "no leo audios" (ni con el cotizador a mitad de un flujo: corrida F); con el cotizador a mitad de un flujo
       // solo entran comandos explícitos del portal y notas de voz.
       const quoteStep = pendingProfile(state) ? "profile" : state.step;
-      if (await routePortal({ from, text, msg, quoteStep, voiceQuote: state.step === "choose" && !!state.voice, voiceCatalog: () => voiceCatalogFromStore(this.store), reply: (body) => this.reply(from, body), replyInteractive: (m) => this.client.sendInteractive(from, m), sendDocument: (file, name, caption, mime) => this.client.sendDocument(from, file, name, caption, mime), sendTextTo: (to, body) => this.client.sendText(to, body), downloadMedia: (id) => this.client.downloadMedia(id), logMessage: (e) => this.store.logMessage(e), requote: (m) => this.handle(m), defer: (fn) => after.push(fn), store: this.deps.portalStore, log: (m) => this.log(m) })) return;
+      if (await routePortal({ from, text, msg, quoteStep, voiceQuote: state.step === "choose" && !!state.voice, voiceCatalog: () => voiceCatalogFromStore(this.store, Date.now(), this.settings.customers), reply: (body) => this.reply(from, body), replyInteractive: (m) => this.client.sendInteractive(from, m), sendDocument: (file, name, caption, mime) => this.client.sendDocument(from, file, name, caption, mime), sendTextTo: (to, body) => this.client.sendText(to, body), downloadMedia: (id) => this.client.downloadMedia(id), logMessage: (e) => this.store.logMessage(e), requote: (m) => this.handle(m), defer: (fn) => after.push(fn), store: this.deps.portalStore, log: (m) => this.log(m) })) return;
       if (["ayuda", "help", "?", "hola", "menu", "inicio"].includes(cmd)) return this.reply(from, HELP);
       if (["cancelar", "cancel", "salir", "reset"].includes(cmd)) {
         await this.store.setConversation(from, null);
@@ -780,7 +790,7 @@ export class BotHandler {
     const r = c.row;
     const name = [r.brand, r.model].filter(Boolean).join(" ") || r.description.slice(0, 40);
     const size = r.sizeDisplay ? ` ${r.sizeDisplay}${r.ply ? ` ${r.ply}PR` : ""}` : "";
-    const stock = c.available === null ? "" : c.available === 0 ? " · sin stock" : ` · stock ${c.available}${warehouseSuffix(c.available, c.stockByWarehouse)}`;
+    const stock = c.available === null ? "" : c.committed ? stockWithOrders(c.available, c.committed) : c.available === 0 ? " · sin stock" : ` · stock ${c.available}${warehouseSuffix(c.available, c.stockByWarehouse)}`;
     let price: string;
     if (r.kind === "own") {
       const disc = c.discountPct > 0 ? ` (lista ${fmtMoney(c.listNet!, this.cur)} −${c.discountPct}%)` : ` (lista${c.row.maxDiscountPct !== undefined ? `, máx. dscto ${c.row.maxDiscountPct}%` : ""})`;

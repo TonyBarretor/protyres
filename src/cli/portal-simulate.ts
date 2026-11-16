@@ -52,6 +52,9 @@
  * así una llamada que se saltara el medidor también cuenta.
  * En modo interactivo valen las mismas formas y /quit.
  *
+ * --pg-test (corrida H, `npm run test:pg`): los dos stores en la base de pruebas de PGTEST_DB_URL (solo una base
+ * protyres_pgtest_…, o la de PGTEST_URL; nunca la de DATABASE_URL), que se puede ensuciar: puntajes, @empresa-prueba y
+ * @encuesta van ahí. --out <carpeta>: adjuntos y correos en otra carpeta (corridas en paralelo no se pisan).
  * Datos: por defecto store JSON del portal (PORTAL_STORE=json) y del cotizador, sin DATABASE_URL (salvo --db). Trabaja
  * sobre COPIAS en out/simulacion/ (data/ queda intacto); --persist escribe en data/portal-store.json y data/store.json.
  * Sin PORTAL_SESSION_SECRET usa uno de simulación. Sale con código 1 si algún mensaje termina en "Ocurrió un error" (guion).
@@ -75,10 +78,12 @@ interface Args {
   audio?: string;
   db: boolean;
   persist: boolean;
+  pgTest: boolean;
+  out?: string;
 }
 
 function parseArgs(argv: string[]): Args {
-  const out: Args = { as: "frank", db: false, persist: false };
+  const out: Args = { as: "frank", db: false, persist: false, pgTest: false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     const next = () => {
@@ -91,20 +96,33 @@ function parseArgs(argv: string[]): Args {
     else if (a === "--audio") out.audio = next();
     else if (a === "--db") out.db = true;
     else if (a === "--persist") out.persist = true;
+    else if (a === "--pg-test") out.pgTest = out.db = true;
+    else if (a === "--out") out.out = next();
     else if (a === "--help" || a === "-h") {
-      console.log("Uso: npm run portal:simulate -- --as <usuario|número> [--script <archivo>] [--audio <archivo>] [--db] [--persist]");
+      console.log("Uso: npm run portal:simulate -- --as <usuario|número> [--script <archivo>] [--audio <archivo>] [--db] [--persist] [--pg-test] [--out <carpeta>]");
       process.exit(0);
     } else throw new Error(`argumento desconocido: ${a}`);
   }
   return out;
 }
 
-const outDir = path.resolve(process.cwd(), "out/simulacion");
+let outDir = path.resolve(process.cwd(), "out/simulacion");
 const SIM_SECRET = "simulacion-portal-0123456789abcdef-no-usar-en-produccion";
 
 /** Entorno de simulación: JSON local, sin base salvo --db, sin correo real; copias de los stores salvo --persist. */
 function prepareEnv(args: Args): string[] {
   const notes: string[] = [];
+  if (args.out) outDir = path.resolve(process.cwd(), args.out);
+  if (args.pgTest) {
+    // corrida H: solo la base temporal de test:pg (o la local de PGTEST_URL); jamás DATABASE_URL
+    const url = process.env.PGTEST_DB_URL;
+    if (!url) throw new Error("--pg-test necesita PGTEST_DB_URL (la pone npm run test:pg)");
+    const name = new URL(url).pathname.slice(1);
+    if (!/^protyres_pgtest_\d+_[a-z0-9]+$/.test(name) && url !== process.env.PGTEST_URL) throw new Error(`--pg-test: ${name} no es una base de pruebas`);
+    if (args.persist) throw new Error("--pg-test no va con --persist");
+    process.env.DATABASE_URL = url;
+    delete process.env.PORTAL_STORE;
+  }
   fs.mkdirSync(outDir, { recursive: true });
   // adjuntos y correos de la corrida anterior (los nombres empiezan con la secuencia)
   for (const f of fs.readdirSync(outDir)) if (/^(?:\d{3}-|correo-\d{2}-)/.test(f)) fs.rmSync(path.join(outDir, f));
@@ -125,7 +143,7 @@ function prepareEnv(args: Args): string[] {
       copy("data/store.json", "store.sim.json", "STORE_PATH");
       notes.push("Datos: copia de data/ en out/simulacion/ (data/ no cambia; --persist para escribir en data/).");
     } else notes.push("Datos: data/portal-store.json y data/store.json (--persist).");
-  } else notes.push("⚠️ --db: se usa DATABASE_URL (base real).");
+  } else notes.push(args.pgTest ? "--pg-test: base temporal de pruebas (PGTEST_DB_URL)." : "⚠️ --db: se usa DATABASE_URL (base real).");
   delete process.env.RESEND_API_KEY; // los correos quedan como borrador en out/simulacion
   if (!process.env.PORTAL_SESSION_SECRET) {
     process.env.PORTAL_SESSION_SECRET = SIM_SECRET;
@@ -348,7 +366,7 @@ async function main() {
   const portal = await getPortalStore();
   const store = await getStore();
   // corrida G: puntajes en la copia si no los tiene (solo sobre la copia: nunca en data/ ni en la base)
-  const onCopy = !args.db && !args.persist && process.env.PORTAL_STORE_PATH === path.join(outDir, "portal-store.sim.json");
+  const onCopy = args.pgTest || (!args.db && !args.persist && process.env.PORTAL_STORE_PATH === path.join(outDir, "portal-store.sim.json"));
   if (onCopy && !(await portal.latestScoreRun())) {
     const { recalcScores } = await import("../lib/portal/scoring/recalc");
     const { loadPortalConfig } = await import("../lib/portal/config");
@@ -665,7 +683,7 @@ async function main() {
 
   /** @empresa-prueba <RUC> <razón social>: como el import del padrón MTC (upsertCompanies), en la copia de datos. */
   const testCompany = async (ruc: string, razonSocial: string) => {
-    if (!args.db && !args.persist) {
+    if (args.pgTest || (!args.db && !args.persist)) {
       const r = await portal.upsertCompanies([{ ruc, razonSocial, sector: null, departamento: "LIMA", unidades: 12, llantasPiso: 0, antiguedadMedia: null }]);
       console.log(`🏢 empresa de prueba ${ruc} (${r.inserted ? "nueva" : "ya existía"}): ${razonSocial}`);
     } else thrown.push("@empresa-prueba solo sobre la copia de datos (sin --db ni --persist)");
@@ -674,7 +692,7 @@ async function main() {
   /** @encuesta <comentario>: encuesta nueva para una empresa inventada, respondida por la función de la server action. */
   const SURVEY_RUC = "20999999901";
   const survey = async (comment: string, lineNo: number, snapshot: boolean) => {
-    if (args.db || args.persist) {
+    if (!args.pgTest && (args.db || args.persist)) {
       thrown.push("@encuesta solo sobre la copia de datos (sin --db ni --persist)");
       return;
     }

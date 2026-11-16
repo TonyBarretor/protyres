@@ -14,7 +14,7 @@ export default defineConfig({
     globalSetup: ["src/test-pg/global-setup.ts"],
     // una sola base: los archivos corren uno tras otro
     fileParallelism: false,
-    testTimeout: 120_000,
+    testTimeout: Number(process.env.PGTEST_TIMEOUT ?? 120_000),
     hookTimeout: 180_000,
   },
 });

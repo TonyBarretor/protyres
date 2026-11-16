@@ -65,7 +65,8 @@ describe("FORMATO PEDIDO ATC´S", () => {
     // detail: inputs written, the template's row formula kept
     expect([v("E18"), v("F18"), v("I18")]).toEqual([4, "295/80R22.5 18PR FENIXWAY VALOR 87", 413.3]);
     expect(v("J18")).toEqual({ formula: "I18*E18", result: 1653.2 });
-    expect([v("E19"), v("F19"), v("I19")]).toEqual([2, "215/75R17.5 18PR MARCA X M1", 118]);
+    // corrida H: con precio sin IGV, I = +K*1.18 (como en el pedido del vendedor) y el precio sin IGV en K
+    expect([v("E19"), v("F19"), v("I19"), v("K19")]).toEqual([2, "215/75R17.5 18PR MARCA X M1", { formula: "+K19*1.18", result: 118 }, 100]);
     expect(v("J19")).toEqual({ formula: "I19*E19", result: 236 });
     expect([v("E20"), v("F20"), v("I20")]).toEqual([null, null, null]);
     expect(v("J24")).toMatchObject({ formula: "I24*E24" });
@@ -75,17 +76,20 @@ describe("FORMATO PEDIDO ATC´S", () => {
     expect(v("K25")).toEqual({ formula: "+J25/1.18", result: 1601.02 });
     expect(v("C27")).toBe("Observaciones: Despachar por la mañana");
 
-    // terceros
-    expect(v("G29")).toBe("PROVEEDOR DEMO");
-    expect(v("G33")).toBe("215/75R17.5 18PR");
-    expect(v("G34")).toBe("MARCA X");
-    expect(v("G35")).toBe("M1");
-    expect(v("G36")).toBe(92);
-    expect(v("G37")).toBe("LETRAS 90");
-    expect(v("G38")).toBe("ALMACEN 360");
-    expect(v("C41")).toBe("CONTACTO DE PERSONA EN AGENCIA AGENCIA DEMO");
-    expect(v("C42")).toBe("Luis Demo");
-    expect(v("D43")).toBe("900 000 002");
+    // corrida H: un bloque por producto; el que no es de terceros es stock propio (config/portal.json orders.ownStock)
+    expect(v("G29")).toBe("STOCK 360PT");
+    expect(v("G33")).toBe("295/80R22.5 18PR");
+    expect(v("G36")).toBe(0);
+    expect(v("G42")).toBe("PROVEEDOR DEMO");
+    expect(v("G46")).toBe("215/75R17.5 18PR");
+    expect(v("G47")).toBe("MARCA X");
+    expect(v("G48")).toBe("M1");
+    expect(v("G49")).toBe(92);
+    expect(v("G50")).toBe("LETRAS 90");
+    expect(v("G51")).toBe("ALMACEN 360");
+    expect(v("C54")).toBe("CONTACTO DE PERSONA EN AGENCIA AGENCIA DEMO");
+    expect(v("C55")).toBe("Luis Demo");
+    expect(v("D56")).toBe("900 000 002");
 
     // the template's labels, merges and widths stay
     expect(v("C2")).toBe("FORMATO PEDIDO ATC´S");
@@ -99,7 +103,8 @@ describe("FORMATO PEDIDO ATC´S", () => {
     expect(ws.getCell("G4").numFmt).toBe("mm-dd-yy");
   });
 
-  it("joins several third-party items, writes soles labels and contado", async () => {
+  // corrida H: antes los ítems de terceros se juntaban con " / " en un solo bloque; ahora cada producto lleva su bloque
+  it("one block per third-party product, soles labels and contado", async () => {
     const data: PedidoData = {
       ...sample,
       moneda: "PEN",
@@ -115,18 +120,24 @@ describe("FORMATO PEDIDO ATC´S", () => {
     const v = (a: string) => ws.getCell(a).value;
     expect(v("G11")).toBe("CONTADO");
     expect(v("G29")).toBe("PROV 1");
-    expect(v("G33")).toBe("11R22.5 16PR / 12R22.5 18PR");
-    expect(v("G35")).toBe("X1 / -");
-    expect(v("G36")).toBe("400.00 / 480.50");
+    expect(v("G33")).toBe("11R22.5 16PR");
+    expect(v("G35")).toBe("X1");
+    expect(v("G36")).toBe(400);
+    expect(v("G42")).toBe("PROV 1");
+    expect(v("G46")).toBe("12R22.5 18PR");
+    expect(v("G48")).toBeNull();
+    expect(v("G49")).toBe(480.5);
     expect(v("I17")).toBe("Precio Unit  INC IGV S/");
     expect(v("C36")).toBe("PRECIO UNITARIO DE COMPRA INC IGV SOLES");
+    expect(v("C49")).toBe("PRECIO UNITARIO DE COMPRA INC IGV SOLES");
     expect(v("G12")).toBeNull();
     expect(v("C27")).toBe("Observaciones: ");
   });
 
-  it("refuses more items than the format's rows", async () => {
-    const items = Array.from({ length: PEDIDO_MAX_ITEMS + 1 }, () => sample.items[0]);
-    await expect(buildPedidoXlsx({ ...sample, items })).rejects.toThrow(/7 filas de ítems.*8/);
+  // corrida H: las filas que faltan se insertan (pedido-bloques.test.ts); el tope es de productos distintos
+  it("refuses more distinct products than PEDIDO_MAX_ITEMS", async () => {
+    const items = Array.from({ length: PEDIDO_MAX_ITEMS + 1 }, (_, i) => ({ ...sample.items[0], modelo: `M${i}` }));
+    await expect(buildPedidoXlsx({ ...sample, items })).rejects.toThrow(/hasta 40 productos distintos y este tiene 41/);
   });
 
   it("names the file after the short company name and the date", () => {
@@ -178,12 +189,13 @@ describe("pedidoFromQuote", () => {
     expect(data.items[1].terceros).toEqual({ proveedor: "PROVEEDOR DEMO", precioCompraConIgv: 92.04, contacto: "Pedro Demo" });
 
     const ws = await reload(await buildPedidoXlsx(data));
-    expect(ws.getCell("I18").value).toBe(413);
+    expect(ws.getCell("I18").value).toEqual({ formula: "+K18*1.18", result: 413 });
     expect(ws.getCell("F19").value).toBe("215/75R17.5 18PR CARLEO DH56");
     expect(ws.getCell("G11").value).toBe("CREDITO 45 DÍAS");
-    expect(ws.getCell("G29").value).toBe("PROVEEDOR DEMO");
-    expect(ws.getCell("G30").value).toBe("Pedro Demo");
-    expect(ws.getCell("G36").value).toBe(92.04);
+    expect(ws.getCell("G29").value).toBe("STOCK 360PT");
+    expect(ws.getCell("G42").value).toBe("PROVEEDOR DEMO");
+    expect(ws.getCell("G43").value).toBe("PEDRO DEMO");
+    expect(ws.getCell("G49").value).toBe(92.04);
   });
 
   it("reads the credit term", () => {

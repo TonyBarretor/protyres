@@ -70,11 +70,11 @@ export async function assignCompany(formData: FormData): Promise<void> {
   }
   if (company.ownerUserId === target.id) done(back, "aviso", `La empresa ya es de ${target.nombre}.`);
 
-  await store.setOwner(company.id, target.id);
-  let opp = await store.getOpenOpportunity(company.id);
-  if (!opp) {
-    opp = await store.createOpportunity({ companyId: company.id, ownerUserId: target.id, etapa: "prospecto", createdBy: user.id });
-  } else if (opp.ownerUserId !== target.id) {
+  // corrida H: solo si el dueño sigue siendo el que se leyó (dos vendedores que pulsan *Asignarme* a la vez: uno la toma)
+  if (!(await store.setOwner(company.id, target.id, { onlyIfOwner: company.ownerUserId }))) done(back, "error", "La empresa cambió de dueño en este momento. Revisa la ficha.");
+  // la abierta o una nueva, en una sola operación (dos envíos seguidos no crean dos)
+  let { opportunity: opp } = await store.openOrCreateOpportunity({ companyId: company.id, ownerUserId: target.id, etapa: "prospecto", createdBy: user.id });
+  if (opp.ownerUserId !== target.id) {
     opp = (await store.updateOpportunity(opp.id, { ownerUserId: target.id })) ?? opp;
   }
   await log(store, user, company.id, target.id === user.id ? `${user.nombre} se asignó la empresa.` : `${user.nombre} asignó la empresa a ${target.nombre}.`, opp.id);

@@ -450,7 +450,8 @@ export class JsonPortalStore implements PortalStore {
     return copy(c);
   }
 
-  setOwner(companyId: number, userId: number | null): Promise<Company | null> {
+  async setOwner(companyId: number, userId: number | null, opts?: { onlyIfOwner: number | null }): Promise<Company | null> {
+    if (opts && (this.companies.get(companyId)?.ownerUserId ?? null) !== opts.onlyIfOwner) return null;
     return this.updateCompany(companyId, { ownerUserId: userId });
   }
 
@@ -855,6 +856,13 @@ export class JsonPortalStore implements PortalStore {
     this.stageHistoryRows.push({ id: this.nextId("stageHistory"), opportunityId: o.id, etapa, enteredAt: at, leftAt: null, changedBy: input.createdBy ?? null });
     this.changed();
     return copy(o);
+  }
+
+  async openOrCreateOpportunity(input: OpportunityInput): Promise<{ opportunity: Opportunity; created: boolean }> {
+    // sin await antes de crear: nada se intercala entre la búsqueda y la creación
+    const open = [...this.opportunities.values()].filter((o) => o.companyId === input.companyId && o.closedAt === null).sort((a, b) => time(b.updatedAt) - time(a.updatedAt) || b.id - a.id)[0];
+    if (open) return { opportunity: copy(open), created: false };
+    return { opportunity: await this.createOpportunity(input), created: true };
   }
 
   async getOpportunity(id: number): Promise<Opportunity | null> {

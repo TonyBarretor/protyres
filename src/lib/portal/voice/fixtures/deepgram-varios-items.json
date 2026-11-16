@@ -1,0 +1,868 @@
+{
+ "descripcion": "Corrida H, puntos 5 y 6: transcripciones reales de Deepgram (nova-3/es, smart_format, keyterms del piloto) de notas de voz con varias llantas, cotización de Prosegur con UB y correcciones dirigidas, grabadas con voces de macOS (say) el 2026-11-16. «said» = lo dictado; «heard» = lo que devolvió Deepgram; «esperado» = lo que entiende normalizeDictation (o parseVoiceEdit) con fixtures/test-catalog.ts. Los «-sin-keyterms» son la primera pasada, antes de mandar «Prosegur» y «UB» como keyterms.",
+ "casos": [
+  {
+   "id": "m01",
+   "voice": "Paulina",
+   "said": "Cotízame ocho Valor 99 en 295 80 R 22.5, y doce Flama 89 en 11 R 22.5, para Zeta Bus a 30 días.",
+   "heard": "Cotízame 8 valor 99 en 295 80 r 22.5 y 12 Flama 89 en 11 r 22.5, para Ceat Abus a 30 días.",
+   "esperado": {
+    "texto": "Fenixway valor 99 295/80R22.5 x8\nFenixway Flama 89 11R22.5 x12\npara Ceat Abus\nplazo: 30 días"
+   }
+  },
+  {
+   "id": "m02",
+   "voice": "Mónica",
+   "said": "Cotiza cuatro Flama 77 en 315 80 R 22.5 a 254 dólares y seis Valor 99 en 12 R 22.5 a 280, para Transportes Beta.",
+   "heard": "Cotiza 4 Flama 77 en 315 80 AR 22.5 a 254 dólares y 6 valor 99 en 12 AR 22.5 a 280, para transportes beta.",
+   "esperado": {
+    "texto": "Fenixway Flama 77 315/80R22.5 x4 precio 254\nFenixway valor 99 12R22.5 x6 precio 280\npara Transportes Beta"
+   }
+  },
+  {
+   "id": "m03",
+   "voice": "Eddy (MX)",
+   "said": "Cotízame doce Valor 99 de 295 80 22.5, también ocho Flama 77 de 275 80 22.5, a 45 días.",
+   "heard": "Cotízame 12 valor 99 de 295, 80 22.5, también 8 Flama 77 de 275, 80 22.5, a 45 días.",
+   "esperado": {
+    "texto": "Fenixway valor 99 295/80R22.5 x12\nFenixway Flama 77 275/80R22.5 x8\nplazo: 45 días"
+   }
+  },
+  {
+   "id": "m04",
+   "voice": "Reed (MX)",
+   "said": "Cotiza dos Flama 77 en 215 75 R 17.5, cuatro Valor 89 en 235 75 R 17.5 y seis Valor 99 en 12 R 22.5.",
+   "heard": "Cotiza 2 Flama 77 en 215, 75 r 17.54 valor 89 en 235, 75 r 17.5, y 6 valor 99 en 12 r 22.5.",
+   "esperado": {
+    "texto": "Fenixway Flama 77 215/75R17.5 x2\nFenixway valor 89 235/75R17.5 x4\nFenixway valor 99 12R22.5 x6"
+   }
+  },
+  {
+   "id": "m05",
+   "voice": "Flo (MX)",
+   "said": "Cotízame ocho llantas Valor 99 295 80 R 22.5 a 390, además cuatro Flama 77 315 80 R 22.5 a 260, para ZBUSS con margen de 10 por ciento.",
+   "heard": "Cotízame 8 llantas, valor 99295, 80 r 22.5 a 390. Además, 4 Flama 77315, 80 r 22.5 a 260, para ZBUSS con margen de 10 por 100.",
+   "esperado": {
+    "texto": "Fenixway valor 99 295/80R22.5 x8 precio 390\nFenixway Flama 77 315/80R22.5 x4 precio 260\npara ZBUSS\nmargen 10%"
+   }
+  },
+  {
+   "id": "m06",
+   "voice": "Grandpa (MX)",
+   "said": "Cotiza seis Fuerte 89 en 12 R 22.5 y seis Valor 99 en 12 R 22.5 para Transportes Beta.",
+   "heard": "Cotiza 6 fuerte 89 en 12 r 22.5 y 6 valor 99 en 12 r 22.5 para transportes beta.",
+   "esperado": {
+    "texto": "Fenixway fuerte 89 12R22.5 x6\nFenixway valor 99 12R22.5 x6\npara Transportes Beta"
+   }
+  },
+  {
+   "id": "m07",
+   "voice": "Sandy (MX)",
+   "said": "Cotízame cuatro Valor 87 en 295 80 22.5, cuatro Flama 89 en 295 80 22.5, cuatro Flama 66 en 295 80 22.5.",
+   "heard": "Cotízame 4, valor 87 en 295, 80 22.54 Flama 89 en 295, 80 22.54 Flama 66 en 295, 80 22.5.",
+   "esperado": {
+    "texto": "Fenixway valor 87 295/80R22.5 x4\nFenixway Flama 89 295/80R22.5 x4\nFenixway Flama 66 295/80R22.5 x4"
+   }
+  },
+  {
+   "id": "m08",
+   "voice": "Rocko (MX)",
+   "said": "Cotiza diez Westlake CM958 en 11 R 22.5 y diez Westlake CB972 en 12 R 22.5, a 30 días.",
+   "heard": "Cotiza 10 Westlake CM 958 en 11 r 22.5 y 10 Westlake CM 972 en 12 r 22.5, a 30 días.",
+   "esperado": {
+    "texto": "Westlake CM 958 11R22.5 x10\nWestlake CM 972 12R22.5 x10\nplazo: 30 días"
+   }
+  },
+  {
+   "id": "m09",
+   "voice": "Shelley (MX)",
+   "said": "Cotízame veinte Valor 99 en 295 80 R 22.5 a 380 y veinte Flama 77 en 315 80 R 22.5 a 255 para Zeta Bus.",
+   "heard": "Cotízame 20 Valor 99 en 295, 80 r 22.5 a 380 y 20 Flama 77 en 315, 80 r 22.5 a 255 para ZBUSS.",
+   "esperado": {
+    "texto": "Fenixway Valor 99 295/80R22.5 x20 precio 380\nFenixway Flama 77 315/80R22.5 x20 precio 255\npara ZBUSS"
+   }
+  },
+  {
+   "id": "m10",
+   "voice": "Grandma (MX)",
+   "said": "Cotiza ocho Valor 99 en 235 75 R 17.5, luego cuatro Valor 89 en 235 75 R 17.5, para Transportes Beta a 60 días.",
+   "heard": "Cotiza 8 valor 99 en 235, 75 r 17.5, luego 4 valor 89 en 235, 75 r 17.5, para transportes beta a 60 días.",
+   "esperado": {
+    "texto": "Fenixway valor 99 235/75R17.5 x8\nFenixway valor 89 235/75R17.5 x4\npara Transportes Beta\nplazo: 60 días"
+   }
+  },
+  {
+   "id": "m11",
+   "voice": "Paulina",
+   "said": "Cotízame dos Flama 77 en 275 80 R 22.5, dos Flama 77 en 315 80 R 22.5, dos Valor 99 en 295 80 R 22.5 y dos Valor 99 en 12 R 22.5.",
+   "heard": "Cotízame 2 LAMA 77 en 275 80 r 22.52 LAMA 77 en 315 80 r 22.52 valor 99 en 295 80 r 22.5 y 2 valor 99 en 12 r 22.5.",
+   "esperado": {
+    "texto": "LAMA 77 275/80R22.5 x2\nLAMA 77 315/80R22.5 x2\nFenixway valor 99 295/80R22.5 x2\nFenixway valor 99 12R22.5 x2"
+   },
+   "nota": "transcripción: «Flama» llegó como «LAMA» (el cotizador lo muestra; no se fuerza)"
+  },
+  {
+   "id": "m12",
+   "voice": "Mónica",
+   "said": "Cotiza una docena de Valor 99 en 295 80 R 22.5 y media docena de Flama 77 en 315 80 R 22.5.",
+   "heard": "Cotiza una docena de Valor 99 en 295 80 AR 22.5 y media docena de Flama 77 en 315 80 AR 22.5.",
+   "esperado": {
+    "texto": "Fenixway Valor 99 295/80R22.5 x12\nFenixway Flama 77 315/80R22.5 x6"
+   }
+  },
+  {
+   "id": "m13",
+   "voice": "Eddy (ES)",
+   "said": "Cotízame cuatro Double Coin RR202 en 315 80 R 22.5 y ocho Double Coin RLB450 en 315 80 R 22.5, descuento de 5 por ciento.",
+   "heard": "Cotízame 4 doble Coin r r 202 en 315 80 r 22.5 y 8 doble Coin RLB 450 en 315 80 r 22.5, descuento de 5 por 100.",
+   "esperado": {
+    "texto": "Double Coin r r 202 315/80R22.5 x4\nDouble Coin RLB 450 315/80R22.5 x8\ndscto 5%"
+   }
+  },
+  {
+   "id": "m14",
+   "voice": "Reed (ES)",
+   "said": "Cotiza ocho Valor 99 en 295 80 R 22.5. Otra: cuatro Flama 77 en 315 80 R 22.5. Para ZBUSS.",
+   "heard": "Cotita 8, valor 99, 295, 80 r 22.5. Otra, 4 Flama 77, 315, 80 r 22.5. Para ZBUSS.",
+   "esperado": {
+    "texto": "Fenixway valor 99 295/80R22.5 x8\nFenixway Flama 77 315/80R22.5 x4\npara ZBUSS"
+   }
+  },
+  {
+   "id": "m15",
+   "voice": "Flo (ES)",
+   "said": "Cotízame seis Triangle TRD02 en 295 80 R 22.5 a 300 y cuatro Linglong LLF02 en 295 80 R 22.5 a 310.",
+   "heard": "Contícame 6 Triangle TRD 0 12 295, 80 r 22.5 a 300 y 4, LLF 0 12 295, 80 r 22.5 a 310.",
+   "esperado": {
+    "texto": "Triangle TRD 0 12 295/80R22.5 x6 precio 300\nLLF 0 12 295/80R22.5 x4 precio 310",
+    "pregunta": [
+     "no sé qué es «12» en la llanta 1 («6 Triangle TRD 0 12 295/80R22.5 a 300»)",
+     "no sé qué es «12» en la llanta 2 («4 LLF 0 12 295/80R22.5 a 310»)"
+    ]
+   },
+   "nota": "transcripción: «TRD02 en» llegó como «TRD 0 12» y se perdió «Linglong»: pregunta"
+  },
+  {
+   "id": "m16",
+   "voice": "Grandpa (ES)",
+   "said": "Cotiza doce Flama 77 en 315 80 22.5, ocho Valor 99 en 295 80 22.5, cuatro Fuerte 89 en 12 R 22.5 y dos Valor 89 en 215 75 R 17.5, para Transportes Beta.",
+   "heard": "Flama 77 en 315, 80 22.5899 en 295, 80 22.54 fuerte 89 en 12 r 22.5 y 2 valor 89 en 215, 75 r 17.5, para transportes beta.",
+   "esperado": {
+    "texto": "Fenixway Flama 77 315/80R22.5899 295/80R22.5\nFenixway fuerte 89 12R22.5 x4\nFenixway valor 89 215/75R17.5 x2\npara Transportes Beta",
+    "pregunta": [
+     "no sé qué es «315 80» en la llanta 1 («Flama 77 en 315/80R22.5899 en 295/80R22.5»)",
+     "la llanta 1 («Fenixway Flama 77 315/80R22.5899 295/80R22.5») no dice cantidad"
+    ]
+   },
+   "nota": "transcripción: se perdieron «Cotiza doce» y «y ocho Valor»: pregunta"
+  },
+  {
+   "id": "m17",
+   "voice": "Sandy (ES)",
+   "said": "Cotízame cuatro Valor 99 en 295 80 R 22.5 más cuatro Flama 77 en 275 80 R 22.5.",
+   "heard": "Cotízame 4, valor 99, 295, 80 r, 22.5, más 4 Flama, 77, 275, 80 r, 22.5.",
+   "esperado": {
+    "texto": "Fenixway valor 99 295/80R22.5 x4\nFenixway Flama 77 275/80R22.5 x4"
+   }
+  },
+  {
+   "id": "m18",
+   "voice": "Rocko (ES)",
+   "said": "Cotiza ocho Westlake CM958 en 11 R 22.5 a 190 y ocho Westlake AZ670 en 11 R 22.5 a 185 para ZBUSS a 30 días.",
+   "heard": "Cotiza 8, Westlake CM 958, en 11 r 22.5 a 198, Westlake a z 670, en 11 r 22.5 a 185 para ZVA 30 días.",
+   "esperado": {
+    "texto": "Westlake CM 958 11R22.5 x8 precio 198\nWestlake a z 670 11R22.5 precio 185\npara ZVA\nplazo: 30 días",
+    "pregunta": [
+     "la llanta 2 («Westlake a z 670 11R22.5 precio 185») no dice cantidad"
+    ]
+   },
+   "nota": "transcripción: «Zeta Bus a» llegó como «ZVA» y se perdió «y ocho»: pregunta la cantidad"
+  },
+  {
+   "id": "m19",
+   "voice": "Shelley (ES)",
+   "said": "Cotízame dos Valor 99 en 235 75 R 17.5, dos Flama 77 en 235 75 R 17.5 y dos Valor 89 en 235 75 R 17.5, sin IGV.",
+   "heard": "Cotícame 2 valor 99 en 235, 75 r 17.52 Flama 77 en 235, 75 r 17.5, y 2 valor 89 en 235, 75 r 17.5, sin IPV.",
+   "esperado": {
+    "texto": "Fenixway valor 99 235/75R17.5 x2\nFenixway Flama 77 235/75R17.5 x2\nFenixway valor 89 235/75R17.5 x2\nsin igv"
+   }
+  },
+  {
+   "id": "m20",
+   "voice": "Grandma (ES)",
+   "said": "Cotiza cuatro Flama 77 en 315 80 R 22.5 y cuatro Valor 99 en 295 80 R 22.5 a 45 días.",
+   "heard": "Flama 77 en 315, 80 r 22.5, y 4, valor 99 en 295, 80 r 22.5, a 45 días.",
+   "esperado": {
+    "texto": "Fenixway Flama 77 315/80R22.5\nFenixway valor 99 295/80R22.5 x4\nplazo: 45 días",
+    "pregunta": [
+     "la llanta 1 («Fenixway Flama 77 315/80R22.5») no dice cantidad"
+    ]
+   },
+   "nota": "transcripción: se perdió «Cotiza cuatro»: pregunta la cantidad"
+  },
+  {
+   "id": "m21",
+   "voice": "Paulina",
+   "said": "Cotízame ocho Valor 99 en 295 80 R 22.5 a 390 dólares, seis Flama 77 en 315 80 R 22.5 a 255 dólares, cuatro Fuerte 89 en 12 R 22.5 a 300 dólares, dos Valor 89 en 215 75 R 17.5 a 130 dólares y dos Flama 77 en 275 80 R 22.5 a 250 dólares.",
+   "heard": "Cotízame 8 valor 99 en 295 80 r 22.5 a 390 dólares, 6 lamas 77 en 315 80 r 22.5 a 255 dólares, 4 fuerte 89 en 12 r 22.5 a 300 dólares, 2 valor 89 en 215 75 r 17.5 a 130 dólares y 2 Flama 77 en 275 80 r 22.5 a 250 dólares.",
+   "esperado": {
+    "texto": "Fenixway valor 99 295/80R22.5 x8 precio 390\nlamas 77 315/80R22.5 x6 precio 255\nFenixway fuerte 89 12R22.5 x4 precio 300\nFenixway valor 89 215/75R17.5 x2 precio 130\nFenixway Flama 77 275/80R22.5 x2 precio 250"
+   },
+   "nota": "transcripción: «seis Flama» llegó como «6 lamas»"
+  },
+  {
+   "id": "m22",
+   "voice": "Mónica",
+   "said": "Cotiza cuatro Flama 77 de 315 80 R 22.5 y dos de 275 80 R 22.5 para Zeta Bus.",
+   "heard": "Cotiza 4 Flama 77 de 315 80 AR 22.5 y 2 de 275 80 AR 22.5 para ZBUSS.",
+   "esperado": {
+    "texto": "Fenixway Flama 77 315/80R22.5 x4\n275/80R22.5 x2\npara ZBUSS"
+   }
+  },
+  {
+   "id": "m23",
+   "voice": "Eddy (MX)",
+   "said": "Necesito una cotización de seis Valor 99 en 12 R 22.5 y seis Fuerte 89 en 12 R 22.5 para Transportes Beta, plazo de 30 días.",
+   "heard": "Necesito una cotización de 6 valor 99 en 12 r 22.5 y 6 fuerte 89 en 12 r 22.5 para transportes beta, plazo de 30 días.",
+   "esperado": {
+    "texto": "Fenixway valor 99 12R22.5 x6\nFenixway fuerte 89 12R22.5 x6\npara Transportes Beta\nplazo: 30 días"
+   }
+  },
+  {
+   "id": "m24",
+   "voice": "Reed (MX)",
+   "said": "Cotízame cuatro Valor 99 en 295 80 R 22.5 y también cuatro Valor 87 en 295 80 R 22.5 a 400.",
+   "heard": "Cotízame 4 Valor 99 en 295, 80 R 22.5 y también 4 Valor 87 en 295, 80 R 22.5 a 400.",
+   "esperado": {
+    "texto": "Fenixway Valor 99 295/80R22.5 x4\nFenixway Valor 87 295/80R22.5 x4 precio 400"
+   }
+  },
+  {
+   "id": "m25",
+   "voice": "Flo (MX)",
+   "said": "Cotiza diez Flama 77 en 315 80 R 22.5 a 250, diez Flama 77 en 275 80 R 22.5 a 245 y diez Valor 99 en 295 80 R 22.5 a 385, para ZBUSS a 60 días.",
+   "heard": "Cotiza 10 Flama 77 en 315, 80 r 22.5 a 250. 10 Flama 77 en 275, 80 r 22.5 a 245, y 10 valor 99 en 295, 80 r 22.5 a 385, para ZVA 60 días.",
+   "esperado": {
+    "texto": "Fenixway Flama 77 315/80R22.5 x10 precio 250\nFenixway Flama 77 275/80R22.5 x10 precio 245\nFenixway valor 99 295/80R22.5 x10 precio 385\npara ZVA\nplazo: 60 días"
+   }
+  },
+  {
+   "id": "m26",
+   "voice": "Grandpa (MX)",
+   "said": "Cotízame dos Westlake CM986 en 215 75 R 17.5 y dos Linglong LAU605 en 215 75 R 17.5.",
+   "heard": "Cotízame Roswell Slake CM 986 en 215, 75 r 17.5, y Rosinglong LAU 605 en 215, 75 r 17.5.",
+   "esperado": {
+    "texto": "Westlake Roswell Slake CM 986 215/75R17.5\nLinglong Rosinglong LAU 605 215/75R17.5"
+   },
+   "nota": "transcripción: «dos Westlake» / «dos Linglong» llegaron como «Roswell Slake» / «Rosinglong» (sin cantidad)"
+  },
+  {
+   "id": "m27",
+   "voice": "Sandy (MX)",
+   "said": "Cotiza ocho Valor 99 en doscientos noventa y cinco ochenta erre veintidós y medio y cuatro Flama 77 en trescientos quince ochenta erre veintidós y medio.",
+   "heard": "Cotiza 8 valor 99 en 295, 80 r 22 y medio, y 4 Flama 77 en 315, 80 r 22 y medio.",
+   "esperado": {
+    "texto": "Fenixway valor 99 295/80R22.5 x8\nFenixway Flama 77 315/80R22.5 x4"
+   }
+  },
+  {
+   "id": "m28",
+   "voice": "Rocko (MX)",
+   "said": "Cotízame cuatro Valor 99 en 12 R 22.5, cuatro Fuerte 89 en 12 R 22.5, cuatro Flama 77 en 315 80 R 22.5 y cuatro Valor 99 en 295 80 R 22.5.",
+   "heard": "Cotízame 4, valor 99 en 12 r 22.54 fuerte 89 en 12 r 22.54 Flama 77 en 315, 80 r 22.5, y 4 valor 99 en 295, 80 r 22.5.",
+   "esperado": {
+    "texto": "Fenixway valor 99 12R22.5 x4\nFenixway fuerte 89 12R22.5 x4\nFenixway Flama 77 315/80R22.5 x4\nFenixway valor 99 295/80R22.5 x4"
+   }
+  },
+  {
+   "id": "m29",
+   "voice": "Shelley (MX)",
+   "said": "Cotiza seis Valor 89 en 235 75 R 17.5 y seis Valor 99 en 235 75 R 17.5 para Transportes Beta con margen de 12 por ciento.",
+   "heard": "Cotiza 6 valor 89 en 235, 75 r 17.5, y 6 valor 99 en 235, 75 r 17.5 para transportes beta con margen de 12 por 100.",
+   "esperado": {
+    "texto": "Fenixway valor 89 235/75R17.5 x6\nFenixway valor 99 235/75R17.5 x6\npara Transportes Beta\nmargen 12%"
+   }
+  },
+  {
+   "id": "m30",
+   "voice": "Grandma (MX)",
+   "said": "Cotízame cuatro Flama 77 en 315 80 R 22.5 a 255 y ocho Valor 99 en 295 80 R 22.5.",
+   "heard": "Cotízame 4 Flama 77 en 315, 80 r 22.5 a 255, y 8, valor 99 en 295, 80 r 22.5.",
+   "esperado": {
+    "texto": "Fenixway Flama 77 315/80R22.5 x4 precio 255\nFenixway valor 99 295/80R22.5 x8"
+   }
+  },
+  {
+   "id": "m31",
+   "voice": "Paulina",
+   "said": "Cotiza dos Double Coin RR902 en 315 80 R 22.5, dos Doublestar DSR168 en 315 80 R 22.5 y dos Westlake CM993 en 315 80 R 22.5.",
+   "heard": "Cotiza 2 double Coin Reverendos 902 en 315 80 r 22.52 Doublestar DSR 168 en 315 80 r 22.5 y 2 Westlake centímetro 990 y y 3 en 315 80 r 22.5.",
+   "esperado": {
+    "texto": "double Coin Reverendos 902 315/80R22.5 x2\nDoublestar DSR 168 315/80R22.5 x2\nWestlake centímetro 990 315/80R22.5 x2\n315/80R22.5 x3",
+    "pregunta": [
+     "no sé si «3 en 315/80R22.5» es otra llanta o la medida de la llanta 3"
+    ],
+    "hereda": [
+     3
+    ]
+   },
+   "nota": "transcripción: «Westlake CM993 en» llegó como «Westlake centímetro 990 y y 3 en»: pregunta"
+  },
+  {
+   "id": "m32",
+   "voice": "Mónica",
+   "said": "Cotízame doce Valor 99 en 295 80 R 22.5 para ZBUSS, y además seis Flama 77 en 315 80 R 22.5.",
+   "heard": "Cotízame 12 valor 99 en 295 80 R 22 punto para ZBUSS, y además 6 Flama 77 en 315 80 R 22 punto",
+   "esperado": {
+    "texto": "Fenixway valor 99 punto 295/80R22 x12\nFenixway Flama 77 punto 315/80R22 x6\npara ZBUSS"
+   },
+   "nota": "transcripción: «22.5» llegó como «22 punto» (la medida no está en el catálogo: el cotizador pregunta)"
+  },
+  {
+   "id": "m33",
+   "voice": "Eddy (ES)",
+   "said": "Cotiza ocho Valor 99 en 12 R 22.5 a 290 y cuatro Fuerte 89 en 12 R 22.5 a 295, a 30 días con descuento de 3 por ciento.",
+   "heard": "Cotiza 8 valor 99 en 12 r 22.5 a 294, fuerte 89 en 12 r 22.5 a 295 a 30 días con descuento del 3 por 100.",
+   "esperado": {
+    "texto": "Fenixway valor 99 12R22.5 x8 precio 294\nFenixway fuerte 89 12R22.5 precio 295\nplazo: 30 días\ndscto 3%",
+    "pregunta": [
+     "la llanta 2 («Fenixway fuerte 89 12R22.5 precio 295») no dice cantidad"
+    ]
+   },
+   "nota": "transcripción: se perdió «y cuatro»: pregunta la cantidad"
+  },
+  {
+   "id": "m34",
+   "voice": "Reed (ES)",
+   "said": "Cotízame cuatro Flama 77 en 215 75 R 17.5 y cuatro Flama 77 en 235 75 R 17.5.",
+   "heard": "Cotícame 4 Flama 77 en 215, 75 r 17.5, y 4 Flama 77 en 235, 75 r 17.5.",
+   "esperado": {
+    "texto": "Fenixway Flama 77 215/75R17.5 x4\nFenixway Flama 77 235/75R17.5 x4"
+   }
+  },
+  {
+   "id": "m35",
+   "voice": "Flo (ES)",
+   "said": "Cotiza tres Valor 99 en 295 80 R 22.5, tres Flama 89 en 295 80 R 22.5 y tres Valor 87 en 295 80 R 22.5 para Zeta Bus.",
+   "heard": "3, valor 99 de 295, 80 r 22.53 Flama 89 de 295, 80 r 22.5, y 3, valor 87 de 295, 80 r 22.5 para centavos.",
+   "esperado": {
+    "texto": "Fenixway valor 99 295/80R22.5 x3\nFenixway Flama 89 295/80R22.5 x3\nFenixway valor 87 295/80R22.5 x3\npara Centavos"
+   },
+   "nota": "transcripción: «Zeta Bus» llegó como «centavos»"
+  },
+  {
+   "id": "m36",
+   "voice": "Sandy (ES)",
+   "said": "Cotízame ocho Valor 99 en 295 80 R 22.5 doce Flama 77 en 315 80 R 22.5 para Transportes Beta.",
+   "heard": "Cotízame 8 valor 99 295 80 r 0.512 Flama 77 315 80 r 0.5 para transportes beta.",
+   "esperado": {
+    "texto": "Fenixway valor 99 295 x8\nFenixway R 0.512 Flama 77 315 x80\nR 0.5 x80\npara Transportes Beta",
+    "pregunta": [
+     "no sé qué es «295» en la llanta 1 («8 valor 99 295»)",
+     "no sé qué es «315» en la llanta 2 («80 R 0.512 Flama 77 315»)",
+     "la llanta 2 («Fenixway R 0.512 Flama 77 315 x80») no tiene medida"
+    ]
+   },
+   "nota": "transcripción: «22.5» llegó como «0.5»: pregunta"
+  },
+  {
+   "id": "p01",
+   "voice": "Paulina",
+   "said": "Cotízame para Prosegur Juliaca: cuatro Valor 99 en 215 75 R 17.5 para la UB 1231, cuatro Valor 89 para la UB 1812 y dos Valor 99 para la UB 1911.",
+   "heard": "Cotízame para Prosegur Julyaca, 4 valor 99 en 215 75 r 17.5 para la v grande 1231, 4 valor 89 para la v grande 1812, y 2 valor 99 para la v grande 1911.",
+   "esperado": {
+    "texto": "prosegur Juliaca\nFenixway valor 99 215/75R17.5 x4 ub 1231\nFenixway valor 89 215/75R17.5 x4 ub 1812\nFenixway valor 99 215/75R17.5 x2 ub 1911",
+    "hereda": [
+     2,
+     3
+    ]
+   }
+  },
+  {
+   "id": "p02",
+   "voice": "Mónica",
+   "said": "Cotízame para Prosegur Juliaca: cuatro Valor 99 en 215 75 R 17.5 para la UB 1231, cuatro Valor 89 para la UB 1812, dos Valor 99 para la UB 1911, cuatro Valor 89 para la UB 2005 y cuatro Valor 89 para la UB 2201.",
+   "heard": "Cotízame para Prosegur Julíaca 4 valor 99 en 215 75 R 17.5 para la V 1231. 4 valor 89 para la v 1812, 2 valor 99 para la v 1911, 4 valor 89 para la v 2005 y 4 valor 89 para la v 2201.",
+   "esperado": {
+    "texto": "prosegur Juliaca\nFenixway valor 99 215/75R17.5 x4 ub 1231\nFenixway valor 89 215/75R17.5 x4 ub 1812\nFenixway valor 99 215/75R17.5 x2 ub 1911\nFenixway valor 89 215/75R17.5 x4 ub 2005\nFenixway valor 89 215/75R17.5 x4 ub 2201",
+    "hereda": [
+     2,
+     3,
+     4,
+     5
+    ]
+   }
+  },
+  {
+   "id": "p03",
+   "voice": "Eddy (MX)",
+   "said": "Cotiza para Prosegur Juliaca. Cuatro Valor 99 en 215 75 R 17.5 para la u be mil doscientos treinta y uno, cuatro Valor 89 para la u be mil ochocientos doce, dos Valor 99 para la u be mil novecientos once, cuatro Valor 89 para la u be dos mil cinco y cuatro Valor 89 para la u be dos mil doscientos uno.",
+   "heard": "Cotiza para Prosegur, Juliaca. 4, valor 99 en 215, 75 r 17.5 para la v 1231. 4, valor 89 para la v 1812. 2, valor 99 para la v 1911. 4 valor 89 para la v 2005 y 4 valor 89 para la v 2201.",
+   "esperado": {
+    "texto": "prosegur Juliaca\nFenixway valor 99 215/75R17.5 x4 ub 1231\nFenixway valor 89 215/75R17.5 x4 ub 1812\nFenixway valor 99 215/75R17.5 x2 ub 1911\nFenixway valor 89 215/75R17.5 x4 ub 2005\nFenixway valor 89 215/75R17.5 x4 ub 2201",
+    "hereda": [
+     2,
+     3,
+     4,
+     5
+    ]
+   }
+  },
+  {
+   "id": "p04",
+   "voice": "Reed (MX)",
+   "said": "Prosegur Juliaca: cuatro Valor 99 unidad 1231, cuatro Valor 89 unidad 1812, dos Valor 99 unidad 1911, cuatro Valor 89 unidad 2005, cuatro Valor 89 unidad 2201.",
+   "heard": "Prosegur, Juliaca. 4, valor 99, un llegado 1231. 4 valor 89, unidad 1812. 2 valor 99, unidad 1911. 4 valor 89, unidad 2005. 4 valor 89, unidad 2201.",
+   "esperado": {
+    "texto": "prosegur Juliaca\nFenixway valor 99 un llegado x4 ub 1231\nFenixway valor 89 x4 ub 1812\nFenixway valor 99 x2 ub 1911\nFenixway valor 89 x4 ub 2005\nFenixway valor 89 x4 ub 2201"
+   }
+  },
+  {
+   "id": "p05",
+   "voice": "Flo (MX)",
+   "said": "Cotízame para Prosegur Juliaca: cuatro Valor 99 en 215 75 R 17.5 para la UB uno dos tres uno, cuatro Valor 89 para la UB uno ocho uno dos, dos Valor 99 para la UB uno nueve uno uno, cuatro Valor 89 para la UB dos cero cero cinco y cuatro Valor 89 para la UB dos dos cero uno.",
+   "heard": "Cotízame para Prosegur, Juliaka. 4, valor 99 en 215, 75 r 17.5 para la 1 2 3 1. 4, valor 89 para la 1 8 1 2. 2 valor 99 para la 1 9 1 1. 4 valor 89 para la 1 0 0 5. Y 4 valor 89 para la 1 2 2 0 1.",
+   "esperado": {
+    "texto": "prosegur Juliaca\nFenixway valor 99 215/75R17.5 x4 ub 1231\nFenixway valor 89 215/75R17.5 x4 ub 1812\nFenixway valor 99 215/75R17.5 x2 ub 1911\nFenixway valor 89 215/75R17.5 x4 ub 1005\nFenixway valor 89 215/75R17.5 x4",
+    "ubPregunta": [
+     {
+      "item": 4,
+      "heard": "12201"
+     }
+    ],
+    "hereda": [
+     2,
+     3,
+     4,
+     5
+    ]
+   },
+   "nota": "transcripción: «2 0 0 5» llegó como «1 0 0 5» (queda UB 1005, a la vista en el resumen) y «2 2 0 1» como «1 2 2 0 1»: pregunta esa UB"
+  },
+  {
+   "id": "p06",
+   "voice": "Grandpa (MX)",
+   "said": "Cotízame para Prosegur Juliaca: cuatro Valor 99 para la UB 1231, cuatro Valor 89 para la UB 1812 y dos Valor 99 para la UB 1911.",
+   "heard": "Cotízame para Prosegur, Juliaca. 4 valor 99 para la UB 1231. 4 valor 89 para la UB 1812, 2 valor 99 para la UB 1911.",
+   "esperado": {
+    "texto": "prosegur Juliaca\nFenixway valor 99 x4 ub 1231\nFenixway valor 89 x4 ub 1812\nFenixway valor 99 x2 ub 1911"
+   }
+  },
+  {
+   "id": "p07",
+   "voice": "Sandy (MX)",
+   "said": "Cotiza para Prosegur Juliaca, UB 1231 cuatro Valor 99, UB 1812 cuatro Valor 89, UB 1911 dos Valor 99, UB 2005 cuatro Valor 89, UB 2201 cuatro Valor 89.",
+   "heard": "Cotiza para Prosegur JK, 1231, 4, valor 99, 1812, 4, valor 89, 1911, 2, valor 99, un 2005, 4, valor 89, un 2201, 4, valor 89.",
+   "esperado": {
+    "texto": "prosegur Jk\nFenixway valor 99 x4 ub 1231\nFenixway valor 89 x4 ub 1812\nFenixway valor 99 x2 ub 1911\nFenixway valor 89 x4 ub 2005\nFenixway valor 89 x4 ub 2201"
+   },
+   "nota": "transcripción: «Juliaca» llegó como «JK» (la sucursal queda «Jk», a la vista)"
+  },
+  {
+   "id": "p08",
+   "voice": "Rocko (MX)",
+   "said": "Cotízame para Prosegur Juliaca: cuatro Valor 99 en 215 75 R 17.5 para la UB 1231 y cuatro Valor 89 para la UB 181.",
+   "heard": "Cotízame para proseguir, valor 99 en 215, 75 r 17.5 para la U 1231, y 4 valor 89 para la U 181.",
+   "esperado": {
+    "texto": "prosegur\nFenixway valor 99 215/75R17.5 ub 1231\nFenixway valor 89 215/75R17.5 x4",
+    "pregunta": [
+     "la llanta 1 («Fenixway valor 99 215/75R17.5 ub 1231») no dice cantidad"
+    ],
+    "ubPregunta": [
+     {
+      "item": 1,
+      "heard": "181"
+     }
+    ],
+    "hereda": [
+     2
+    ]
+   },
+   "nota": "transcripción: se perdieron «Juliaca» y «cuatro», y «1812» llegó como «181»: pregunta"
+  },
+  {
+   "id": "p09",
+   "voice": "Shelley (MX)",
+   "said": "Cotízame para Prosegur Juliaca: cuatro Valor 99 en 215 75 R 17.5 para la UB 1231, cuatro Valor 89 y dos Valor 99 para la UB 1911.",
+   "heard": "Cotízame para Prosegur Juliaca. 4, valor 99 en 215, 75 r 17.5 para la 1231. 4, valor 89 y 2, valor 99 para la 1911.",
+   "esperado": {
+    "texto": "prosegur Juliaca\nFenixway valor 99 215/75R17.5 x4 ub 1231\nFenixway valor 89 215/75R17.5 x4\nFenixway valor 99 215/75R17.5 x2 ub 1911",
+    "ubPregunta": [
+     {
+      "item": 1
+     }
+    ],
+    "hereda": [
+     2,
+     3
+    ]
+   },
+   "nota": "transcripción: se perdió «para la UB 1812»: pregunta la UB"
+  },
+  {
+   "id": "p10",
+   "voice": "Grandma (MX)",
+   "said": "Cotízame para Prosegur Arequipa: dos Flama 77 para la UB 3104 y dos Valor 99 para la UB 3120.",
+   "heard": "Cotízame para Prosegur, Arequipa. 2 Flama 77 para la U 3104 y 2 Valor 99 para la U 3120.",
+   "esperado": {
+    "texto": "prosegur Arequipa\nFenixway Flama 77 x2 ub 3104\nFenixway Valor 99 x2 ub 3120"
+   }
+  },
+  {
+   "id": "p11",
+   "voice": "Paulina",
+   "said": "Cotiza para Prosegur Juliaca: cuatro Valor 99 para la unidad blindada 1231, cuatro Valor 89 para la unidad blindada 1812 y dos Valor 99 para la unidad blindada 1911.",
+   "heard": "Cotiza para Prosegur Julyaca, 4 valor 99 para la unidad blindada 1231, 4 valor 89 para la unidad blindada 1812 y 2 valor 99 para la unidad blindada 1911.",
+   "esperado": {
+    "texto": "prosegur Juliaca\nFenixway valor 99 x4 ub 1231\nFenixway valor 89 x4 ub 1812\nFenixway valor 99 x2 ub 1911"
+   }
+  },
+  {
+   "id": "p12",
+   "voice": "Mónica",
+   "said": "Cotízame para Prosegur Juliaca: cuatro Valor 99 en 215 75 R 17.5 para la UB 1231, cuatro Valor 89 para la UB 1812, dos Valor 99 para la UB 1911, cuatro Valor 89 para la UB 2005 y cuatro Valor 89 para la UB 2201.",
+   "heard": "Cotízame para Prosegur Julíaca 4 valor 99 en 215 75 R 17.5 para la V 1231. 4 valor 89 para la v 1812, 2 valor 99 para la v 1911, 4 valor 89 para la v 2005 y 4 valor 89 para la v 2201.",
+   "esperado": {
+    "texto": "prosegur Juliaca\nFenixway valor 99 215/75R17.5 x4 ub 1231\nFenixway valor 89 215/75R17.5 x4 ub 1812\nFenixway valor 99 215/75R17.5 x2 ub 1911\nFenixway valor 89 215/75R17.5 x4 ub 2005\nFenixway valor 89 215/75R17.5 x4 ub 2201",
+    "hereda": [
+     2,
+     3,
+     4,
+     5
+    ]
+   }
+  },
+  {
+   "id": "c01",
+   "voice": "Paulina",
+   "said": "El segundo eran diez.",
+   "heard": "El 2º eran 10.",
+   "esperado": {
+    "correccion": {
+     "kind": "quantity",
+     "line": 2,
+     "value": 10
+    }
+   }
+  },
+  {
+   "id": "c02",
+   "voice": "Mónica",
+   "said": "Quita el tercero.",
+   "heard": "Quita el 3º.",
+   "esperado": {
+    "correccion": {
+     "kind": "remove",
+     "line": 3
+    }
+   }
+  },
+  {
+   "id": "c03",
+   "voice": "Eddy (MX)",
+   "said": "Al primero ponle precio 259.",
+   "heard": "Al 1º ponle precio 259.",
+   "esperado": {
+    "correccion": {
+     "kind": "price",
+     "line": 1,
+     "value": 259
+    }
+   }
+  },
+  {
+   "id": "c04",
+   "voice": "Reed (MX)",
+   "said": "Agrega cuatro Flama 77 en 275 80 R 22.5.",
+   "heard": "Padre A 4 Flama 77 en 275 80 r 22.5",
+   "esperado": {
+    "correccion": null
+   },
+   "nota": "transcripción: «Agrega cuatro» llegó como «Padre A 4»: no es una corrección (va como pedido con medida: el cotizador pregunta si es cambio, agregar o nueva)"
+  },
+  {
+   "id": "c05",
+   "voice": "Flo (MX)",
+   "said": "Añade dos Valor 99 en 12 R 22.5 a 280.",
+   "heard": "Valor 99 en 12 r 22.5 a 280",
+   "esperado": {
+    "correccion": null
+   },
+   "nota": "transcripción: se perdió «Añade dos»: no es una corrección"
+  },
+  {
+   "id": "c06",
+   "voice": "Grandpa (MX)",
+   "said": "Súmale seis Valor 89 en 235 75 R 17.5.",
+   "heard": "Súmale 6 valor 89 en 235 75 r 17.5.",
+   "esperado": {
+    "correccion": {
+     "kind": "add",
+     "text": "6 valor 89 en 235 75 r 17.5"
+    }
+   }
+  },
+  {
+   "id": "c07",
+   "voice": "Sandy (MX)",
+   "said": "También cuatro Valor 99 en 295 80 R 22.5.",
+   "heard": "También 4 valor 99, 295, 80 r 22.5.",
+   "esperado": {
+    "correccion": {
+     "kind": "add",
+     "text": "4 valor 99, 295, 80 r 22.5"
+    }
+   }
+  },
+  {
+   "id": "c08",
+   "voice": "Rocko (MX)",
+   "said": "El tercero que sean doce.",
+   "heard": "El 3º que sea 12.",
+   "esperado": {
+    "correccion": {
+     "kind": "quantity",
+     "line": 3,
+     "value": 12
+    }
+   }
+  },
+  {
+   "id": "c09",
+   "voice": "Shelley (MX)",
+   "said": "Al segundo ponle 270 dólares.",
+   "heard": "Al 2º ponle 270 dólares.",
+   "esperado": {
+    "correccion": {
+     "kind": "price",
+     "line": 2,
+     "value": 270
+    }
+   }
+  },
+  {
+   "id": "c10",
+   "voice": "Grandma (MX)",
+   "said": "Elimina el segundo.",
+   "heard": "Elemena el 2º.",
+   "esperado": {
+    "correccion": {
+     "kind": "remove",
+     "line": 2
+    }
+   }
+  },
+  {
+   "id": "c12",
+   "voice": "Paulina",
+   "said": "La primera son seis llantas.",
+   "heard": "La 1º son 6 llantas,",
+   "esperado": {
+    "correccion": {
+     "kind": "quantity",
+     "line": 1,
+     "value": 6
+    }
+   }
+  },
+  {
+   "id": "c11",
+   "voice": "Mónica",
+   "said": "Agrega cuatro Valor 89 para la UB 2005.",
+   "heard": "Agrega 4 valor 89 para la v 2005.",
+   "esperado": {
+    "correccion": {
+     "kind": "add",
+     "text": "4 valor 89 para la v 2005"
+    }
+   }
+  },
+  {
+   "id": "p01-sin-keyterms",
+   "voice": "Paulina",
+   "said": "Cotízame para Prosegur Juliaca: cuatro Valor 99 en 215 75 R 17.5 para la UB 1231, cuatro Valor 89 para la UB 1812 y dos Valor 99 para la UB 1911.",
+   "heard": "Cotízame para Prosegur Juliaca, 4 valor 99 en 215 75 r 17.5 para la v grande 1231, 4 valor 89 para la v grande 1812, y 2 valor 99 para la v grande 1911.",
+   "esperado": {
+    "texto": "prosegur Juliaca\nFenixway valor 99 215/75R17.5 x4 ub 1231\nFenixway valor 89 215/75R17.5 x4 ub 1812\nFenixway valor 99 215/75R17.5 x2 ub 1911",
+    "hereda": [
+     2,
+     3
+    ]
+   }
+  },
+  {
+   "id": "p02-sin-keyterms",
+   "voice": "Mónica",
+   "said": "Cotízame para Prosegur Juliaca: cuatro Valor 99 en 215 75 R 17.5 para la UB 1231, cuatro Valor 89 para la UB 1812, dos Valor 99 para la UB 1911, cuatro Valor 89 para la UB 2005 y cuatro Valor 89 para la UB 2201.",
+   "heard": "Cotízame para Prosegul Juliaca 4 valor 99 en 215 75 r 17.5 para la v 1231 4 valor 89 para la v 1812, 2 valor 99 para la v 1911, 4 valor 89 para la v 2005 y 4 valor 89 para la v 2201.",
+   "esperado": {
+    "texto": "prosegur Juliaca\nFenixway valor 99 215/75R17.5 x4 ub 1231\nFenixway valor 89 215/75R17.5 x4 ub 1812\nFenixway valor 99 215/75R17.5 x2 ub 1911\nFenixway valor 89 215/75R17.5 x4 ub 2005\nFenixway valor 89 215/75R17.5 x4 ub 2201",
+    "hereda": [
+     2,
+     3,
+     4,
+     5
+    ]
+   }
+  },
+  {
+   "id": "p03-sin-keyterms",
+   "voice": "Eddy (MX)",
+   "said": "Cotiza para Prosegur Juliaca. Cuatro Valor 99 en 215 75 R 17.5 para la u be mil doscientos treinta y uno, cuatro Valor 89 para la u be mil ochocientos doce, dos Valor 99 para la u be mil novecientos once, cuatro Valor 89 para la u be dos mil cinco y cuatro Valor 89 para la u be dos mil doscientos uno.",
+   "heard": "Cotiza para Prosegur Juliaca. 4, valor 99 en 215, 75 r 17.5 para la v 1231. 4, valor 89 para la v 1812. 2, valor 99 para la v 1911. 4 valor 89 para la v 2005 y 4 valor 89 para la v 2201.",
+   "esperado": {
+    "texto": "prosegur Juliaca\nFenixway valor 99 215/75R17.5 x4 ub 1231\nFenixway valor 89 215/75R17.5 x4 ub 1812\nFenixway valor 99 215/75R17.5 x2 ub 1911\nFenixway valor 89 215/75R17.5 x4 ub 2005\nFenixway valor 89 215/75R17.5 x4 ub 2201",
+    "hereda": [
+     2,
+     3,
+     4,
+     5
+    ]
+   }
+  },
+  {
+   "id": "p04-sin-keyterms",
+   "voice": "Reed (MX)",
+   "said": "Prosegur Juliaca: cuatro Valor 99 unidad 1231, cuatro Valor 89 unidad 1812, dos Valor 99 unidad 1911, cuatro Valor 89 unidad 2005, cuatro Valor 89 unidad 2201.",
+   "heard": "Prosegur Jubiaca. 4, valor 99, un llegado 1231. 4 valor 89, unidad 1812. 2 valor 99, unidad 1911. 4 valor 89, unidad 2005. 4 valor 89, unidad 2201.",
+   "esperado": {
+    "texto": "prosegur Juliaca\nFenixway valor 99 un llegado x4 ub 1231\nFenixway valor 89 x4 ub 1812\nFenixway valor 99 x2 ub 1911\nFenixway valor 89 x4 ub 2005\nFenixway valor 89 x4 ub 2201"
+   }
+  },
+  {
+   "id": "p05-sin-keyterms",
+   "voice": "Flo (MX)",
+   "said": "Cotízame para Prosegur Juliaca: cuatro Valor 99 en 215 75 R 17.5 para la UB uno dos tres uno, cuatro Valor 89 para la UB uno ocho uno dos, dos Valor 99 para la UB uno nueve uno uno, cuatro Valor 89 para la UB dos cero cero cinco y cuatro Valor 89 para la UB dos dos cero uno.",
+   "heard": "Cotízame para proseguir, Juliaka. 4, valor 99 en 215, 75 r 17.5 para la 1 2 3 1. 4, valor 89 para la 1 8 1 2. 2, valor 99, para la 1 9 1 1. 4, valor 89, para la 1 0 0 5. Y 4, valor 89, para la 1 2 2 0 1.",
+   "esperado": {
+    "texto": "prosegur Juliaca\nFenixway valor 99 215/75R17.5 x4 ub 1231\nFenixway valor 89 215/75R17.5 x4 ub 1812\nFenixway valor 99 215/75R17.5 x2 ub 1911\nFenixway valor 89 215/75R17.5 x4 ub 1005\nFenixway valor 89 215/75R17.5 x4",
+    "ubPregunta": [
+     {
+      "item": 4,
+      "heard": "12201"
+     }
+    ],
+    "hereda": [
+     2,
+     3,
+     4,
+     5
+    ]
+   },
+   "nota": "transcripción: «Prosegur» como «proseguir»; «2 0 0 5» como «1 0 0 5»; pregunta la UB «12201»"
+  },
+  {
+   "id": "p06-sin-keyterms",
+   "voice": "Grandpa (MX)",
+   "said": "Cotízame para Prosegur Juliaca: cuatro Valor 99 para la UB 1231, cuatro Valor 89 para la UB 1812 y dos Valor 99 para la UB 1911.",
+   "heard": "Cotízame para proseguir jubiaca. 4 valor 99 para la UVNI 231. 4 valor 89 para la UVNI 812, 2 valor 99 para la UVNI 911.",
+   "esperado": {
+    "texto": "prosegur Juliaca\nFenixway valor 99 x4\nFenixway valor 89 x4\nFenixway valor 99 x2",
+    "ubPregunta": [
+     {
+      "item": 0,
+      "heard": "231"
+     },
+     {
+      "item": 1,
+      "heard": "812"
+     },
+     {
+      "item": 2,
+      "heard": "911"
+     }
+    ]
+   },
+   "nota": "transcripción: «UB mil…» llegó como «UVNI 231»: pregunta las tres UB (con el keyterm «UB» Deepgram oyó bien: p06)"
+  },
+  {
+   "id": "p07-sin-keyterms",
+   "voice": "Sandy (MX)",
+   "said": "Cotiza para Prosegur Juliaca, UB 1231 cuatro Valor 99, UB 1812 cuatro Valor 89, UB 1911 dos Valor 99, UB 2005 cuatro Valor 89, UB 2201 cuatro Valor 89.",
+   "heard": "Cotiza para Proceur Juliaca, 1231, 4, valor 99, 1812, 4, valor 89, 1911, 2, valor 99, un 2005, 4, valor 89, un 2201, 4, valor 89.",
+   "esperado": {
+    "texto": "prosegur Juliaca\nFenixway valor 99 x4 ub 1231\nFenixway valor 89 x4 ub 1812\nFenixway valor 99 x2 ub 1911\nFenixway valor 89 x4 ub 2005\nFenixway valor 89 x4 ub 2201"
+   },
+   "nota": "transcripción: «Prosegur» como «Proceur» (se reconoce por parecido)"
+  },
+  {
+   "id": "p08-sin-keyterms",
+   "voice": "Rocko (MX)",
+   "said": "Cotízame para Prosegur Juliaca: cuatro Valor 99 en 215 75 R 17.5 para la UB 1231 y cuatro Valor 89 para la UB 181.",
+   "heard": "Cotízame para proseguir, valor 99 en 215, 75 r 17.5 para la U 1231, y 4 valor 89 para la U 181.",
+   "esperado": {
+    "texto": "prosegur\nFenixway valor 99 215/75R17.5 ub 1231\nFenixway valor 89 215/75R17.5 x4",
+    "pregunta": [
+     "la llanta 1 («Fenixway valor 99 215/75R17.5 ub 1231») no dice cantidad"
+    ],
+    "ubPregunta": [
+     {
+      "item": 1,
+      "heard": "181"
+     }
+    ],
+    "hereda": [
+     2
+    ]
+   },
+   "nota": "ídem p08"
+  },
+  {
+   "id": "p09-sin-keyterms",
+   "voice": "Shelley (MX)",
+   "said": "Cotízame para Prosegur Juliaca: cuatro Valor 99 en 215 75 R 17.5 para la UB 1231, cuatro Valor 89 y dos Valor 99 para la UB 1911.",
+   "heard": "Cotízame para proseguir Juliaca. 4, valor 99 en 215, 75 r 17.5 para la 1231. 4, valor 89 y 2, valor 99 para la 1911.",
+   "esperado": {
+    "texto": "prosegur Juliaca\nFenixway valor 99 215/75R17.5 x4 ub 1231\nFenixway valor 89 215/75R17.5 x4\nFenixway valor 99 215/75R17.5 x2 ub 1911",
+    "ubPregunta": [
+     {
+      "item": 1
+     }
+    ],
+    "hereda": [
+     2,
+     3
+    ]
+   },
+   "nota": "ídem p09"
+  },
+  {
+   "id": "p10-sin-keyterms",
+   "voice": "Grandma (MX)",
+   "said": "Cotízame para Prosegur Arequipa: dos Flama 77 para la UB 3104 y dos Valor 99 para la UB 3120.",
+   "heard": "Cotízame para asegurar. 2 Flama 77 para la U 3104 y 2 Valor 99 para la U 3120.",
+   "esperado": {
+    "texto": "Fenixway asegurar 2 Flama 77 ub 3104\nFenixway Valor 99 x2 ub 3120",
+    "pregunta": [
+     "la llanta 1 («Fenixway asegurar 2 Flama 77 ub 3104») no dice cantidad",
+     "la llanta 1 («Fenixway asegurar 2 Flama 77 ub 3104») no tiene medida"
+    ]
+   },
+   "nota": "transcripción: «Prosegur Arequipa» llegó como «asegurar»: no es el cliente con contrato; pregunta"
+  },
+  {
+   "id": "p11-sin-keyterms",
+   "voice": "Paulina",
+   "said": "Cotiza para Prosegur Juliaca: cuatro Valor 99 para la unidad blindada 1231, cuatro Valor 89 para la unidad blindada 1812 y dos Valor 99 para la unidad blindada 1911.",
+   "heard": "Cotiza para Prosegure Julyaca, 4 valor 99 para la unidad blindada 1231, 4 valor 89 para la unidad blindada 1812 y 2 valor 99 para la unidad blindada 1911.",
+   "esperado": {
+    "texto": "prosegur Juliaca\nFenixway valor 99 x4 ub 1231\nFenixway valor 89 x4 ub 1812\nFenixway valor 99 x2 ub 1911"
+   }
+  },
+  {
+   "id": "p12-sin-keyterms",
+   "voice": "Mónica",
+   "said": "Cotízame para Prosegur Juliaca: cuatro Valor 99 en 215 75 R 17.5 para la UB 1231, cuatro Valor 89 para la UB 1812, dos Valor 99 para la UB 1911, cuatro Valor 89 para la UB 2005 y cuatro Valor 89 para la UB 2201.",
+   "heard": "Cotízame para Prosegul Juliaca 4 valor 99 en 215 75 r 17.5 para la v 1231 4 valor 89 para la v 1812, 2 valor 99 para la v 1911, 4 valor 89 para la v 2005 y 4 valor 89 para la v 2201.",
+   "esperado": {
+    "texto": "prosegur Juliaca\nFenixway valor 99 215/75R17.5 x4 ub 1231\nFenixway valor 89 215/75R17.5 x4 ub 1812\nFenixway valor 99 215/75R17.5 x2 ub 1911\nFenixway valor 89 215/75R17.5 x4 ub 2005\nFenixway valor 89 215/75R17.5 x4 ub 2201",
+    "hereda": [
+     2,
+     3,
+     4,
+     5
+    ]
+   }
+  }
+ ]
+}

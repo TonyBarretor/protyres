@@ -22,7 +22,8 @@
  *  5. checkSizes: cada medida contra las del catálogo; si no está, las candidatas (misma medida con otra construcción,
  *     aro con ".5" que no se dijo, o ancho ±10 mm con el mismo perfil y aro). Nunca elige: quien llama pregunta.
  */
-import { fixCatalogTerms } from "./fuzzy";
+import { fixCatalogTerms, jaroWinkler, matchSpokenName } from "./fuzzy";
+import { groupItems, joinUbDigits, markUbs, unglueNumbers } from "./items";
 import { resolveSpokenSizes, type AmbiguousSize, type SizeResolution } from "./sizes";
 import { fold } from "../../tyre/brands";
 import { findTyreSizes, parseTyreSize, sizeLoose } from "../../tyre/spec";
@@ -114,6 +115,14 @@ function readWords(toks: Tok[], i: number): { value: number; end: number } | nul
   }
   if (!used && end < 0) return null;
   if (!used && j !== start) return null;
+  // "dos mil cinco" -> 2005, "dos mil doscientos uno" -> 2201 (corrida H: UBs dictadas)
+  if (used && value === 0 && small > 0 && small < 1000) {
+    const n = nextIdx(toks, end);
+    if (n >= 0 && toks[n].w === "mil") {
+      const r = readWords(toks, n);
+      if (r) return { value: small * 1000 + (r.value - 1000), end: r.end };
+    }
+  }
   return { value: value + small, end };
 }
 
@@ -131,6 +140,17 @@ export function spokenToDigits(text: string): string {
       if (n >= 0 && toks[n].w === "docena") {
         out.push("6");
         i = n + 1;
+        continue;
+      }
+    }
+    // "uno" entre cifras dictadas una por una ("UB uno dos tres uno", "dos dos cero uno") es 1
+    if (t.kind === "word" && t.w === "uno") {
+      const n = nextIdx(toks, i);
+      const prevNum = /\d\s*$/.test(out.join(""));
+      const nextNum = n >= 0 && (toks[n].kind === "num" || UNITS[toks[n].w] !== undefined);
+      if (prevNum || nextNum) {
+        out.push("1");
+        i++;
         continue;
       }
     }
@@ -239,17 +259,21 @@ export function normalizeSpokenSizes(text: string): string {
 /** Muletillas que no aportan al pedido. */
 const FILLERS = /(?<![\p{L}\d])(?:e+h+|e+m+|m{2,}|este|o sea|bueno|pues|oye|mira|ya|okey|ok|gracias|por favor|porfa)(?![\p{L}\d])[,.]?/giu;
 /** Palabra explícita de cotización al inicio (se quita: el texto ya va al cotizador). */
-const QUOTE_HEAD = /^\s*(?:(?:hola|buenas?(?:\s+(?:tardes|d[ií]as|noches))?)[,\s]+)?(?:me\s+(?:puedes\s+|podr[ií]as\s+)?)?(?:c[oó]t[ií]za(?:me|nos|le)?|c[oó]t[ií]zo|cotizar|me\s+cotizas|(?:necesito|quiero|hazme|haz)\s+(?:una\s+)?cotizaci[oó]n|cotizaci[oó]n)\s*(?:de|para|por)?\s*[:,]?\s*/i;
+// corrida H: la palabra entera ("cotiza" ya no se come el inicio de "cotización": quedaba "ción" en la llanta) y "hazme la cotización"
+const QUOTE_HEAD = /^\s*(?:(?:hola|buenas?(?:\s+(?:tardes|d[ií]as|noches))?)[,\s]+)?(?:me\s+(?:puedes\s+|podr[ií]as\s+)?)?(?:c[oó]t[ií]za(?:me|nos|le)?|c[oó]t[ií]zo|cotizar|me\s+cotizas|(?:necesito|quiero|hazme|haz|dame|mándame|mandame)\s+(?:una\s+|la\s+)?cotizaci[oó]n|cotizaci[oó]n)(?![\p{L}])\s*[:,]?\s*(?:de|para|por)?(?![\p{L}])\s*[:,]?\s*/iu;
 
 const PCT = String.raw`(\d{1,2}(?:\.\d)?)\s*(?:%|por\s*ciento)?`;
 const TERM_PATTERNS: { re: RegExp; out: (m: RegExpMatchArray) => string }[] = [
   { re: /(?:,\s*)?(?:\b(?:con\s+)?(?:un\s+)?(?:plazo|cr[eé]dito)\s+(?:de\s+|a\s+)?|\ba\s+)(\d{1,3})\s+d[ií]as(?:\s+de\s+(?:plazo|cr[eé]dito))?\b/i, out: (m) => `plazo: ${m[1]} días` },
   { re: /(?:,\s*)?\b(\d{1,3})\s+d[ií]as\s+de\s+(?:plazo|cr[eé]dito)\b/i, out: (m) => `plazo: ${m[1]} días` },
+  // "para ZVA 30 días" (Deepgram se comió la "a" de "a 30 días")
+  { re: /(?:,\s*)?(?<![\d.])\b(\d{1,3})\s+d[ií]as\b(?!\s+de\s+(?:entrega|validez))/i, out: (m) => `plazo: ${m[1]} días` },
   { re: new RegExp(String.raw`(?:,\s*)?\b(?:con\s+)?(?:un\s+)?margen\s+(?:de\s+)?${PCT}`, "i"), out: (m) => `margen ${m[1]}%` },
   { re: /(?:,\s*)?\b(?:con\s+)?(?:un\s+)?(\d{1,2}(?:\.\d)?)\s*(?:%|por\s*ciento)\s+de\s+margen\b/i, out: (m) => `margen ${m[1]}%` },
-  { re: new RegExp(String.raw`(?:,\s*)?\b(?:con\s+)?(?:un\s+)?(?:descuento|dscto|dcto)\s+(?:de\s+(?:un\s+)?)?${PCT}`, "i"), out: (m) => `dscto ${m[1]}%` },
+  { re: new RegExp(String.raw`(?:,\s*)?\b(?:con\s+)?(?:un\s+)?(?:descuento|dscto|dcto)\s+(?:del?\s+(?:un\s+)?)?${PCT}`, "i"), out: (m) => `dscto ${m[1]}%` },
   { re: /(?:,\s*)?\b(?:con\s+)?(?:un\s+)?(\d{1,2}(?:\.\d)?)\s*(?:%|por\s*ciento)\s+de\s+(?:descuento|dscto)\b/i, out: (m) => `dscto ${m[1]}%` },
-  { re: /(?:,\s*)?\b(con|sin)\s+igv\b/i, out: (m) => `${m[1].toLowerCase()} igv` },
+  // "sin IPV" (Deepgram, 2026-11-16): IGV con la consonante del medio mal oída
+  { re: /(?:,\s*)?\b(con|sin)\s+i\.?\s?[gpbv]\.?\s?v\b\.?/i, out: (m) => `${m[1].toLowerCase()} igv` },
 ];
 
 /** Precio dictado: "a 254", "precio 254", "a 254 dólares", "a US$ 254". `§n§` son medidas ya apartadas. */
@@ -273,6 +297,20 @@ export interface DictatedQuote {
   sizeChoices: AmbiguousSize[];
   /** Zonas con forma de medida que no coinciden con ninguna del catálogo ("275 80 R 22"). */
   unheardSizes: string[];
+  /**
+   * Corrida H, punto 6: el cliente es uno con perfil (config/customers.json: Prosegur), nombrado al inicio o con "para …"
+   * aunque Deepgram lo oiga mal ("Prosegul", "proseguir"). En `text` va su cabecera ("prosegur Juliaca") como primera
+   * línea, que el cotizador lee como cliente + sucursal (la sucursal va como dirección) y aplica sus precios de contrato.
+   */
+  profile?: { key: string; name: string; branch?: string; heard: string };
+  /** UB de cada llanta (índice de `items`), ya de 4 cifras; las que no tienen 4 cifras van en `ubIssues`. */
+  ubs: (string | undefined)[];
+  /** Llantas con la UB mal oída (no son 4 cifras) o sin UB cuando el cliente la pide: se pregunta antes de cotizar. */
+  ubIssues: { item: number; heard?: string }[];
+  /** Llantas sin medida que heredan la de la anterior (corrida H, punto 6): se dice. */
+  inherited: { item: number; size: string }[];
+  /** Lo que no se pudo separar con seguridad (corrida H, punto 5): se muestra lo entendido y se pregunta. */
+  doubts: string[];
 }
 
 export interface DictationCatalog {
@@ -282,6 +320,24 @@ export interface DictationCatalog {
   brands?: string[];
   /** Medidas canónicas del catálogo (para leer la medida dictada: voice/sizes.ts). Sin ellas, solo lo plausible. */
   sizes?: string[];
+  /** Clientes con perfil (config/customers.json) y sus sucursales conocidas (corrida H, punto 6). */
+  profiles?: DictationProfile[];
+  /** Qué formas de decir la UB se leen sin un cliente que la pida (voice/items.ts markUbs); por defecto 1 ("UB", "u be" mal oída). */
+  ubLevel?: 0 | 1;
+}
+
+/** Un cliente con perfil, para reconocerlo en lo dictado. */
+export interface DictationProfile {
+  /** Cómo lo escribe el vendedor ("prosegur"): la cabecera del texto para el cotizador. */
+  key: string;
+  /** "Prosegur" (para mostrarlo). */
+  name: string;
+  /** Alias, nombre y razón social. */
+  names: string[];
+  /** Sucursales de sus cotizaciones anteriores ("Juliaca", "Ayacucho"): la dictada se compara por parecido. */
+  units?: string[];
+  /** Pide UB en cada línea (Prosegur). */
+  ub?: boolean;
 }
 
 const clean = (s: string) => s.replace(/\s+/g, " ").replace(/\s+([,.;])/g, "$1").replace(/^[\s,.;:]+|[\s,.;:]+$/g, "");
@@ -316,12 +372,100 @@ function withBrand(desc: string, catalog: DictationCatalog): string {
   return hits.size === 1 ? `${[...hits][0]} ${desc}` : desc;
 }
 
+/** Palabras que cortan la sucursal dictada tras el cliente ("Prosegur Juliaca: …", "Prosegur Juliaca, 4 valor 99"). */
+const BRANCH_STOP = /^(?:ub|u|v|para|con|sin|cotiza\w*|precio|unidad|en|de|la|el|las|los|y|a|al|que)$/i;
+const titleCase = (s: string) => s.toLocaleLowerCase("es").replace(/(?<![\p{L}])\p{L}/gu, (c) => c.toLocaleUpperCase("es"));
+
+/** El cliente con perfil que empieza `words` (por parecido, palabra por palabra: "Prosegul" = Prosegur), con lo que sobra. */
+function profileAt(words: string, profiles: DictationProfile[]): { profile: DictationProfile; heard: string; rest: string } | null {
+  const toks = words.trim().split(/\s+/);
+  let best: { profile: DictationProfile; heard: string; rest: string; score: number } | null = null;
+  for (const p of profiles) {
+    for (const n of p.names) {
+      const nw = fold(n).split(" ").filter(Boolean);
+      if (!nw.length || toks.length < nw.length) continue;
+      const said = toks.slice(0, nw.length).map((w) => fold(w));
+      if (said.some((w) => !w)) continue;
+      // misma inicial y parecido alto en cada palabra ("proseguir", "Prosegure", "Proceur" ≈ prosegur; "asegurar" no)
+      const scores = nw.map((w, i) => (said[i][0] === w[0] ? jaroWinkler(said[i], w) : 0));
+      const score = Math.min(...scores);
+      if (score >= 0.88 && (!best || score > best.score)) best = { profile: p, heard: toks.slice(0, nw.length).join(" "), rest: toks.slice(nw.length).join(" "), score };
+    }
+  }
+  return best ? { profile: best.profile, heard: best.heard, rest: best.rest } : null;
+}
+
+/**
+ * ¿La nota empieza nombrando a un cliente con perfil ("Prosegur Juliaca: cuatro Valor 99 unidad 1231…", sin "cotízame")
+ * y trae llantas con cantidad? Como "prosegur ayacucho …" escrito, es una cotización (bot/index.ts, voz sin paso).
+ */
+export function dictatedProfileQuote(transcript: string, catalog: DictationCatalog): boolean {
+  const profiles = catalog.profiles ?? [];
+  if (!profiles.length) return false;
+  const first = spokenToDigits(transcript ?? "").replace(/[¡!¿?]/g, " ").trim().split(/[:,.;]|\s(?=\d)/)[0] ?? "";
+  if (!profileAt(first, profiles)) return false;
+  const d = normalizeDictation(transcript, catalog);
+  return !!d.profile && d.items.some((l) => /\bx\d+\b/.test(l));
+}
+
+/** La sucursal dicha (palabras hasta una pausa, cifra o palabra de pedido), comparada con las conocidas del cliente. */
+function branchOf(text: string, p: DictationProfile, catalog: DictationCatalog): string | undefined {
+  const words: string[] = [];
+  for (const w of text.trim().split(/\s+/)) {
+    const clean = w.replace(/[:.,;]+$/, "");
+    if (!/^\p{L}[\p{L}'-]*$/u.test(clean) || BRANCH_STOP.test(fold(clean))) break;
+    // una marca o un diseño no es la sucursal ("Prosegur, valor 99 …")
+    if ((catalog.brands ?? []).some((b) => fold(b) === fold(clean)) || (catalog.designs ?? []).some((d) => fold(d.model).split(" ")[0] === fold(clean))) break;
+    words.push(clean);
+    if (/[:.,;]$/.test(w) || words.length >= 3) break;
+  }
+  if (!words.length) return undefined;
+  const said = words.join(" ");
+  const known = (p.units ?? []).map((u) => ({ id: u, name: u }));
+  const m = known.length ? matchSpokenName(said, known) : null;
+  return m?.kind === "clear" && m.best ? m.best.name : titleCase(said);
+}
+
+const QUOTE_VERBS = ["cotizame", "cotiza", "cotizo", "cotizanos", "cotizale"];
+/** ¿La palabra es "cotízame" mal oída? (misma inicial "co", parecido ≥ 0,85: "Cotícame", "Contícame", "Cotita"). */
+function isQuoteVerb(word: string): boolean {
+  const w = fold(word);
+  return w.length >= 5 && w.startsWith("co") && QUOTE_VERBS.some((v) => jaroWinkler(w, v) >= 0.85);
+}
+
+/** "Cotita 8, valor 99 …" -> "Cotiza 8, valor 99 …": el verbo de cotizar mal oído al inicio (para la precedencia del router). */
+export function fixQuoteVerb(text: string): string {
+  return (text ?? "").replace(/^(\s*)(\p{L}+)(?=[\s,:])/u, (all, sp: string, w: string) => (isQuoteVerb(w) && !QUOTE_VERBS.includes(fold(w)) ? `${sp}Cotiza` : all));
+}
+
 /** "cotízame ocho Flama 77 en 295 80 22.5 a 254 para ZBUSS, a 45 días" -> líneas para el cotizador (ver la cabecera). */
 export function normalizeDictation(transcript: string, catalog: DictationCatalog = {}): DictatedQuote {
   // marcas y diseños mal oídos, por parecido contra el catálogo (antes de normalizar: compara palabras como se dijeron)
   const fixed = catalog.designs?.length || catalog.brands?.length ? fixCatalogTerms(transcript, { brands: catalog.brands ?? [], designs: catalog.designs ?? [] }) : { text: transcript, changes: [] };
-  const spoken = normalizeSpokenDetailed(fixed.text, catalog.sizes);
-  let t = spoken.text.replace(QUOTE_HEAD, "");
+  // números que Deepgram pegó ("17.54 valor 89", "valor 99295, 80"): después de pasar las palabras a cifras
+  const spoken = normalizeSpokenDetailed(joinUbDigits(unglueNumbers(spokenToDigits(fixed.text.replace(/[“”"']/g, "")), catalog.designs)), catalog.sizes);
+  // "Cotícame", "Contícame", "Cotita" (Deepgram, 2026-11-16): el verbo de cotizar al inicio, por parecido
+  let t = spoken.text.replace(QUOTE_HEAD, "").replace(/^\s*(\p{L}+)[\s,:]+/u, (all, w: string) => (isQuoteVerb(w) ? "" : all));
+  // un punto pegado a la cifra ("… 22.5. Otra, …"): findTyreSizes no lee la medida si le sigue un punto
+  t = t.replace(/(\d)\.(?=\s|$)/g, "$1 .");
+  // cliente con perfil al inicio ("Prosegur Juliaca: …", tras "cotízame para")
+  const profiles = catalog.profiles ?? [];
+  let profile: DictatedQuote["profile"];
+  let prof: DictationProfile | undefined;
+  const lead = profiles.length ? profileAt(t.split(/[:,.;]|\s(?=\d)/)[0] ?? "", profiles) : null;
+  if (lead) {
+    prof = lead.profile;
+    const after = t.trim().slice(t.trim().toLowerCase().indexOf(lead.heard.toLowerCase()) + lead.heard.length);
+    const branch = branchOf(after, prof, catalog);
+    profile = { key: prof.key, name: prof.name, branch, heard: clean(`${lead.heard} ${branch ? after.trim().split(/\s+/).slice(0, branch.split(" ").length).join(" ") : ""}`) };
+    let cut = after;
+    if (branch) {
+      const n = branch.split(" ").length;
+      cut = after.trim().split(/\s+/).slice(n).join(" ");
+    }
+    t = cut.replace(/^[\s:,.;]+/, "");
+  }
+  const known = (w: string) => (catalog.brands ?? []).some((b) => fold(b) === w) || (catalog.designs ?? []).some((d) => fold(d.model).split(" ")[0] === w);
   // condiciones
   const terms: string[] = [];
   for (const p of TERM_PATTERNS) {
@@ -345,34 +489,58 @@ export function normalizeDictation(transcript: string, catalog: DictationCatalog
   }
   marked += t.slice(last);
   t = clean(marked);
+  // "… para Prosegur Juliaca" más adelante: el cliente con perfil se sabe antes de leer las UBs
+  if (!prof && profiles.length) {
+    for (const m of t.matchAll(/(?:^|[\s,])(?:para|cliente)\s+(\p{L}+(?:\s+\p{L}+){0,2})/giu)) {
+      const hit = profileAt(m[1], profiles);
+      if (hit) {
+        prof = hit.profile;
+        break;
+      }
+    }
+  }
+  // UBs apartadas (¤n¤): con un cliente que la pide, también un número suelto de 4 cifras
+  const ub = markUbs(t, prof?.ub ? 2 : (catalog.ubLevel ?? 1));
+  t = clean(ub.text);
   // cliente
   let customer = "";
   const cm = t.match(CUSTOMER_RE);
-  if (cm) {
-    customer = clean(cm[1].replace(/(?:\s+(?:y|e|con|a|de|al))+\s*$/i, ""));
+  if (cm && !/^[§¤]/.test(cm[1])) {
+    // el cliente nunca se lleva una llanta: se corta antes de "y 2 Valor 99", de una medida o de una UB
+    const own = cm[1].split(/\s+(?:y\s+)?(?=\d{1,3}\s+\p{L})|\s*[§¤]/u)[0];
+    customer = clean(own.replace(/(?:\s+(?:y|e|con|a|de|al))+\s*$/i, ""));
     // el cotizador reconoce el cliente por la mayúscula inicial ("para zbuss" dictado -> "para Zbuss")
     if (customer === customer.toLowerCase()) customer = customer.replace(/(?<![\p{L}])\p{L}/gu, (c) => c.toUpperCase());
-    t = `${t.slice(0, cm.index)} ${t.slice((cm.index ?? 0) + cm[0].length)}`;
+    const used = cm[0].length - (cm[1].length - own.length);
+    t = `${t.slice(0, cm.index)} ${t.slice((cm.index ?? 0) + used)}`;
+    // "… para Prosegur Juliaca" al final: el cliente con perfil y su sucursal
+    const named = !profile && profiles.length ? profileAt(customer, profiles) : null;
+    if (named) {
+      prof = named.profile;
+      const branch = branchOf(named.rest, prof, catalog);
+      profile = { key: prof.key, name: prof.name, branch, heard: customer };
+      customer = "";
+    } else if (prof && profileAt(customer, [prof])) customer = "";
   }
-  // llantas: un trozo por medida (lo que no tiene medida se junta con la siguiente; lo que sobra al final, con la anterior)
-  const chunks = clean(t)
-    .split(/\s*(?:[,;]|\by\b|\bm[aá]s\b|\btambi[eé]n\b|\bademás\b|\botr[ao]s\b)\s*/i)
-    .map(clean)
-    .filter(Boolean);
-  const groups: string[] = [];
-  let carry = "";
-  for (const c of chunks) {
-    const joined = clean(`${carry} ${c}`);
-    if (/§\d+§/.test(c)) {
-      groups.push(joined);
-      carry = "";
-    } else carry = joined;
+  // sin sucursal tras el nombre ("para proseguir, Juliaka. 4 …"): la palabra suelta que sigue
+  if (prof && profile && !profile.branch) {
+    const m = t.match(/^\s*[,.:;]?\s*(\p{L}[\p{L}'-]*(?:\s+\p{L}[\p{L}'-]*){0,2})\s*[.,:;](?=\s)/u);
+    const branch = m ? branchOf(`${m[1]}.`, prof, catalog) : undefined;
+    if (m && branch && branch.split(" ").length === m[1].split(/\s+/).length) {
+      profile = { ...profile, branch, heard: clean(`${profile.heard} ${m[1]}`) };
+      t = t.slice((m.index ?? 0) + m[0].length);
+    }
   }
-  if (carry) {
-    if (groups.length) groups[groups.length - 1] = clean(`${groups[groups.length - 1]} ${carry}`);
-    else groups.push(carry);
-  }
-  const items = groups.map((g) => {
+  // llantas: una por grupo (voice/items.ts)
+  const grouping = groupItems(t, known);
+  const ubs: (string | undefined)[] = [];
+  const ubIssues: { item: number; heard?: string }[] = [];
+  const inherited: { item: number; size: string }[] = [];
+  const display = (g: string) => clean(g.replace(/§(\d+)§/g, (_, k: string) => displaySize(sizes[parseInt(k, 10)])).replace(/¤(\d+)¤/g, (_, k: string) => `UB ${ub.ubs[parseInt(k, 10)].value}`));
+  const doubts = grouping.doubts.map(display);
+  let prevSize: string | null = null;
+  const meta: { desc: string; qty: boolean; ownSize: boolean; other: boolean }[] = [];
+  const items = grouping.groups.map((g, i) => {
     let rest = g;
     let price: string | null = null;
     const pm = rest.match(PRICE_RE);
@@ -380,6 +548,14 @@ export function normalizeDictation(transcript: string, catalog: DictationCatalog
       price = pm[1];
       rest = `${rest.slice(0, pm.index)} ${rest.slice((pm.index ?? 0) + pm[0].length)}`;
     }
+    // UB de la línea
+    const lineUbs = [...rest.matchAll(/¤(\d+)¤/g)].map((m) => ub.ubs[parseInt(m[1], 10)]);
+    rest = rest.replace(/¤\d+¤/g, " ");
+    if (lineUbs.length > 1) doubts.push(`la llanta ${i + 1} («${display(g)}») tiene dos UB`);
+    const u = lineUbs[0];
+    ubs.push(u?.valid ? u.value : undefined);
+    if (u && !u.valid) ubIssues.push({ item: i, heard: u.value });
+    else if (!u && prof?.ub) ubIssues.push({ item: i });
     let qty: string | null = null;
     for (const re of QTY_RES) {
       const qm = clean(rest).match(re);
@@ -390,12 +566,38 @@ export function normalizeDictation(transcript: string, catalog: DictationCatalog
         break;
       }
     }
-    const marks = [...rest.matchAll(/§(\d+)§/g)].map((m) => sizes[parseInt(m[1], 10)]);
-    rest = rest.replace(/§\d+§/g, " ").replace(/(?<![\p{L}\d])(?:en|de|del|la|las|el|los|medida|llantas?|neum[aá]ticos?|unidades|aro)(?![\p{L}\d])/giu, " ");
+    let marks = [...rest.matchAll(/§(\d+)§/g)].map((m) => sizes[parseInt(m[1], 10)]);
+    if (marks.length > 1) doubts.push(`la llanta ${i + 1} («${display(g)}») tiene dos medidas`);
+    rest = rest.replace(/§\d+§/g, " ").replace(/(?<![\p{L}\d])(?:en|de|del|la|las|el|los|medida|llantas?|neum[aá]ticos?|unidades|aro|para)(?![\p{L}\d])/giu, " ");
+    // un número que no es cantidad, precio, medida ni UB, y no va detrás de una palabra (no es "Valor 99"): de quién es, no se sabe
+    const stray = [...clean(rest).matchAll(/(?<![\p{L}][\p{L}\d-]*\s?)(?<![\d.])(\d+(?:\.\d+)?)(?![\d.])/gu)].map((m) => m[1]);
+    if (stray.length) doubts.push(`no sé qué es «${stray.join(" ")}» en la llanta ${i + 1} («${display(g)}»)`);
+    const ownSize = marks.length > 0;
+    if (!marks.length && prevSize && grouping.groups.length > 1) {
+      marks = [prevSize];
+      inherited.push({ item: i, size: prevSize });
+    }
+    if (marks.length) prevSize = marks[marks.length - 1];
     const desc = withBrand(clean(rest), catalog);
-    return clean([desc, marks.join(" "), qty ? `x${qty}` : "", price ? `precio ${price}` : ""].filter(Boolean).join(" "));
+    meta.push({ desc: clean(rest), qty: !!qty, ownSize, other: !!(price || u) });
+    return clean([desc, marks.join(" "), qty ? `x${qty}` : "", price ? `precio ${price}` : "", u?.valid ? `ub ${u.value}` : ""].filter(Boolean).join(" "));
   });
-  const lines = [...items.filter(Boolean), ...(customer ? [`para ${customer}`] : []), ...terms];
+  // varias llantas y alguna sin cantidad cuando las otras la dicen: Deepgram suele comerse el número ("…a 198, Westlake AZ670")
+  if (meta.length > 1 && meta.some((m) => m.qty)) meta.forEach((m, i) => !m.qty && (m.ownSize || m.desc) && doubts.push(`la llanta ${i + 1} («${clean(items[i])}») no dice cantidad`));
+  meta.forEach((m, i) => {
+    // una "llanta" que es solo palabras sin cantidad, medida, precio ni UB, y ninguna es del catálogo: no se descarta, se pregunta
+    if (grouping.groups.length > 1 && !m.qty && !m.ownSize && !m.other && !fold(m.desc).split(" ").some((w) => w && known(w))) doubts.push(`no entendí «${m.desc}»`);
+    // "Westlake CM 990, y 3 en 315/80R22.5": ¿la medida (con su cantidad) es de la anterior o es otra llanta?
+    const next = meta[i + 1];
+    if (!m.ownSize && m.desc && next && next.ownSize && !next.desc && !prof) doubts.push(`no sé si «${display(grouping.groups[i + 1])}» es otra llanta o la medida de la llanta ${i + 1}`);
+  });
+  // la primera llanta sin medida cuando otras sí la dicen: no se adivina (con contrato vale la del contrato)
+  if (!prof && grouping.groups.length > 1) {
+    const first = items.findIndex((l) => !findTyreSizes(l).length);
+    if (first >= 0) doubts.push(`la llanta ${first + 1} («${clean(items[first])}») no tiene medida`);
+  }
+  const header = profile ? [`${profile.key}${profile.branch ? ` ${profile.branch}` : ""}`] : [];
+  const lines = [...header, ...items.filter(Boolean), ...(customer ? [`para ${customer}`] : []), ...terms];
   const sizeFixes = spoken.sizes.resolved.filter((r) => !r.plain).map((r) => ({ from: r.from, to: displaySize(r.to) }));
   return {
     text: lines.join("\n"),
@@ -405,6 +607,11 @@ export function normalizeDictation(transcript: string, catalog: DictationCatalog
     fixes: [...fixed.changes, ...sizeFixes],
     sizeChoices: spoken.sizes.ambiguous,
     unheardSizes: spoken.sizes.unmatched,
+    ...(profile ? { profile } : {}),
+    ubs,
+    ubIssues,
+    inherited,
+    doubts,
   };
 }
 

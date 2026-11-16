@@ -32,7 +32,9 @@
     "quote:shadow-report": "tsx --tsconfig tsconfig.cli.json src/cli/quote-shadow-report.ts",
     "voice:review": "tsx --tsconfig tsconfig.cli.json src/cli/portal-voice-review.ts",
     "portal:simulate": "tsx --tsconfig tsconfig.cli.json src/cli/portal-simulate.ts",
-    "portal:prepropuesta": "tsx --tsconfig tsconfig.cli.json src/cli/portal-prepropuesta.ts"
+    "portal:prepropuesta": "tsx --tsconfig tsconfig.cli.json src/cli/portal-prepropuesta.ts",
+    "portal:import-suppliers": "tsx --tsconfig tsconfig.cli.json src/cli/portal-import-suppliers.ts",
+    "portal:stock": "tsx --tsconfig tsconfig.cli.json src/cli/portal-stock.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.131.0",

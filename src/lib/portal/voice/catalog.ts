@@ -4,7 +4,10 @@
  * Orden: primero lo propio (kind "own", el catálogo de 360 Tyres), luego por cantidad de filas.
  */
 import type { PriceRow } from "../../ingest/types";
+import { profileId, profileKey } from "../../quote/profiles";
+import type { CustomerProfile } from "../../settings";
 import type { PriceStore } from "../../store/types";
+import type { DictationProfile } from "./dictation";
 
 export interface VoiceCatalog {
   /** Marcas, de la más presente a la menos. */
@@ -15,6 +18,8 @@ export interface VoiceCatalog {
   sizes: string[];
   /** Clientes de cotizaciones anteriores (empresa), de la más reciente a la más antigua (para el cliente dictado). */
   customers?: string[];
+  /** Clientes con perfil (config/customers.json) y las sucursales de sus cotizaciones (corrida H: Prosegur por voz). */
+  profiles?: DictationProfile[];
 }
 
 type Row = Pick<PriceRow, "brand" | "model" | "size" | "isTyre" | "kind">;
@@ -49,9 +54,22 @@ let cache: { at: number; store: PriceStore; catalog: VoiceCatalog } | null = nul
 /** Cuánto se reutiliza el catálogo leído (las listas cambian pocas veces al día). */
 export const VOICE_CATALOG_TTL_MS = 10 * 60 * 1000;
 
-/** El catálogo del store del cotizador, con caché de VOICE_CATALOG_TTL_MS (solo se lee cuando llega una nota de voz). */
-export async function voiceCatalogFromStore(store: PriceStore, now = Date.now()): Promise<VoiceCatalog> {
-  if (cache && cache.store === store && now - cache.at < VOICE_CATALOG_TTL_MS) return cache.catalog;
+/** Los clientes con perfil para la voz: nombres, sucursales de sus cotizaciones (`unit`) y si piden UB. */
+export function voiceProfiles(profiles: CustomerProfile[], quotes: { customerProfile?: string; unit?: string }[] = []): DictationProfile[] {
+  return profiles.map((p) => {
+    const id = profileId(p);
+    const units = new Map<string, string>();
+    for (const q of quotes) if (q.customerProfile === id && q.unit?.trim()) units.set(q.unit.trim().toLowerCase(), q.unit.trim());
+    return { key: profileKey(p), name: p.name, names: [...new Set([...p.aliases, p.name, p.company].filter(Boolean))], units: [...units.values()], ub: p.required.includes("ub") };
+  });
+}
+
+/**
+ * El catálogo del store del cotizador, con caché de VOICE_CATALOG_TTL_MS (solo se lee cuando llega una nota de voz).
+ * `profiles`: los clientes con perfil de la configuración del cotizador (Prosegur), para reconocerlos en lo dictado.
+ */
+export async function voiceCatalogFromStore(store: PriceStore, now = Date.now(), profiles: CustomerProfile[] = []): Promise<VoiceCatalog> {
+  if (cache && cache.store === store && now - cache.at < VOICE_CATALOG_TTL_MS) return profiles.length && !cache.catalog.profiles?.length ? { ...cache.catalog, profiles: voiceProfiles(profiles) } : cache.catalog;
   const [rows, quotes] = await Promise.all([store.allRows(), store.listQuotes(300).catch(() => [])]);
   const seen = new Set<string>();
   const customers: string[] = [];
@@ -61,7 +79,7 @@ export async function voiceCatalogFromStore(store: PriceStore, now = Date.now())
     seen.add(name.toLowerCase());
     customers.push(name);
   }
-  const catalog = { ...voiceCatalogFromRows(rows), customers };
+  const catalog = { ...voiceCatalogFromRows(rows), customers, ...(profiles.length ? { profiles: voiceProfiles(profiles, quotes) } : {}) };
   cache = { at: now, store, catalog };
   return catalog;
 }

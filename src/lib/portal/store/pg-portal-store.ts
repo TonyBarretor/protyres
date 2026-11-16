@@ -539,8 +539,13 @@ export class PgPortalStore implements PortalStore {
     return r ? toCompany(r) : null;
   }
 
-  setOwner(companyId: number, userId: number | null): Promise<Company | null> {
-    return this.updateCompany(companyId, { ownerUserId: userId });
+  async setOwner(companyId: number, userId: number | null, opts?: { onlyIfOwner: number | null }): Promise<Company | null> {
+    if (!opts) return this.updateCompany(companyId, { ownerUserId: userId });
+    // corrida H: una sola sentencia; si otro vendedor la tomó entretanto, no se pisa
+    const [r] = await this.sql`
+      update companies set owner_user_id = ${userId}, updated_at = now()
+      where id = ${companyId} and owner_user_id is not distinct from ${opts.onlyIfOwner} returning *`;
+    return r ? toCompany(r) : null;
   }
 
   async searchCompanies(opts: CompanySearch = {}): Promise<CompanySearchResult> {
@@ -804,9 +809,11 @@ export class PgPortalStore implements PortalStore {
   }
 
   async salesByRuc(ruc: string, since?: Date | IsoDate): Promise<Sale[]> {
+    // corrida H: "order by fecha" era ambiguo (la columna y el alias fecha::text) y Postgres rechazaba la consulta: la
+    // selección de encuestas (cron) y la encuesta manual fallaban. Se ordena por la columna de la tabla.
     const rows = since === undefined
-      ? await this.sql`select *, fecha::text as fecha from sales where ruc = ${digits(ruc)} order by fecha desc, id desc`
-      : await this.sql`select *, fecha::text as fecha from sales where ruc = ${digits(ruc)} and fecha >= ${toIsoDate(since)}::date order by fecha desc, id desc`;
+      ? await this.sql`select *, fecha::text as fecha from sales where ruc = ${digits(ruc)} order by sales.fecha desc, sales.id desc`
+      : await this.sql`select *, fecha::text as fecha from sales where ruc = ${digits(ruc)} and sales.fecha >= ${toIsoDate(since)}::date order by sales.fecha desc, sales.id desc`;
     return rows.map(toSale);
   }
 
@@ -937,18 +944,32 @@ export class PgPortalStore implements PortalStore {
 
   // ── oportunidades ──
 
-  async createOpportunity(input: OpportunityInput): Promise<Opportunity> {
+  createOpportunity(input: OpportunityInput): Promise<Opportunity> {
+    return this.sql.begin((tx) => this.insertOpportunity(tx, input)) as Promise<Opportunity>;
+  }
+
+  async openOrCreateOpportunity(input: OpportunityInput): Promise<{ opportunity: Opportunity; created: boolean }> {
+    return this.sql.begin(async (tx) => {
+      // corrida H: bloqueo por empresa hasta el commit: dos asignaciones a la vez no crean dos oportunidades abiertas
+      await tx`select pg_advisory_xact_lock(hashtext(${`opportunity-open:${input.companyId}`}))`;
+      const [open] = await tx`
+        select *, cierre_esperado::text as cierre_esperado from opportunities
+        where company_id = ${input.companyId} and closed_at is null order by updated_at desc, id desc limit 1`;
+      if (open) return { opportunity: toOpportunity(open), created: false };
+      return { opportunity: await this.insertOpportunity(tx, input), created: true };
+    }) as Promise<{ opportunity: Opportunity; created: boolean }>;
+  }
+
+  private async insertOpportunity(tx: postgres.TransactionSql, input: OpportunityInput): Promise<Opportunity> {
     const at = input.at ?? new Date();
     const etapa: StageId = input.etapa ?? "prospecto";
-    return this.sql.begin(async (tx) => {
-      const [r] = await tx`
-        insert into opportunities (company_id, owner_user_id, etapa, probabilidad, monto_estimado, cierre_esperado, proxima_accion, proxima_accion_at, quote_number, created_at, updated_at, closed_at)
-        values (${input.companyId}, ${input.ownerUserId ?? null}, ${etapa}, ${stageProbability(etapa)}, ${input.montoEstimado ?? null}, ${input.cierreEsperado ?? null},
-          ${input.proximaAccion ?? null}, ${input.proximaAccionAt ?? null}, ${input.quoteNumber ?? null}, ${at}, ${at}, ${isClosedStage(etapa) ? at : null})
-        returning *, cierre_esperado::text as cierre_esperado`;
-      await tx`insert into opportunity_stage_history (opportunity_id, etapa, entered_at, changed_by) values (${r.id}, ${etapa}, ${at}, ${input.createdBy ?? null})`;
-      return toOpportunity(r);
-    }) as Promise<Opportunity>;
+    const [r] = await tx`
+      insert into opportunities (company_id, owner_user_id, etapa, probabilidad, monto_estimado, cierre_esperado, proxima_accion, proxima_accion_at, quote_number, created_at, updated_at, closed_at)
+      values (${input.companyId}, ${input.ownerUserId ?? null}, ${etapa}, ${stageProbability(etapa)}, ${input.montoEstimado ?? null}, ${input.cierreEsperado ?? null},
+        ${input.proximaAccion ?? null}, ${input.proximaAccionAt ?? null}, ${input.quoteNumber ?? null}, ${at}, ${at}, ${isClosedStage(etapa) ? at : null})
+      returning *, cierre_esperado::text as cierre_esperado`;
+    await tx`insert into opportunity_stage_history (opportunity_id, etapa, entered_at, changed_by) values (${r.id}, ${etapa}, ${at}, ${input.createdBy ?? null})`;
+    return toOpportunity(r);
   }
 
   async getOpportunity(id: number): Promise<Opportunity | null> {
@@ -1288,7 +1309,10 @@ export class PgPortalStore implements PortalStore {
 
   async saveCredit(companyId: number, input: CreditSaveInput, userId: number | null, at: Date = new Date()): Promise<{ credit: CompanyCredit; entry: CreditHistoryEntry | null }> {
     return this.sql.begin(async (tx) => {
-      // la fila de la empresa queda bloqueada hasta el commit: dos guardados a la vez no pisan el historial
+      // la empresa queda bloqueada hasta el commit: dos guardados a la vez no pisan el historial. Corrida H (test:pg): con
+      // "for update" solo, el primer guardado no bloqueaba nada (la fila aún no existe) y dos a la vez dejaban dos entradas
+      // "sin estado anterior"; el bloqueo por empresa cubre también ese caso.
+      await tx`select pg_advisory_xact_lock(hashtext(${`credit:${companyId}`}))`;
       const [p] = await tx`select ${tx(CREDIT_COLS)} from company_credit where company_id = ${companyId} for update`;
       const prev = p ? toCredit(p) : null;
       const { credit: c, pdf, cambios } = resolveCreditSave(companyId, prev, input, userId, at);

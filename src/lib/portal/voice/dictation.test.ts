@@ -152,3 +152,14 @@ describe("Deepgram escribe «por ciento» como «por 100»", () => {
     expect(d.items[0]).toBe("Aonaite ADR 778 295/80R22.5 x20");
   });
 });
+
+// corrida H (guion de Frank contra Postgres, por reglas): "Cotización de cuatro Valor 87 …" dejaba "ción" en la llanta
+// ("Fenixway 295/80R22.5 CION VALOR 87"): la cabecera "cotiza" se comía el inicio de "cotización"
+describe("cabecera de cotización dictada", () => {
+  const cat = { designs: [{ brand: "Fenixway", model: "Valor 87" }] };
+  it("«Cotización de …», «Hazme la cotización de …», «Necesito una cotización para …» no dejan restos en la llanta", () => {
+    for (const t of ["Cotización de cuatro Valor 87 en 295 80 22.5", "cotización: cuatro Valor 87 en 295 80 22.5", "Hazme la cotización de cuatro Valor 87 en 295 80 22.5", "Necesito una cotización de cuatro Valor 87 en 295 80 22.5", "Cotízame cuatro Valor 87 en 295 80 22.5"]) {
+      expect(normalizeDictation(t, cat).text, t).toBe("Fenixway Valor 87 295/80R22.5 x4");
+    }
+  });
+});

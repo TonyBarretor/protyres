@@ -6,7 +6,13 @@
  * cliente en company_order_profile.
  *
  * Orden: datos del cliente (los recordados en una sola confirmación; los que faltan, uno por uno) → fecha de entrega →
- * enllante → marcado → flete → plazo de crédito → pago al proveedor y recojo (solo con ítems de terceros) → observaciones.
+ * enllante → marcado → flete → plazo de crédito → pago y entrega de cada proveedor (solo con ítems de terceros; el
+ * último valor de ese proveedor como defecto) → observaciones → observaciones de los bloques de proveedor / stock (una
+ * vez por pedido) → número de venta (pedidos por sucursal: Prosegur).
+ *
+ * Corrida H: con sucursal (cotizaciones de Prosegur por región) la memoria es por cliente Y sucursal (branchProfile):
+ * dirección de entrega, agencia, contacto con DNI y celular, flete, enllante, marcado y observaciones de cada sucursal;
+ * la dirección fiscal sigue siendo una por cliente.
  */
 import { foldText } from "../store/shared";
 import { parseSpanishDateTime } from "../bot/dates";
@@ -21,6 +27,8 @@ export interface OrderProfile {
   agencia?: string;
   agenciaContacto?: string;
   agenciaTelefono?: string;
+  /** Corrida H: memoria por sucursal (clave = foldKey de la sucursal), con los mismos campos salvo la dirección fiscal. */
+  sucursales?: Record<string, Omit<OrderProfile, "sucursales" | "direccionFiscal">>;
   /** Últimas respuestas (texto como se muestra / se escribe en el Excel). */
   last?: {
     fechaEntrega?: string;
@@ -31,13 +39,17 @@ export interface OrderProfile {
     pagoProveedor?: string;
     recojo?: string;
     observaciones?: string;
+    /** Observaciones al pie de los bloques de proveedor / stock. */
+    observacionesTerceros?: string;
+    /** Último número de venta (pedidos por sucursal). */
+    venta?: string;
   };
 }
 
 export type ClientField = "direccionFiscal" | "direccionEntrega" | "contacto" | "agencia";
 export const CLIENT_FIELDS: ClientField[] = ["direccionFiscal", "direccionEntrega", "contacto", "agencia"];
 
-export type OrderField = "cliente" | ClientField | "fechaEntrega" | "enllante" | "marcado" | "flete" | "plazoCredito" | "proveedor" | "observaciones";
+export type OrderField = "cliente" | ClientField | "fechaEntrega" | "enllante" | "marcado" | "flete" | "plazoCredito" | "proveedor" | "observaciones" | "observacionesTerceros" | "venta";
 
 /** Respuestas del vendedor en este pedido. */
 export interface OrderAnswers {
@@ -57,7 +69,13 @@ export interface OrderAnswers {
   plazoEscrito?: boolean;
   pagoProveedor?: string;
   recojo?: string;
+  /** Corrida H: condiciones de pago y entrega de cada proveedor del pedido (clave = nombre del proveedor). */
+  proveedores?: Record<string, { pago?: string; entrega?: string }>;
   observaciones?: string;
+  /** Observaciones al pie de cada bloque de proveedor / stock. */
+  observacionesTerceros?: string;
+  /** Número de venta ("009"), para el nombre del archivo de un pedido por sucursal. */
+  venta?: string;
 }
 
 /** Lo que el comando sabe al empezar las preguntas. */
@@ -71,6 +89,15 @@ export interface QuestionContext {
   sugerencias: { direccionFiscal?: string; contacto?: string };
   /** Nombre corto del cliente ("ZBUSS"). */
   cliente: string;
+  /**
+   * Corrida H: proveedores externos del pedido, cada uno con su última respuesta (de la lista de proveedores). Sin
+   * esta lista y con `terceros`, una sola pregunta para todos (como antes).
+   */
+  proveedores?: { nombre: string; def?: string }[];
+  /** Sucursal del pedido ("JULIACA"): las preguntas la nombran. */
+  sucursal?: string;
+  /** Pedir el número de venta (pedido por sucursal) y el sugerido. */
+  venta?: { def?: string };
 }
 
 export interface Question {
@@ -78,6 +105,8 @@ export interface Question {
   text: string;
   /** Valor que acepta "igual" / "ok". */
   def?: string;
+  /** Pregunta "proveedor": de qué proveedor (corrida H). */
+  supplier?: string;
 }
 
 const LABEL: Record<ClientField, string> = {
@@ -130,6 +159,7 @@ export function nextOrderQuestion(a: OrderAnswers, q: QuestionContext): Question
     }
     if (f === "contacto") {
       const s = q.sugerencias.contacto;
+      if (q.sucursal) return { field: f, text: `👤 Persona de contacto en *${titleWords(q.sucursal)}* (nombre, DNI y celular)?${opt(s, "del portal")}`, def: s };
       return { field: f, text: `👤 Persona de contacto para la entrega (nombre y celular)?${opt(s, "del portal")}`, def: s };
     }
     return { field: f, text: "🚛 Agencia de transporte y su contacto? (p. ej. *Andeskar, Luis Pérez 987 654 321*, o *ninguna*)" };
@@ -154,7 +184,16 @@ export function nextOrderQuestion(a: OrderAnswers, q: QuestionContext): Question
       def: d ? String(d.dias) : undefined,
     };
   }
-  if (q.terceros && a.pagoProveedor === undefined) {
+  for (const pr of q.proveedores ?? []) {
+    if (a.proveedores?.[pr.nombre]) continue;
+    return {
+      field: "proveedor",
+      supplier: pr.nombre,
+      text: `🏭 *${pr.nombre}* — Condiciones de pago del proveedor y dónde se recoge? (p. ej. *letras 90, almacén Lurín*)${pr.def ? `\n_La última vez: ${pr.def} — responde *igual* o escribe otro._` : ""}`,
+      def: pr.def,
+    };
+  }
+  if (q.terceros && !q.proveedores?.length && a.pagoProveedor === undefined) {
     const def = last.pagoProveedor || last.recojo ? [last.pagoProveedor, last.recojo].filter(Boolean).join(", ") : undefined;
     return { field: "proveedor", text: `🏭 Condiciones de pago del proveedor y dónde se recoge? (p. ej. *letras 90, almacén Steel*)${def ? `\n_La última vez: ${def} — responde *igual* o escribe otro._` : ""}`, def };
   }
@@ -162,7 +201,20 @@ export function nextOrderQuestion(a: OrderAnswers, q: QuestionContext): Question
     const def = last.observaciones || undefined;
     return { field: "observaciones", text: `📝 Observaciones? (*ninguna* si no hay)${def ? opt(def) : ""}`, def };
   }
+  if (a.observacionesTerceros === undefined) {
+    const def = last.observacionesTerceros || undefined;
+    return { field: "observacionesTerceros", text: `📦 Observaciones del despacho para Patricia (van al pie de cada producto: stock o proveedor)? (*ninguna* si no hay)${def ? opt(def) : ""}`, def };
+  }
+  if (q.venta && a.venta === undefined) {
+    const def = q.venta.def;
+    return { field: "venta", text: `🔢 Número de venta${q.sucursal ? ` de *${titleWords(q.sucursal)}*` : ""} para el nombre del Excel? (p. ej. *009*)${def ? opt(def, "sugerido") : ""}`, def };
+  }
   return null;
+}
+
+/** "JULIACA" -> "Juliaca", "SAN MARTIN" -> "San Martin". */
+export function titleWords(s: string): string {
+  return s.toLowerCase().replace(/(^|[\s-])(\p{L})/gu, (_m, sep: string, ch: string) => sep + ch.toUpperCase());
 }
 
 /** Botón de respuesta rápida: `id` = lo que se escribiría (el bot lo entiende igual), `title` = lo que se ve. */
@@ -199,7 +251,10 @@ export function questionButtons(q: Question): QuickAnswer[] {
     case "plazoCredito":
       return hasDef ? [IGUAL, { id: "contado", title: "Contado" }] : [{ id: "contado", title: "Contado" }];
     case "observaciones":
+    case "observacionesTerceros":
       return hasDef ? [IGUAL, NINGUNA] : [NINGUNA];
+    case "venta":
+      return hasDef ? [IGUAL] : [];
   }
 }
 
@@ -406,13 +461,29 @@ export function applyOrderAnswer(a: OrderAnswers, q: Question, text: string, ctx
     case "proveedor": {
       if (useDefault && !q.def) return { answers: a, error: "Dime las condiciones de pago del proveedor y dónde se recoge." };
       const pr = parseProveedor(useDefault ? q.def! : raw);
+      if (q.supplier) {
+        next.proveedores = { ...a.proveedores, [q.supplier]: { pago: pr.pagoProveedor ?? "", entrega: pr.recojo } };
+        // el primero también queda como el general (memoria del cliente, pedidos anteriores a la corrida H)
+        if (next.pagoProveedor === undefined) {
+          next.pagoProveedor = pr.pagoProveedor ?? "";
+          next.recojo = pr.recojo;
+        }
+        return { answers: next };
+      }
       next.pagoProveedor = pr.pagoProveedor ?? "";
       next.recojo = pr.recojo;
       return { answers: next };
     }
-    case "observaciones": {
-      if (useDefault && q.def) next.observaciones = q.def;
-      else next.observaciones = NONE.has(norm(raw)) || isDefaultAnswer(raw) ? "" : raw;
+    case "observaciones":
+    case "observacionesTerceros": {
+      if (useDefault && q.def) next[q.field] = q.def;
+      else next[q.field] = NONE.has(norm(raw)) || isDefaultAnswer(raw) ? "" : raw;
+      return { answers: next };
+    }
+    case "venta": {
+      const v = useDefault ? q.def : raw.replace(/^(?:venta|n[°ºo]\.?|nro\.?|numero|número)\s*/i, "").trim();
+      if (!v || !/^[A-Za-z0-9-]{1,12}$/.test(v)) return { answers: a, error: "Escríbeme el número de venta (p. ej. *009*)." };
+      next.venta = /^\d{1,2}$/.test(v) ? v.padStart(3, "0") : v.toUpperCase();
       return { answers: next };
     }
   }
@@ -452,8 +523,33 @@ export function profileFromAnswers(prev: OrderProfile, a: OrderAnswers): OrderPr
       pagoProveedor: a.pagoProveedor !== undefined ? a.pagoProveedor : prev.last?.pagoProveedor,
       recojo: a.pagoProveedor !== undefined ? a.recojo : prev.last?.recojo,
       observaciones: keep(a.observaciones, prev.last?.observaciones),
+      observacionesTerceros: keep(a.observacionesTerceros, prev.last?.observacionesTerceros),
+      venta: keep(a.venta, prev.last?.venta),
     },
   };
+}
+
+/**
+ * Corrida H: la memoria de una sucursal como un perfil (la dirección fiscal es la del cliente). Sin sucursal, el perfil
+ * del cliente tal cual. Una sucursal nueva solo trae la dirección fiscal: no se ofrece la entrega de otra sucursal.
+ */
+export function branchProfile(p: OrderProfile, sucursal: string | undefined): OrderProfile {
+  if (!sucursal) return p;
+  const b = p.sucursales?.[foldText(sucursal).replace(/[^a-z0-9]/g, "")] ?? {};
+  return { ...b, ...(p.direccionFiscal !== undefined ? { direccionFiscal: p.direccionFiscal } : {}) };
+}
+
+/** Guarda la memoria nueva de una sucursal dentro del perfil del cliente (sin sucursal: el perfil nuevo tal cual). */
+export function withBranchProfile(p: OrderProfile, sucursal: string | undefined, branch: OrderProfile): OrderProfile {
+  if (!sucursal) return { ...branch, ...(p.sucursales ? { sucursales: p.sucursales } : {}) };
+  const { direccionFiscal, sucursales: _s, ...rest } = branch;
+  return { ...p, ...(direccionFiscal !== undefined ? { direccionFiscal } : {}), sucursales: { ...p.sucursales, [foldText(sucursal).replace(/[^a-z0-9]/g, "")]: rest } };
+}
+
+/** Siguiente número de venta: "009" -> "010" (mismo ancho); otro formato: sin sugerencia. */
+export function nextVenta(last: string | undefined): string | undefined {
+  if (!last || !/^\d+$/.test(last)) return undefined;
+  return String(Number(last) + 1).padStart(last.length, "0");
 }
 
 /** Fecha de entrega para mostrar: "20/11/2026" o el texto. */

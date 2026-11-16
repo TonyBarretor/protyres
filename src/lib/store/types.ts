@@ -308,7 +308,72 @@ export interface PriceStore {
   getSyncMarks(): Promise<Record<string, string>>;
   /** `provider` lets deleteProvider clear the marks of that provider's files. */
   setSyncMark(fileId: string, modifiedTime: string, provider?: string): Promise<void>;
+  /** Corrida H, 3b: proveedores de la lista de contactos (tabla suppliers), por nombre. */
+  listSuppliers(): Promise<Supplier[]>;
+  /** Crea o actualiza por `key`; conserva las últimas condiciones (lastPayment / lastDelivery) que ya tenía. */
+  upsertSuppliers(list: Supplier[]): Promise<{ inserted: number; updated: number }>;
+  /** Recuerda las condiciones de pago y entrega usadas con un proveedor en un pedido (solo los campos dados). */
+  setSupplierTerms(key: string, terms: { payment?: string; delivery?: string }): Promise<void>;
+  /**
+   * Corrida H, punto 4: descuentos de stock de un pedido. Libera los activos del mismo `orderKey` (un pedido nunca
+   * descuenta dos veces: rehacerlo reemplaza) y guarda los nuevos con la hora de la última carga de su origen.
+   */
+  setStockDeductions(orderKey: string, label: string, entries: StockDeductionInput[], at?: Date): Promise<void>;
+  /** Devuelve lo descontado por un pedido (anulado o rehecho); cuántos descuentos liberó. */
+  releaseStockDeductions(orderKey: string, at?: Date): Promise<number>;
+  /** Descuentos activos: sin liberar y hechos sobre la última carga de su origen (una carga nueva los deja sin efecto). */
+  listStockDeductions(): Promise<StockDeduction[]>;
   close(): Promise<void>;
+}
+
+/** Proveedor de la lista de contactos (corrida H, 3b): a quién se le compra lo que no está en stock propio. */
+export interface Supplier {
+  /** supplierKey(name): clave estable entre importaciones. */
+  key: string;
+  /** "JCH LLANTAS" */
+  name: string;
+  contact?: string;
+  phone?: string;
+  email?: string;
+  /** Marcas o rubros tal como vienen ("WEST LAKE", "CHINAS", "AROS"). */
+  brands: string[];
+  /** Proveedor del cotizador que le corresponde ("JCH", "Steel"), si hay. */
+  provider?: string;
+  /** Últimas condiciones de pago y entrega usadas en un pedido ("LETRAS 90", "ALMACEN LURIN"). */
+  lastPayment?: string;
+  lastDelivery?: string;
+  updatedAt?: string;
+}
+
+export function supplierKey(name: string): string {
+  return foldKey(name);
+}
+
+/** Origen de una carga de stock: proveedor y tipo de lista ("protyres|stock"). Una carga nueva del mismo origen reinicia el contador. */
+export function stockOriginKey(provider: string, kind: string): string {
+  return `${foldKey(provider)}|${kind}`;
+}
+
+/** Unidades de stock propio comprometidas por un pedido, por producto (fila de stock) y almacén. */
+export interface StockDeductionInput {
+  /** Id de la fila de stock (kind "stock"): estable entre cargas. */
+  rowId: string;
+  /** stockOriginKey de la fila. */
+  origin: string;
+  warehouse: string;
+  quantity: number;
+  /** "215/75R17.5 18PR FENIXWAY VALOR 99" */
+  description: string;
+}
+
+export interface StockDeduction extends StockDeductionInput {
+  id: number;
+  /** "oc:<empresa>:<n° de OC>": un pedido, aunque se rehaga. */
+  orderKey: string;
+  /** "OC 4500123 · ZBUSS" */
+  label: string;
+  /** ISO */
+  createdAt: string;
 }
 
 export type { QuoteItem };

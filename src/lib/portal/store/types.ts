@@ -183,8 +183,11 @@ export interface CompanyRepo {
   /** Las empresas de esos RUC que existen (una consulta; sin orden garantizado). */
   getCompaniesByRucs(rucs: string[]): Promise<Company[]>;
   updateCompany(id: number, patch: CompanyPatch): Promise<Company | null>;
-  /** userId null = liberar la empresa. */
-  setOwner(companyId: number, userId: number | null): Promise<Company | null>;
+  /**
+   * userId null = liberar la empresa. Con `onlyIfOwner` (corrida H) solo cambia si el dueño actual es ese (null = sin
+   * dueño), en una sola operación; si otro la tomó entretanto, no la toca y devuelve null.
+   */
+  setOwner(companyId: number, userId: number | null, opts?: { onlyIfOwner: number | null }): Promise<Company | null>;
   searchCompanies(opts?: CompanySearch): Promise<CompanySearchResult>;
   /** Marcas de vehículo con conteo, de más a menos vehículos. */
   listMarcas(): Promise<MarcaCount[]>;
@@ -436,6 +439,11 @@ export interface OpportunityRepo {
   getOpportunity(id: number): Promise<Opportunity | null>;
   /** La abierta más reciente de la empresa (del dueño indicado, si se pasa). */
   getOpenOpportunity(companyId: number, ownerId?: number): Promise<Opportunity | null>;
+  /**
+   * La abierta más reciente de la empresa o, si no hay, una nueva con `input` (corrida H): en una sola operación, así
+   * dos asignaciones a la vez (doble toque, dos instancias) no dejan dos oportunidades abiertas.
+   */
+  openOrCreateOpportunity(input: OpportunityInput): Promise<{ opportunity: Opportunity; created: boolean }>;
   /** Más reciente (updated_at) primero. */
   listOpportunities(filter?: OpportunityFilter): Promise<Opportunity[]>;
   /**

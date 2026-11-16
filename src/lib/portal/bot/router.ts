@@ -116,7 +116,7 @@ export interface ClassifyInput {
 
 // ── comandos explícitos del portal ──
 
-export type PortalCommandName = "portal" | "ayuda_portal" | "hoy" | "empresa" | "asignarme" | "contacto" | "cita" | "oc" | "avance" | "prepropuesta" | "aprende" | "enlazar" | "reenviada" | "estado" | "mejores";
+export type PortalCommandName = "portal" | "ayuda_portal" | "hoy" | "empresa" | "asignarme" | "contacto" | "cita" | "oc" | "avance" | "prepropuesta" | "aprende" | "enlazar" | "reenviada" | "estado" | "mejores" | "anular" | "descuentos";
 
 interface CommandSpec {
   name: PortalCommandName;
@@ -150,6 +150,9 @@ const COMMANDS: CommandSpec[] = [
   { name: "reenviada", re: /^reenviad[ao](?:\s+\S.*)?$/ },
   { name: "estado", re: /^estado\s+\S/ },
   { name: "mejores", re: MEJORES_RE },
+  // corrida H: anular un pedido generado (devuelve su stock) y ver los descuentos de stock activos (supervisor / admin)
+  { name: "anular", re: /^anular\s+(?:la\s+)?(?:oc|o\/c|pedido|orden(?:\s+de\s+compra)?)\s+\S/ },
+  { name: "descuentos", re: /^descuentos(?:\s+(?:de\s+)?stock)?$|^stock\s+(?:descontado|comprometido)$/ },
 ];
 
 /** La palabra del comando en el texto original ("Empresa", "asignarme", "pre-propuesta"...). */
@@ -170,6 +173,8 @@ const RAW_HEAD: Record<PortalCommandName, RegExp> = {
   estado: /^estado\b/i,
   // la frase entera es el comando: no lleva argumentos
   mejores: /^[\s\S]*$/,
+  anular: /^anular\b/i,
+  descuentos: /^[\s\S]*$/,
 };
 
 /** Lo que sigue a la palabra del comando cuando la línea es un campo del cotizador: ": …" o " de: …" (a/al/de/del). */

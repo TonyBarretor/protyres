@@ -138,6 +138,20 @@ npm run quote -- --file pedido.txt --pick "1a 2b" --remove 3 --price "4=890"   #
 npm run wa:simulate                                 # chatear con el bot sin WhatsApp
 ```
 
+### Pruebas contra Postgres (`npm run test:pg`)
+
+`npm test` usa los stores JSON. `npm run test:pg` corre `src/test-pg/*.pg.test.ts` contra un Postgres de verdad:
+
+- Crea una base aparte `protyres_pgtest_<hora>_<azar>` en el mismo servidor de `DATABASE_URL` (por el mismo pooler,
+  puerto 6543), le aplica todas las migraciones y la **elimina al terminar**; las que quedaron de una corrida cortada se
+  borran solas a las 3 h. Con `PGTEST_URL` usa esa base (un Postgres local) y no crea ni borra nada. **Nunca toca los
+  datos reales**: las pruebas no ven `DATABASE_URL` y el simulador solo acepta una base `protyres_pgtest_…`.
+- Usa los stores con su `connect()` de producción (mismo pool y opciones, `pg-options.ts`) y compara cada escritura con
+  el store JSON (mismas entradas, mismas salidas); prueba concurrencia (más operaciones que el pool, varias instancias),
+  transacciones que fallan a la mitad, el bot completo (`BotHandler`) y el guion de Frank (`portal:simulate --pg-test`)
+  sobre la base sembrada desde copias de `data/` (solo lectura).
+- Tarda unos 10 min (el guion de Frank, ~5). Sin `data/portal-store.json` el guion se salta.
+
 Cuando el cliente mande una lista nueva: copiarla a `clientdata/` y `npm run ingest -- "clientdata/<archivo>"`. Si el
 nombre no coincide con ninguna regla: `--provider "Nombre" --kind provider|own|stock`.
 
@@ -317,6 +331,32 @@ Variables (ver `.env.example`):
 
 Subir ventas (supervisor/admin): .xlsx de hasta 4 MB (Vercel corta los cuerpos de más de 4,5 MB); el mismo archivo no se
 carga dos veces. `.vercelignore` evita que `vercel deploy` suba el padrón y los datos de clientes de `data/`.
+
+### Pedido para Patricia, proveedores y contador de stock (corrida H)
+
+- **Excel de pedido** (`oc <empresa> <n° OC>`): el detalle se agrupa por producto (varias líneas de la cotización del
+  mismo producto y precio = una línea); el precio con IGV es `=+K*1.18` con el precio sin IGV en la columna K, como lo
+  escribe el vendedor. El bloque "PRODUCTOS DE TERCEROS" se repite **por producto**, también para el stock propio
+  (`STOCK 360PT` · `PATRICIA` · `-` · precio 0 · `contado` · `SAN LUIS STOCK`: `config/portal.json` → `orders.ownStock`).
+  Si un producto no sale ni del stock ni de la lista de un solo proveedor, el bot pregunta de dónde sale (*propio* o el
+  proveedor, con sugerencias por marca) antes de armar el Excel. Las condiciones de pago y entrega se preguntan por
+  proveedor y se recuerdan; las observaciones del despacho (pie de cada bloque) se preguntan una vez y se recuerdan por
+  cliente y sucursal. Más de 7 líneas: se insertan filas con el formato de la plantilla.
+- **Prosegur (cotizaciones por sucursal con UB)**: un Excel por sucursal (`Nov26- Prosegur - Venta 009 Juliaca UBs
+  1231-1812….xlsx`, patrón en `orders.branchFileName`); varias sucursales en una OC = escribir los números de sus
+  cotizaciones (*471 475*) y mandar cada Excel en un correo aparte. Memoria por sucursal (entrega, agencia, contacto con
+  DNI, flete, enllante, marcado) y número de venta. Antes de armar el pedido se contrasta con la cotización (y con la OC
+  si llegó en Excel): producto, cantidad, precio y UB; si algo no coincide, se muestra y se pregunta.
+- **Lista de proveedores**: `npm run portal:import-suppliers [-- --file x.xlsx | --dry-run | --list]` importa el Excel de
+  contactos (por defecto `data/referencia-360tyres/Contactos_de_Proveedores.xlsx`, nunca en git) a la tabla `suppliers`.
+  Repetible (conserva las condiciones recordadas). Empareja con los proveedores del cotizador por nombre o por
+  `orders.supplierProviders`.
+- **Contador de stock**: es un **contador de apoyo; la referencia del inventario sigue siendo Odoo**. Al generar un
+  pedido con stock propio se guardan descuentos aparte (la cantidad cargada no cambia): disponible = cargado − pedidos
+  desde la última carga. Las opciones del cotizador y `stock <medida>` lo muestran (`stock 4 (12 cargadas − 8 en
+  pedidos)`; sin pedidos, el texto de siempre; el orden y la opción por defecto no cambian). Pedir más de lo disponible
+  avisa y sigue solo con *sí*. Rehacer la misma OC reemplaza su descuento; `anular oc <n°>` lo devuelve; una carga nueva
+  de stock del mismo origen lo pone en cero. Supervisor / admin: `descuentos` en el bot o `npm run portal:stock`.
 
 ### Resumen diario (cron)
 

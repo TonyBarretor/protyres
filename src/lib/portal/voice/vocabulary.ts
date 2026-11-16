@@ -78,8 +78,13 @@ export function buildKeyterms(src: KeytermSources = {}): string[] {
   const budget = src.tokenBudget ?? KEYTERM_TOKEN_BUDGET;
   const cat = src.catalog;
   const models = (cat?.designs ?? []).map((d) => d.model);
+  // clientes con perfil (Prosegur), sus sucursales y "UB" (corrida H, punto 6: Deepgram oía "v grande" por "u be")
+  const profiles = cat?.profiles ?? [];
   const candidates = [
     ...FIXED_KEYTERMS,
+    ...profiles.map((p) => p.name),
+    ...(profiles.some((p) => p.ub) ? ["UB"] : []),
+    ...profiles.flatMap((p) => p.units ?? []).slice(0, 10),
     ...(src.learned ?? []).map((v) => v.meaning),
     ...models.slice(0, CATALOG_TOP.designs),
     ...(cat?.brands ?? []).slice(0, CATALOG_TOP.brands),

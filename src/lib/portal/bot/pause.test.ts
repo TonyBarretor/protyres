@@ -76,7 +76,8 @@ const paused = async () => pausedOf(await portal.getPortalConversation(FRANK));
 /** Reglas del enrutador registradas en `messages` (filas kind "route"), en orden. */
 const rules = async () => (await prices.listMessages(FRANK, 500)).filter((m) => m.kind === "route").map((m) => m.routeRule);
 const ORDER_TO_FECHA = ["Av. Industrial 300, Lurín", "la misma", "Pedro Soto 999888777", "ninguna"];
-const ORDER_REST = ["20/11", "sí", "no", "cliente", "contado", "ninguna"];
+// corrida H: + observaciones del despacho (pie de los bloques de stock / proveedor)
+const ORDER_REST = ["20/11", "sí", "no", "cliente", "contado", "ninguna", "ninguna"];
 /** `oc roca 7788` hasta la pregunta de la fecha de entrega. */
 async function orderToFecha(): Promise<OcStep> {
   await say("oc roca 7788");
@@ -283,7 +284,7 @@ describe("orden de compra sin cotización previa", () => {
     await say("oc roca 7788");
     await say("4 x Fenixway Valor 87 295/80R22.5");
     let out: OutboundMessage[] = [];
-    for (const a of ["Av. Industrial 300, Lurín", "la misma", "igual", "ninguna", "20/11", "sí", "no", "cliente", "contado", "ninguna"]) out = await say(a);
+    for (const a of ["Av. Industrial 300, Lurín", "la misma", "igual", "ninguna", "20/11", "sí", "no", "cliente", "contado", "ninguna", "ninguna"]) out = await say(a);
     expect(out.some((m) => m.kind === "document")).toBe(true);
     expect(lastBody(out).split("\n").at(-1)).toBe("✅ Paso 7 de 7 con E.T. LA ROCA: pedido a Patricia generado (paso 5 omitido). Proceso completo.");
     const estado = lastBody(await say("estado roca"));

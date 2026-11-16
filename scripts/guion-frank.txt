@@ -51,6 +51,31 @@ ok
 @btn Cliente
 @btn Igual
 @btn Ninguna
+# corrida H: observaciones del despacho (al pie de cada bloque de stock / proveedor del Excel)
+despachar en la base de Ate, pedir guía firmada
+@espera-texto Reenvía este Excel por correo a Patricia
+# 8d. Corrida H: pedido con stock propio y un proveedor, y el contador de stock antes y después. Valor 87 sale del
+#     stock de Odoo (se descuenta) y Falken GI-388 de la lista de JCH (bloque de JCH con su costo con IGV); las
+#     condiciones del proveedor se preguntan y quedan recordadas. *stock 295/80R22.5* después del pedido muestra
+#     "(34 cargadas − 8 en pedidos)".
+stock 295/80R22.5
+@espera-texto stock 34 · Fenixway Valor 87
+oc zbuss 4500124
+@btn No || no
+8 x Fenixway Valor 87 295/80R22.5, 4 x Falken GI-388 295/80R22.5
+@espera-texto Entendí:
+@btn Igual || igual
+21/11
+@btn Igual || no
+@btn Igual || no
+@btn Igual || cliente
+@btn Igual || 30
+letras 60, almacén Lurín
+@btn Ninguna
+@btn Igual || despachar en la base de Ate
+@espera-texto Descontado del stock
+stock 295/80R22.5
+@espera-texto 34 cargadas − 8 en pedidos
 # 8c. En qué paso vas con ZBUSS (1 Asignada … 7 Pedido a Patricia) y la próxima acción
 estado zbuss
 # 9. Avance del mes (C2) y pre-propuesta (C1)

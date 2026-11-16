@@ -11,7 +11,7 @@ import { formatFicha, resolveCompany, splitCompany, unusedNote } from "../compan
 import { companyProgressLine } from "../progress";
 import { registerCompanyAction, registerPortalCommand, type PortalContext } from "../registry";
 
-export async function assignToMe(ctx: PortalContext, company: Company, note = ""): Promise<void> {
+export async function assignToMe(ctx: PortalContext, company: Company, note = "", retried = false): Promise<void> {
   const { store, user } = ctx;
   if (!canAssignSelf(user, company)) {
     const owner = company.ownerUserId ? await store.getUser(company.ownerUserId) : null;
@@ -24,11 +24,22 @@ export async function assignToMe(ctx: PortalContext, company: Company, note = ""
   }
   const already = company.ownerUserId === user.id;
   let current = company;
-  if (!already) current = (await store.setOwner(company.id, user.id)) ?? company;
-  let opp = await store.getOpenOpportunity(company.id);
-  if (!opp) {
-    opp = await store.createOpportunity({ companyId: company.id, ownerUserId: user.id, etapa: "prospecto", createdBy: user.id, at: ctx.now });
-  } else if (opp.ownerUserId !== user.id) {
+  if (!already) {
+    // Corrida H (test:pg, bot.pg.test.ts): dos o tres vendedores que pulsaban *Asignarme* en la misma empresa de "mejores"
+    // a la vez se la llevaban todos ("Empresa asignada a ti") y quedaban varias oportunidades abiertas. Ahora el dueño
+    // cambia solo si sigue siendo el que se leyó; si otro la tomó entretanto, se vuelve a leer y se responde con eso.
+    const claimed = await store.setOwner(company.id, user.id, { onlyIfOwner: company.ownerUserId });
+    if (!claimed) {
+      const fresh = await store.getCompany(company.id);
+      if (fresh && !retried) return assignToMe(ctx, fresh, note, true);
+      await ctx.reply(`No pude asignarte *${company.razonSocial}*: cambió de dueño en este momento. Escribe *empresa ${company.ruc}* para ver cómo quedó.`);
+      return;
+    }
+    current = claimed;
+  }
+  // la abierta o una nueva, en una sola operación (dos toques seguidos no crean dos)
+  let { opportunity: opp } = await store.openOrCreateOpportunity({ companyId: company.id, ownerUserId: user.id, etapa: "prospecto", createdBy: user.id, at: ctx.now });
+  if (opp.ownerUserId !== user.id) {
     opp = (await store.updateOpportunity(opp.id, { ownerUserId: user.id })) ?? opp;
   }
   if (!already) {

@@ -114,5 +114,11 @@
     "maxSurveyBodyBytes": 32768,
     "_commentExcel": "Subir ventas (.xlsx, además de los 4 MB del formulario): se comprueba la firma ZIP (PK) y el índice del ZIP antes de abrirlo (maxSheets hojas, maxUncompressedMB descomprimido: corta un zip bomb). maxRows: filas con datos por hoja; 20.000 son años de facturas de llantas de 360 Tyres y mantienen la vista previa y el guardado bajo el límite de tiempo de la función. maxColumns: columnas leídas por fila (las de la derecha se ignoran).",
     "salesUpload": { "maxRows": 20000, "maxColumns": 60, "maxSheets": 20, "maxUncompressedMB": 100 }
+  },
+  "orders": {
+    "_comment": "Corrida H — pedido para Patricia. ownStock: cómo se llena el bloque de PRODUCTOS DE TERCEROS de un producto de stock propio (almacén San Luis; Arriola, Frutales y Lurín son almacenes de un proveedor). supplierProviders: proveedor de la lista de contactos -> proveedor del cotizador. branchFileName: nombre del Excel de un pedido por sucursal (Prosegur).",
+    "ownStock": { "proveedor": "STOCK 360PT", "contacto": "PATRICIA", "telefono": "", "email": "-", "precioCompra": 0, "pago": "contado", "entrega": "SAN LUIS STOCK", "warehouse": "SAN LUIS" },
+    "supplierProviders": { "JCH LLANTAS": "JCH", "STEELS Y ASOCIADOS": "Steel" },
+    "branchFileName": "{Mes}{aa}- {Cliente} - Venta {Venta} {Sucursal} UBs {UBs}"
   }
 }

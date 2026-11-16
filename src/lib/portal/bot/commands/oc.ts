@@ -31,24 +31,63 @@
  * armar (otros pasos, o un perfil esperando el pedido) no se toca nada y se le pide terminarla o cancelarla.
  *
  * Permisos: como `cita`, solo quien puede editar la empresa (dueño, supervisor o admin).
+ *
+ * Corrida H (puntos 3, 4 y 6), entre los ítems y las preguntas:
+ *  - Contraste: si los ítems se escribieron habiendo una cotización, o la OC llegó como Excel (formato Prosegur y
+ *    parecidos), se comparan con la cotización (producto, cantidad total, precio y UB); si no coinciden, se muestra y se
+ *    pregunta (fase `check`).
+ *  - Origen de cada producto (order/origin.ts): stock propio o proveedor (lista de proveedores); el que no se identifica
+ *    se pregunta (fase `origin`), con sugerencias por marca.
+ *  - Stock propio frente al disponible (cargado − pedidos desde esa carga): si se pide más, se avisa y se sigue solo con
+ *    *sí* (fase `stock`). Al generar el pedido se descuenta (orderStockKey: la misma OC rehecha reemplaza lo anterior;
+ *    `anular oc …` lo devuelve).
+ *  - Pedidos por sucursal (cotizaciones de Prosegur con unidad): un Excel por sucursal, con su memoria (entrega, agencia,
+ *    contacto con DNI, flete, enllante, marcado, observaciones), el número de venta y el nombre
+ *    "<Mes><aa>- Prosegur - Venta <NNN> <Sucursal> UBs <ub>-<ub>.xlsx"; varias cotizaciones (*471 475*) = varias sucursales.
  */
-import { XLSX_MIME } from "../../../quote/files";
+import type { PriceRow } from "../../../ingest/types";
+import { cleanFileName, XLSX_MIME } from "../../../quote/files";
 import { fmtMoney, r2 } from "../../../quote/pricing";
 import type { Quote } from "../../../quote/types";
 import { loadSettings, type Settings } from "../../../settings";
 import { getStore } from "../../../store";
 import type { PriceStore } from "../../../store/types";
+import ExcelJS from "exceljs";
+import { foldKey, supplierKey, type Supplier } from "../../../store/types";
+import { loadPortalConfig } from "../../config";
+import { crossCheck, linesFromSheet, type CheckLine } from "../../order/crosscheck";
 import { ORDER_ITEMS_EXAMPLE, parseOrderItems, type ModelChoice } from "../../order/items";
-import { buildPedidoXlsx, formatPedidoFileName, pedidoDescription, pedidoFromQuote, pedidoTooManyItems, pedidoUnitPrice, plazoDiasFromTerm, PEDIDO_MAX_ITEMS, type PedidoData, type PedidoItem } from "../../order/pedido-xlsx";
+import { applyOrderEdit, orderItemsFromVoice } from "../../order/voice-items";
+import { spokenToDigits } from "../../voice/dictation";
+import { parseVoiceEdit, type VoiceEdit } from "../../voice/items";
+import { availableText, committedMap, deductionsFor, orderStockKey, resolveOrigins, stockChecks, stockRowFor, unknownOrigins } from "../../order/origin";
+import {
+  buildPedidoXlsx,
+  formatPedidoFileName,
+  groupPedidoItems,
+  pedidoDescription,
+  pedidoFromQuote,
+  pedidoTooManyItems,
+  pedidoUnitPrice,
+  plazoDiasFromTerm,
+  PEDIDO_MAX_ITEMS,
+  type PedidoData,
+  type PedidoItem,
+} from "../../order/pedido-xlsx";
+import { findSupplier, suggestSuppliers, supplierForProvider, supplierLabel } from "../../order/suppliers";
 import {
   agenciaText,
   applyOrderAnswer,
+  branchProfile,
   entregaFromAnswers,
   fechaEntregaLabel,
   isDefaultAnswer,
   nextOrderQuestion,
+  nextVenta,
   profileFromAnswers,
   questionButtons,
+  titleWords,
+  withBranchProfile,
   type QuickAnswer,
   type OrderAnswers,
   type OrderField,
@@ -56,8 +95,8 @@ import {
   type QuestionContext,
 } from "../../order/questions";
 import { canEditCompany } from "../../auth/permissions";
-import { ACT_QUOTE, setCompanyCreditTerms, shortQuoteNumber } from "../../quotes/link";
-import { fold } from "../../../tyre/brands";
+import { ACT_QUOTE, quoteNumberMatches, setCompanyCreditTerms, shortQuoteNumber } from "../../quotes/link";
+import { brandsInText, fold } from "../../../tyre/brands";
 import { findTyreSizes } from "../../../tyre/spec";
 import { stageLabel } from "../../stages";
 import type { Company, Opportunity } from "../../store/types";
@@ -76,7 +115,11 @@ export const OC_MEDIA_WINDOW_MS = 10 * 60 * 1000;
 export const OC_STATUS_RECEIVED = "recibida";
 export const OC_STATUS_DONE = "pedido_generado";
 export const OC_STATUS_CANCELLED = "cancelada";
+/** Corrida H: pedido ya generado que el vendedor anuló (`anular oc …`): su stock se devolvió. */
+export const OC_STATUS_VOIDED = "anulada";
 export const PATRICIA_REMINDER = "📧 Reenvía este Excel por correo a Patricia para el pedido.";
+/** Corrida H, punto 6: con varias sucursales, un Excel por sucursal y un correo por Excel. */
+export const PATRICIA_REMINDER_BRANCHES = "📧 Cada Excel va en un correo aparte a Patricia (uno por sucursal).";
 export const OC_USAGE = "Escríbelo así: *oc zbuss 4500123* (empresa y n° de OC; puedes adjuntar el PDF o la foto de la OC con esa leyenda).";
 
 // ── dependencias (tests y simulador; por defecto las del cotizador) ──
@@ -98,7 +141,7 @@ const settings = (): Settings => deps.settings ?? loadSettings();
 
 // ── paso pendiente ──
 
-type Phase = "quote" | "items" | "model" | "questions";
+type Phase = "quote" | "items" | "model" | "check" | "origin" | "stock" | "questions";
 
 interface Media {
   id: string;
@@ -138,6 +181,28 @@ export interface OcStep extends PendingStep {
   itemsText?: string | null;
   choices?: ModelChoice[] | null;
   picks?: Record<number, string> | null;
+  /** Corrida H: cotizaciones usadas (varias = una por sucursal). */
+  quoteNumbers?: string[] | null;
+  /** Cotización propuesta cuyos ítems el vendedor reemplazó escribiendo otros (para el contraste). */
+  comparedQuote?: string | null;
+  /** Fase check: diferencias con la cotización / la OC, ya mostradas. */
+  checkDiffs?: string[] | null;
+  /** Ya se pasó el contraste y el control de stock (no se vuelven a preguntar). */
+  checked?: boolean;
+  stockOk?: boolean;
+  /** Fase origin: ítems sin origen identificable (se pregunta el primero). */
+  origins?: number[] | null;
+  /** Fase stock: avisos de stock insuficiente. */
+  stockWarn?: string[] | null;
+  /** Pedido por sucursal: sucursales en orden, la actual y las respuestas de las anteriores. */
+  branches?: string[] | null;
+  branchIdx?: number;
+  branchAnswers?: OrderAnswers[] | null;
+  /** Fase origin: proveedores sugeridos para la marca (texto y nombres para los botones). */
+  suggestions?: string[] | null;
+  suggestionNames?: string[] | null;
+  /** Nombre del cliente para el archivo por sucursal ("Prosegur", del perfil de cliente de la cotización). */
+  clientLabel?: string | null;
 }
 
 interface OcArgs {
@@ -287,8 +352,18 @@ function itemsTotal(items: PedidoItem[]): number {
   return r2(items.reduce((s, it) => s + pedidoUnitPrice(it) * it.cantidad, 0));
 }
 
-function itemLines(items: PedidoItem[], cur: string): string {
-  return items.map((it) => `• ${it.cantidad} × ${pedidoDescription(it)} — ${money(pedidoUnitPrice(it), cur)} c/u${it.terceros ? ` _(${it.terceros.proveedor})_` : ""}`).join("\n");
+/** Disponible de cada fila de stock propio (cargado y comprometido por otros pedidos), para mostrarlo con los ítems. */
+type Avail = Record<string, { cargadas: number; enPedidos: number }>;
+
+function itemLines(items: PedidoItem[], cur: string, avail?: Avail): string {
+  return items
+    .map((it) => {
+      const a = it.stock?.rowId ? avail?.[it.stock.rowId] : undefined;
+      const origin = it.terceros ? ` _(${it.terceros.proveedor})_` : a ? ` _(${availableText({ ...a, disponible: a.cargadas - a.enPedidos })})_` : "";
+      const ubs = it.ubs?.length ? ` · UB ${it.ubs.join(", ")}` : "";
+      return `• ${it.cantidad} × ${pedidoDescription(it)} — ${money(pedidoUnitPrice(it), cur)} c/u${origin}${ubs}`;
+    })
+    .join("\n");
 }
 
 function shortItems(items: PedidoItem[]): string {
@@ -301,7 +376,9 @@ const itemsPrompt = () => `Escríbeme los ítems de la OC con el formato de coti
 
 function quotePrompt(s: Pick<OcStep, "quoteNumber" | "quoteItems" | "currency">): string {
   const items = s.quoteItems ?? [];
-  return `Uso la cotización *${shortQuoteNumber(s.quoteNumber ?? "")}* (${shortItems(items)} · ${money(itemsTotal(items), s.currency)} inc. IGV) — responde *sí*, o *no* para escribir otros ítems.`;
+  const branch = items.find((it) => it.sucursal)?.sucursal;
+  const several = branch ? ` Si la OC cubre varias sucursales, escribe los números de sus cotizaciones (p. ej. *${shortQuoteNumber(s.quoteNumber ?? "")} 475*).` : "";
+  return `Uso la cotización *${shortQuoteNumber(s.quoteNumber ?? "")}*${branch ? ` de *${titleWords(branch)}*` : ""} (${shortItems(items)} · ${money(itemsTotal(items), s.currency)} inc. IGV) — responde *sí*, o *no* para escribir otros ítems.${several}`;
 }
 
 // ── modelo que no existe en esa medida (corrida F, punto 7) ──
@@ -338,7 +415,8 @@ export function modelAnswer(text: string, c: ModelChoice): string | null {
 
 /** Botones de la pregunta en curso: *Sí* y *No* para usar la cotización; los de order/questions.ts en las preguntas. */
 function currentButtons(s: OcStep): QuickAnswer[] {
-  if (s.phase === "quote") return [{ id: "sí", title: "Sí" }, { id: "no", title: "No" }];
+  if (s.phase === "quote" || s.phase === "check" || s.phase === "stock") return [{ id: "sí", title: "Sí" }, { id: "no", title: "No" }];
+  if (s.phase === "origin") return originButtons(s);
   if (s.phase === "model" && s.choices?.[0]) return modelButtons(s.choices[0]);
   if (s.phase === "questions" && s.qctx) {
     const q = nextOrderQuestion(s.answers, s.qctx);
@@ -359,6 +437,9 @@ function currentPrompt(s: OcStep): string {
   if (s.phase === "quote") return quotePrompt(s);
   if (s.phase === "items") return itemsPrompt();
   if (s.phase === "model") return modelPrompt(s);
+  if (s.phase === "check") return checkPrompt(s);
+  if (s.phase === "origin") return originPrompt(s);
+  if (s.phase === "stock") return stockPrompt(s);
   return (s.qctx && nextOrderQuestion(s.answers, s.qctx)?.text) ?? "";
 }
 
@@ -384,12 +465,17 @@ const FIELD_MISSING: Record<OrderField, string> = {
   plazoCredito: "falta el plazo de crédito",
   proveedor: "faltan las condiciones del proveedor",
   observaciones: "faltan las observaciones",
+  observacionesTerceros: "faltan las observaciones del despacho",
+  venta: "falta el número de venta",
 };
 
 export function orderMissing(s: OcStep): string {
   if (s.phase === "quote") return "falta confirmar la cotización";
   if (s.phase === "items") return "faltan los ítems";
   if (s.phase === "model") return "falta elegir el modelo";
+  if (s.phase === "check") return "falta confirmar las diferencias con la cotización";
+  if (s.phase === "origin") return "falta de dónde sale un producto";
+  if (s.phase === "stock") return "falta confirmar el stock";
   const q = s.qctx ? nextOrderQuestion(s.answers, s.qctx) : null;
   return q ? FIELD_MISSING[q.field] : "falta generar el pedido";
 }
@@ -577,10 +663,219 @@ export function orderShaped(text: string): boolean {
 }
 
 const YES_QUOTE = /^(?:s[ií]|si+|ok|okey|dale|esa|usa(?:la)? esa|usala|correcto|claro|confirmo|igual|listo|de acuerdo)[.!]*$/i;
+const NO_ANSWER = /^no[.!]*$/i;
+
+// ── corrida H: varias cotizaciones, contraste, origen y stock ──
+
+/** "471 475", "471 y 475", "cotizaciones 471, 475" -> los números (null si el texto no es solo eso). */
+export function quoteNumbersIn(text: string): string[] | null {
+  const t = fold(text).replace(/^(?:usa\s+)?(?:las?\s+)?(?:cotizaciones|cotizacion|cot)\s*/, "").trim();
+  if (!/^\d{1,6}(?:\s*(?:,|y|e|\+|\s)\s*\d{1,6})*$/.test(t)) return null;
+  return t.match(/\d{1,6}/g) ?? null;
+}
+
+/** Cotizaciones de la empresa por sus números cortos (las del vendedor primero); las que no encuentra, en `missing`. */
+async function quotesByNumbers(ctx: PortalContext, company: Company, nums: string[]): Promise<{ quotes: Quote[]; missing: string[] }> {
+  const ps = await priceStore();
+  const name = shortName(company.razonSocial);
+  const mine = await ps.listQuotes({ company: name, requestedBy: ctx.from, limit: 100 }).catch(() => [] as Quote[]);
+  const all = mine.length ? mine : await ps.listQuotes({ company: name, limit: 100 }).catch(() => [] as Quote[]);
+  const quotes: Quote[] = [];
+  const missing: string[] = [];
+  for (const n of nums) {
+    const q = all.find((x) => quoteNumberMatches(x.number, n) && x.status !== "cancelled" && x.items.length);
+    if (q && !quotes.includes(q)) quotes.push(q);
+    else if (!q) missing.push(n);
+  }
+  return { quotes, missing };
+}
+
+/** Líneas de los ítems del pedido para el contraste (antes de agrupar: una por línea de cotización, con su UB). */
+const checkLinesOfItems = (items: PedidoItem[]): CheckLine[] => items.map((it) => ({ producto: pedidoDescription(it), cantidad: it.cantidad, precio: it.precioUnitarioSinIgv, ub: it.ubs?.[0] }));
+
+/** "Prosegur": el nombre del perfil de cliente de la cotización (config/customers.json), si lo tiene. */
+function clientLabelOf(q: Quote | null | undefined): string | null {
+  const id = q?.customerProfile;
+  if (!id) return null;
+  const p = settings().customers.find((c) => fold(c.name) === fold(id) || (c as { format?: string }).format === id);
+  return p?.name ?? null;
+}
+
+/** Líneas de la cotización (una por línea, con su UB) para el contraste. */
+function checkLinesOfQuote(q: Quote): CheckLine[] {
+  return pedidoFromQuote(q).items.map((it) => ({ producto: pedidoDescription(it), cantidad: it.cantidad, precio: it.precioUnitarioSinIgv, ub: it.ubs?.[0] }));
+}
+
+/** Líneas de la OC si llegó como Excel (formato de Prosegur y parecidos); [] si no hay Excel o no tiene esa forma. */
+async function ocSheetLines(ctx: PortalContext, s: OcStep): Promise<CheckLine[]> {
+  if (!s.hasFile) return [];
+  const order = await ctx.store.getPurchaseOrder(s.orderId).catch(() => null);
+  if (!order?.data || !/sheet|excel|xlsx/i.test(`${order.mimeType ?? ""} ${order.fileName ?? ""}`)) return [];
+  try {
+    const wb = new ExcelJS.Workbook();
+    await wb.xlsx.load(Buffer.from(order.data, "base64") as unknown as ArrayBuffer);
+    for (const ws of wb.worksheets) {
+      const lines = linesFromSheet(ws);
+      if (lines.length) return lines;
+    }
+  } catch (err) {
+    ctx.log(`portal: no pude leer la OC en Excel: ${(err as Error).message}`);
+  }
+  return [];
+}
+
+/** Diferencias entre lo que se va a pedir y la cotización enlazada (ítems escritos u OC en Excel). */
+async function orderDiffs(ctx: PortalContext, s: OcStep, items: PedidoItem[]): Promise<string[]> {
+  const ps = await priceStore();
+  const nums = s.quoteNumbers?.length ? s.quoteNumbers : s.comparedQuote ? [s.comparedQuote] : [];
+  const quotes = (await Promise.all(nums.map((n) => ps.getQuote(n).catch(() => null)))).filter((q): q is Quote => !!q);
+  const quoteLines = quotes.flatMap(checkLinesOfQuote);
+  const label = quotes.length ? `la cotización ${quotes.map((q) => shortQuoteNumber(q.number)).join(" y ")}` : "el pedido";
+  const out: string[] = [];
+  if (s.comparedQuote && quoteLines.length) out.push(...crossCheck(checkLinesOfItems(items), quoteLines, { a: "lo que escribiste", b: label }));
+  const oc = await ocSheetLines(ctx, s);
+  if (oc.length) out.push(...crossCheck(oc, quoteLines.length ? quoteLines : checkLinesOfItems(items), { a: "la OC", b: label }));
+  return out;
+}
+
+function checkPrompt(s: Pick<OcStep, "checkDiffs">): string {
+  return `⚠️ Antes de armar el pedido, esto no coincide:\n${(s.checkDiffs ?? []).map((d) => `• ${d}`).join("\n")}\n¿Sigo con el pedido así? *sí*, o *no* para escribir los ítems.`;
+}
+
+function originPrompt(s: Pick<OcStep, "origins" | "items" | "suggestions">): string {
+  const it = s.items?.[s.origins?.[0] ?? -1];
+  if (!it) return "";
+  const sug = s.suggestions?.length ? `\nPara ${it.marca ? `*${it.marca.toUpperCase()}*` : "esa marca"} puedes pedir a: ${s.suggestions.join(" · ")}` : "";
+  return `❓ ¿De dónde sale *${pedidoDescription(it)}* (${it.cantidad} und.)? No está en el stock ni en la lista de un solo proveedor.\nResponde *propio* (stock de nuestro almacén) o el proveedor (p. ej. *JCH*; con el precio de compra con IGV si lo sabes: *JCH 180*).${sug}`;
+}
+
+function originButtons(s: OcStep): QuickAnswer[] {
+  const b: QuickAnswer[] = [{ id: "propio", title: "Stock propio" }]; // "stock …" es comando del cotizador
+  for (const n of s.suggestionNames ?? []) if (b.length < 3) b.push({ id: n, title: clip20(n) });
+  return b;
+}
+
+function stockPrompt(s: Pick<OcStep, "stockWarn">): string {
+  return `⚠️ Stock propio insuficiente (contador de apoyo; Odoo manda):\n${(s.stockWarn ?? []).map((w) => `• ${w}`).join("\n")}\n¿Sigo igual con el pedido? *sí*, o *no* para escribir los ítems.`;
+}
+
+/** Proveedores de la lista y config para resolver orígenes. */
+async function originDeps() {
+  const ps = await priceStore();
+  const orders = loadPortalConfig().orders;
+  return { ps, rows: await ps.allRows(), suppliers: await ps.listSuppliers().catch(() => [] as Supplier[]), overrides: orders.supplierProviders, own: orders.ownStock, pricing: settings().pricing };
+}
+
+/** Disponible por fila de stock de los ítems (sin contar lo que ya descontó esta misma OC: rehacerla no se cuenta a sí misma). */
+async function availOf(s: OcStep, items: PedidoItem[], rows: PriceRow[]): Promise<Avail> {
+  const ps = await priceStore();
+  const committed = committedMap(await ps.listStockDeductions().catch(() => []), orderStockKey(s.companyId, s.numero, s.orderId));
+  const out: Avail = {};
+  for (const it of items) {
+    const id = it.stock?.rowId;
+    const row = id ? rows.find((r) => r.id === id) : undefined;
+    if (id && row && row.stock !== null) out[id] = { cargadas: row.stock, enPedidos: committed.get(id) ?? 0 };
+  }
+  return out;
+}
+
+/**
+ * Ítems listos (de la cotización o escritos): origen de cada producto, contraste con la cotización / la OC, origen que
+ * falta y stock; luego las preguntas. Cada control que pregunta deja la fase y se retoma con `advance`.
+ */
+async function prepareItems(ctx: PortalContext, s: OcStep, company: Company, items: PedidoItem[], prefix: string): Promise<void> {
+  const d = await originDeps();
+  s.items = resolveOrigins(items, d);
+  s.checked = false;
+  s.stockOk = false;
+  s.origins = unknownOrigins(s.items);
+  await advance(ctx, s, company, prefix);
+}
+
+async function advance(ctx: PortalContext, s: OcStep, company: Company, prefix: string): Promise<void> {
+  const items = s.items ?? [];
+  const head = (body: string) => (prefix ? `${prefix}\n\n${body}` : body);
+  if (!s.checked) {
+    s.checked = true;
+    const diffs = await orderDiffs(ctx, s, items);
+    if (diffs.length) {
+      s.phase = "check";
+      s.checkDiffs = diffs;
+      await save(ctx, s);
+      await ask(ctx, s, head(checkPrompt(s)));
+      return;
+    }
+  }
+  if (s.origins?.length) {
+    s.phase = "origin";
+    await setSuggestions(s);
+    await save(ctx, s);
+    await ask(ctx, s, head(originPrompt(s)));
+    return;
+  }
+  if (!s.stockOk) {
+    s.stockOk = true;
+    const d = await originDeps();
+    const avail = await availOf(s, items, d.rows);
+    const committed = new Map(Object.entries(avail).map(([k, v]) => [k, v.enPedidos]));
+    const short = stockChecks(items, d.rows, committed).filter((c) => c.pedido > c.disponible);
+    if (short.length) {
+      s.phase = "stock";
+      s.stockWarn = short.map((c) => `*${c.description}*: pides ${c.pedido} y hay ${availableText(c)}.`);
+      await save(ctx, s);
+      await ask(ctx, s, head(stockPrompt(s)));
+      return;
+    }
+  }
+  await enterQuestions(ctx, s, company, items, prefix);
+}
+
+/** Sugerencias por marca para el producto sin origen (lista de proveedores). */
+async function setSuggestions(s: OcStep): Promise<void> {
+  const it = s.items?.[s.origins?.[0] ?? -1];
+  s.suggestions = [];
+  s.suggestionNames = [];
+  if (!it?.marca) return;
+  const ps = await priceStore();
+  const list = await ps.listSuppliers().catch(() => [] as Supplier[]);
+  const origin = Object.entries(settings().quote.brandOrigin).find(([k]) => fold(k) === fold(it.marca!))?.[1];
+  const sug = suggestSuppliers(it.marca, list, { origin });
+  s.suggestions = sug.map(supplierLabel);
+  s.suggestionNames = sug.map((x) => x.name);
+}
+
+/** "stock" / "jch 180" / "van llantas" -> el origen elegido; null si no se entiende. */
+export function parseOriginAnswer(text: string, suppliers: Supplier[]): { stock: true } | { proveedor: string; precio?: number; supplier?: Supplier } | null {
+  const t = text.trim();
+  if (!t) return null;
+  if (/^(?:stock|almac[eé]n|propio|nuestro|de\s+stock|stock\s+propio|san\s+luis)\b/i.test(fold(t))) return { stock: true };
+  const m = t.match(/^(.*?)[\s,]*(?:a\s+|precio\s+|s\/\.?\s*|us?\$\s*|\$\s*)?(\d+(?:[.,]\d{1,2})?)\s*(?:c\/u|con igv|inc\.? igv)?$/i);
+  const name = (m ? m[1] : t).replace(/^(?:proveedor|de|del|a)\s+/i, "").trim();
+  if (!name || name.length < 2 || /^\d+$/.test(name)) return null;
+  const precio = m ? Number(m[2].replace(",", ".")) : undefined;
+  const supplier = findSupplier(name, suppliers);
+  return { proveedor: supplier?.name ?? name.toUpperCase(), ...(precio !== undefined ? { precio } : {}), ...(supplier ? { supplier } : {}) };
+}
 
 async function enterQuestions(ctx: PortalContext, s: OcStep, company: Company, items: PedidoItem[], prefix: string): Promise<void> {
+  s.items = items;
+  s.phase = "questions";
+  const branches = [...new Set(items.map((it) => it.sucursal).filter((b): b is string => !!b))];
+  s.branches = branches.length ? branches : null;
+  s.branchIdx = 0;
+  s.branchAnswers = [];
+  s.qctx = await questionContext(ctx, s, company, 0);
+  await askNext(ctx, s, company, prefix);
+}
+
+/** Ítems de la sucursal `i` (todos sin sucursales). */
+const branchItems = (s: OcStep, i: number): PedidoItem[] => (s.branches?.length ? (s.items ?? []).filter((it) => it.sucursal === s.branches![i]) : (s.items ?? []));
+
+async function questionContext(ctx: PortalContext, s: OcStep, company: Company, i: number): Promise<QuestionContext> {
   const prof = await ctx.store.getOrderProfile(company.id);
-  const profile = (prof?.data ?? {}) as OrderProfile;
+  const root = (prof?.data ?? {}) as OrderProfile;
+  const sucursal = s.branches?.[i];
+  const profile = branchProfile(root, sucursal);
   const contacts = await ctx.store.listContacts(company.id);
   const c0 = contacts[0];
   const quoteDays = plazoDiasFromTerm(s.quoteNumber ? (s.quoteTerm ?? undefined) : undefined);
@@ -592,21 +887,50 @@ async function enterQuestions(ctx: PortalContext, s: OcStep, company: Company, i
       : company.creditTermsDays !== null
         ? { dias: company.creditTermsDays, fuente: `de ${shortName(company.razonSocial)} en el portal` }
         : null;
-  s.items = items;
-  s.phase = "questions";
-  s.qctx = {
+  const items = branchItems(s, i);
+  const ps = await priceStore();
+  const suppliers = await ps.listSuppliers().catch(() => [] as Supplier[]);
+  const names = [...new Set(items.filter((it) => it.terceros).map((it) => it.terceros!.proveedor.trim().toUpperCase()))];
+  const proveedores = names.map((nombre) => {
+    const x = findSupplier(nombre, suppliers) ?? supplierForProvider(nombre, suppliers);
+    const def = x && (x.lastPayment || x.lastDelivery) ? [x.lastPayment, x.lastDelivery].filter(Boolean).join(", ") : undefined;
+    return { nombre, ...(def ? { def } : {}) };
+  });
+  const lastVenta = s.branchAnswers?.length ? s.branchAnswers[s.branchAnswers.length - 1].venta : root.last?.venta;
+  return {
     profile,
     terceros: items.some((it) => !!it.terceros),
+    proveedores,
     plazo,
-    sugerencias: { direccionFiscal: quoteAddress, contacto: c0 ? [c0.nombre, c0.telefono ? `Cel. ${c0.telefono}` : ""].filter(Boolean).join(" - ") : undefined },
+    // sin sucursal: la dirección de la cotización como fiscal; con sucursal, la cotización trae la sucursal (no la fiscal)
+    sugerencias: { direccionFiscal: sucursal ? undefined : quoteAddress, contacto: c0 ? [c0.nombre, c0.telefono ? `Cel. ${c0.telefono}` : ""].filter(Boolean).join(" - ") : undefined },
     cliente: shortName(company.razonSocial),
+    ...(sucursal ? { sucursal, venta: { def: nextVenta(lastVenta) } } : {}),
   };
-  await askNext(ctx, s, company, prefix);
 }
 
-/** Siguiente pregunta, o el pedido si ya está todo. */
+/** Siguiente pregunta; terminada una sucursal, la siguiente (con lo común ya respondido); al final, el pedido. */
 async function askNext(ctx: PortalContext, s: OcStep, company: Company, prefix = ""): Promise<void> {
-  const q = nextOrderQuestion(s.answers, s.qctx!);
+  let q = nextOrderQuestion(s.answers, s.qctx!);
+  while (!q && s.branches && (s.branchIdx ?? 0) < s.branches.length - 1) {
+    const done = s.answers;
+    s.branchAnswers = [...(s.branchAnswers ?? []), done];
+    s.branchIdx = (s.branchIdx ?? 0) + 1;
+    s.qctx = await questionContext(ctx, s, company, s.branchIdx);
+    // lo común a todas las sucursales no se vuelve a preguntar: dirección fiscal, plazo y condiciones de cada proveedor
+    s.answers = {
+      cliente: { direccionFiscal: done.cliente.direccionFiscal },
+      clienteListo: done.cliente.direccionFiscal ? ["direccionFiscal"] : [],
+      plazoCreditoDias: done.plazoCreditoDias,
+      plazoEscrito: done.plazoEscrito,
+      ...(done.proveedores ? { proveedores: done.proveedores } : {}),
+      ...(done.pagoProveedor !== undefined ? { pagoProveedor: done.pagoProveedor, recojo: done.recojo } : {}),
+      observacionesTerceros: undefined,
+    };
+    const branch = titleWords(s.branches[s.branchIdx]);
+    prefix = `${prefix ? `${prefix}\n\n` : ""}✅ Listo *${titleWords(s.branches[s.branchIdx - 1])}*. Ahora el pedido de *${branch}*.`;
+    q = nextOrderQuestion(s.answers, s.qctx);
+  }
   if (!q) {
     await finishOrder(ctx, s, company, prefix);
     return;
@@ -629,6 +953,17 @@ async function attachLate(ctx: PortalContext, s: OcStep, media: Media, company: 
   }
   await ctx.store.updatePurchaseOrder(s.orderId, { fileName: file.fileName, mimeType: file.mimeType, data: file.data });
   s.hasFile = true;
+  // corrida H: una OC en Excel que llega con las preguntas ya empezadas se contrasta igual (y se pregunta si no coincide)
+  if (s.phase === "questions" && s.items?.length) {
+    const diffs = await orderDiffs(ctx, s, s.items);
+    if (diffs.length) {
+      s.phase = "check";
+      s.checkDiffs = diffs;
+      await save(ctx, s);
+      await ask(ctx, s, `📎 Guardé la OC (${file.fileName}).\n\n${checkPrompt(s)}`);
+      return;
+    }
+  }
   await save(ctx, s);
   await ctx.reply(`📎 Guardé la OC (${file.fileName}).\n\n${prompt}`);
 }
@@ -655,20 +990,124 @@ registerPendingHandler(OC_STEP, async (ctx, step, rawText) => {
 
   if (s.phase === "quote") {
     if (YES_QUOTE.test(text) || isDefaultAnswer(text)) {
-      await enterQuestions(ctx, s, company, s.quoteItems ?? [], "");
+      s.quoteNumbers = s.quoteNumber ? [s.quoteNumber] : null;
+      s.clientLabel = clientLabelOf(s.quoteNumber ? await (await priceStore()).getQuote(s.quoteNumber).catch(() => null) : null);
+      await prepareItems(ctx, s, company, s.quoteItems ?? [], "");
       return true;
     }
-    if (/^no[.!]*$/i.test(text)) {
+    if (NO_ANSWER.test(text)) {
       s.phase = "items";
+      s.comparedQuote = null; // dijo que no es esa cotización: no hay con qué contrastar
       s.quoteNumber = null;
       s.quoteItems = null;
       await save(ctx, s);
       await ctx.reply(itemsPrompt());
       return true;
     }
-    s.quoteNumber = null; // escribió los ítems: la cotización no se usa
+    // corrida H: los números de una o varias cotizaciones (una por sucursal)
+    const nums = quoteNumbersIn(text);
+    if (nums) {
+      const { quotes, missing } = await quotesByNumbers(ctx, company, nums);
+      if (missing.length || !quotes.length) {
+        await ask(ctx, s, `No encontré la cotización ${missing.map((n) => `*${n}*`).join(", ")} de *${shortName(company.razonSocial)}*.\n\n${quotePrompt(s)}`);
+        return true;
+      }
+      const items = quotes.flatMap((q) => pedidoFromQuote(q).items);
+      s.quoteNumbers = quotes.map((q) => q.number);
+      s.quoteNumber = quotes[0].number;
+      s.quoteItems = items;
+      s.quoteTerm = quotes[0].paymentTerm || null;
+      s.currency = quotes[0].currency;
+      s.clientLabel = clientLabelOf(quotes[0]);
+      await prepareItems(ctx, s, company, items, `Uso ${quotes.length > 1 ? "las cotizaciones" : "la cotización"} ${quotes.map((q) => `*${shortQuoteNumber(q.number)}*${q.unit ? ` (${titleWords(q.unit)})` : ""}`).join(", ")}.`);
+      return true;
+    }
+    s.comparedQuote = s.quoteNumber; // escribió los ítems: la cotización no se usa (pero se contrasta)
+    s.quoteNumber = null;
     s.quoteItems = null;
     s.phase = "items";
+  }
+
+  // corrida H: diferencias con la cotización / la OC
+  if (s.phase === "check") {
+    if (YES_QUOTE.test(text) || isDefaultAnswer(text)) {
+      s.checkDiffs = null;
+      if (s.qctx && s.items?.length && (s.answers.clienteListo.length || s.answers.clienteConfirmado)) {
+        s.phase = "questions"; // la OC llegó con las preguntas empezadas: se sigue donde iba
+        await askNext(ctx, s, company);
+      } else await advance(ctx, s, company, "");
+      return true;
+    }
+    if (NO_ANSWER.test(text)) {
+      s.phase = "items";
+      s.checkDiffs = null;
+      s.quoteNumber = null;
+      s.quoteItems = null;
+      s.quoteNumbers = null;
+      await save(ctx, s);
+      await ctx.reply(itemsPrompt());
+      return true;
+    }
+    if (!findTyreSizes(text).length) {
+      await ask(ctx, s, checkPrompt(s));
+      return true;
+    }
+    s.phase = "items"; // escribió los ítems de nuevo
+    s.checkDiffs = null;
+  }
+
+  if (s.phase === "origin") {
+    const idx = s.origins?.[0];
+    const it = idx !== undefined ? s.items?.[idx] : undefined;
+    const d = await originDeps();
+    const ans = it ? parseOriginAnswer(text, d.suppliers) : null;
+    if (!it || !ans) {
+      await ask(ctx, s, `No entendí. ${originPrompt(s)}`);
+      return true;
+    }
+    if ("stock" in ans) {
+      const row = stockRowFor(it, d.rows);
+      it.stock = row ? { rowId: row.id, origin: `${foldKey(row.provider)}|${row.kind}`, almacen: d.own.warehouse } : { almacen: d.own.warehouse };
+    } else {
+      const x = ans.supplier;
+      it.terceros = { proveedor: ans.proveedor, ...(x ? { contacto: x.contact, telefono: x.phone, email: x.email } : {}), ...(ans.precio !== undefined ? { precioCompraConIgv: ans.precio } : {}) };
+    }
+    delete it.origenDesconocido;
+    // el mismo producto en otras líneas (otras UB) sale del mismo lugar
+    for (const other of s.items ?? []) {
+      if (other !== it && other.origenDesconocido && pedidoDescription(other) === pedidoDescription(it)) {
+        if (it.stock) other.stock = { ...it.stock };
+        if (it.terceros) other.terceros = { ...it.terceros };
+        delete other.origenDesconocido;
+      }
+    }
+    s.origins = unknownOrigins(s.items ?? []);
+    await advance(ctx, s, company, "");
+    return true;
+  }
+
+  if (s.phase === "stock") {
+    if (YES_QUOTE.test(text) || isDefaultAnswer(text)) {
+      s.stockWarn = null;
+      await advance(ctx, s, company, "");
+      return true;
+    }
+    if (NO_ANSWER.test(text)) {
+      s.phase = "items";
+      s.stockWarn = null;
+      s.quoteNumber = null;
+      s.quoteItems = null;
+      s.quoteNumbers = null;
+      await save(ctx, s);
+      await ctx.reply(itemsPrompt());
+      return true;
+    }
+    if (!findTyreSizes(text).length) {
+      await ask(ctx, s, stockPrompt(s));
+      return true;
+    }
+    s.phase = "items";
+    s.stockWarn = null;
   }
 
   // modelo que no existe en esa medida: la opción elegida (botón, número o nombre), o los ítems escritos de nuevo
@@ -697,7 +1136,24 @@ registerPendingHandler(OC_STEP, async (ctx, step, rawText) => {
       await ctx.reply(itemsPrompt());
       return true;
     }
+    // corrida H, punto 5: varias llantas en una nota de voz (misma separación que la cotización por voz)
+    if (ctx.msg.type === "audio") {
+      const v = orderItemsFromVoice(text, await voiceCatalogOf(ctx));
+      if (!v.ok) {
+        await ctx.reply(v.ask);
+        return true;
+      }
+      if (v.notes.length) await ctx.reply(v.notes.join("\n"));
+      text = v.text;
+    }
     return itemsFrom(ctx, s, company, text, {});
+  }
+
+  // corrida H, punto 5: con los ítems armados, "el segundo eran diez", "quita el tercero", "al primero ponle precio 259" o
+  // "agrega …" por voz cambian los ítems del pedido (y se vuelven a revisar origen, stock y cotización)
+  if (ctx.msg.type === "audio" && s.phase === "questions" && s.items?.length) {
+    const edit = parseVoiceEdit(spokenToDigits(text));
+    if (edit) return voiceOrderEdit(ctx, s, company, edit);
   }
 
   // preguntas
@@ -707,7 +1163,7 @@ registerPendingHandler(OC_STEP, async (ctx, step, rawText) => {
     return true;
   }
   // un pedido no es una observación: el mensaje sigue al cotizador y el pedido se aparta (routePortal avisa)
-  if (q.field === "observaciones" && orderShaped(text)) return false;
+  if ((q.field === "observaciones" || q.field === "observacionesTerceros") && orderShaped(text)) return false;
   const r = applyOrderAnswer(s.answers, q, text, s.qctx!, ctx.now);
   if (r.error) {
     await ask(ctx, s, `${r.error}\n\n${q.text}`);
@@ -717,6 +1173,44 @@ registerPendingHandler(OC_STEP, async (ctx, step, rawText) => {
   await askNext(ctx, s, company);
   return true;
 });
+
+async function voiceCatalogOf(ctx: PortalContext) {
+  return ctx.voiceCatalog ? await ctx.voiceCatalog().catch(() => undefined) : undefined;
+}
+
+/** Corrección dirigida o ítem agregado por voz sobre los ítems del pedido (corrida H, punto 5). */
+async function voiceOrderEdit(ctx: PortalContext, s: OcStep, company: Company, edit: VoiceEdit): Promise<boolean> {
+  let items = s.items ?? [];
+  let said: string;
+  if (edit.kind === "add") {
+    const v = orderItemsFromVoice(edit.text, await voiceCatalogOf(ctx));
+    if (!v.ok) {
+      await ctx.reply(v.ask);
+      return true;
+    }
+    const res = await parseOrderItems(v.text, { priceStore: await priceStore(), settings: settings(), today: limaDateKey(ctx.now) });
+    if (!res.ok) {
+      await ctx.reply(`${res.error}${res.choices ? " Díctalo con el modelo que sí hay, o escríbelo." : ""}`);
+      return true;
+    }
+    if (items.length + res.items.length > PEDIDO_MAX_ITEMS) {
+      await ctx.reply(pedidoTooManyItems(items.length + res.items.length));
+      return true;
+    }
+    items = [...items, ...res.items];
+    said = `Agregué ${res.items.map((it) => `${it.cantidad} × ${pedidoDescription(it)}`).join(", ")}.`;
+  } else {
+    const r = applyOrderEdit(items, edit);
+    if (!r.ok) {
+      await ctx.reply(r.error);
+      return true;
+    }
+    items = r.items;
+    said = r.said;
+  }
+  await prepareItems(ctx, s, company, items, `✏️ ${said}\nEntendí:\n${itemLines(items, s.currency ?? "USD")}\nTotal: ${money(itemsTotal(items), s.currency ?? "USD")} inc. IGV`);
+  return true;
+}
 
 /** Arma los ítems del texto con las elecciones hechas; si algún modelo no existe en esa medida, lo pregunta (fase model). */
 async function itemsFrom(ctx: PortalContext, s: OcStep, company: Company, text: string, picks: Record<number, string>): Promise<boolean> {
@@ -737,44 +1231,124 @@ async function itemsFrom(ctx: PortalContext, s: OcStep, company: Company, text: 
     s.choices = null;
     s.picks = null;
     await save(ctx, s);
-    await ctx.reply(res.error);
+    await ctx.reply(res.error + (await brandSuggestions(text)));
     return true;
   }
   s.currency = res.currency;
   s.itemsText = null;
   s.choices = null;
   s.picks = null;
-  await enterQuestions(ctx, s, company, res.items, `Entendí:\n${itemLines(res.items, res.currency)}\nTotal: ${money(itemsTotal(res.items), res.currency)} inc. IGV`);
+  s.quoteNumbers = null;
+  const d = await originDeps();
+  const resolved = resolveOrigins(res.items, d);
+  const avail = await availOf(s, resolved, d.rows);
+  await prepareItems(ctx, s, company, res.items, `Entendí:\n${itemLines(resolved, res.currency, avail)}\nTotal: ${money(itemsTotal(res.items), res.currency)} inc. IGV`);
   return true;
+}
+
+/** Corrida H, 3b: para una marca que no está en ninguna lista, a qué proveedores pedirla (columna MARCAS). */
+async function brandSuggestions(text: string): Promise<string> {
+  const ps = await priceStore();
+  const suppliers = await ps.listSuppliers().catch(() => [] as Supplier[]);
+  if (!suppliers.length) return "";
+  const rows = await ps.allRows();
+  const known = new Set(rows.map((r) => fold(r.brand)).filter(Boolean));
+  const out: string[] = [];
+  for (const brand of brandsInText(text)) {
+    if (known.has(fold(brand))) continue;
+    const origin = Object.entries(settings().quote.brandOrigin).find(([k]) => fold(k) === fold(brand))?.[1];
+    const sug = suggestSuppliers(brand, suppliers, { origin });
+    if (sug.length) out.push(`*${brand}* no está en ninguna lista; puedes pedirla a: ${sug.map(supplierLabel).join(" · ")}`);
+  }
+  return out.length ? `\n\n💡 ${out.join("\n💡 ")}` : "";
 }
 
 // ── pedido ──
 
+const MESES = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Set", "Oct", "Nov", "Dic"];
+
+/** "Nov26- Prosegur - Venta 009 Juliaca UBs 1231-1812-1911-2005-2201.xlsx" (config/portal.json orders.branchFileName). */
+export function branchFileName(pattern: string, v: { fecha: string; cliente: string; venta: string; sucursal: string; ubs: string[] }): string {
+  const [y, m] = v.fecha.split("-");
+  const name = pattern
+    .replace(/\{Mes\}/g, MESES[Number(m) - 1] ?? m)
+    .replace(/\{aa\}/g, y.slice(2))
+    .replace(/\{Cliente\}/g, titleWords(v.cliente))
+    .replace(/\{Venta\}/g, v.venta)
+    .replace(/\{Sucursal\}/g, titleWords(v.sucursal))
+    .replace(/\{UBs\}/g, v.ubs.join("-"))
+    .replace(/\s+UBs\s*$/, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  return `${cleanFileName(name)}.xlsx`;
+}
+
 async function finishOrder(ctx: PortalContext, s: OcStep, company: Company, prefix: string): Promise<void> {
   const { store, user, now } = ctx;
-  const a = s.answers;
-  const items = s.items ?? [];
   const cur = s.currency;
-  const data: PedidoData = {
-    fecha: limaDateKey(now),
-    atc: user.nombre,
-    moneda: cur === "PEN" ? "PEN" : "USD",
-    cliente: { razonSocial: company.razonSocial, ruc: company.ruc, ...a.cliente },
-    plazoCreditoDias: a.plazoCreditoDias ?? null,
-    items,
-    entrega: entregaFromAnswers(a),
-    observaciones: a.observaciones,
-  };
-  const xlsx = await buildPedidoXlsx(data);
-  const fileName = formatPedidoFileName(data);
+  const orders = loadPortalConfig().orders;
+  const allAnswers = s.branches?.length ? [...(s.branchAnswers ?? []), s.answers] : [s.answers];
+  const parts = (s.branches?.length ? s.branches : [null]).map((sucursal, i) => ({ sucursal, items: branchItems(s, i), a: allAnswers[i] ?? s.answers }));
+  const files: { fileName: string; data: PedidoData; sucursal: string | null; venta?: string; ubs: string[] }[] = [];
+  for (const part of parts) {
+    const a = part.a;
+    const lines = groupPedidoItems(part.items);
+    const ubs = [...new Set(part.items.flatMap((it) => it.ubs ?? []))];
+    const obs = [a.observaciones?.trim(), part.sucursal && ubs.length ? `UBs ${ubs.join("-")}` : ""].filter(Boolean).join(" — ");
+    const data: PedidoData = {
+      fecha: limaDateKey(now),
+      atc: user.nombre,
+      moneda: cur === "PEN" ? "PEN" : "USD",
+      cliente: { razonSocial: company.razonSocial, ruc: company.ruc, ...a.cliente },
+      plazoCreditoDias: a.plazoCreditoDias ?? null,
+      items: lines.map((it) => (it.terceros && a.proveedores?.[it.terceros.proveedor.trim().toUpperCase()] ? { ...it, terceros: { ...it.terceros, pago: a.proveedores[it.terceros.proveedor.trim().toUpperCase()].pago || undefined, entrega: a.proveedores[it.terceros.proveedor.trim().toUpperCase()].entrega } } : it)),
+      entrega: entregaFromAnswers(a),
+      observaciones: obs,
+      observacionesTerceros: a.observacionesTerceros,
+      stockPropio: orders.ownStock,
+    };
+    const fileName = part.sucursal ? branchFileName(orders.branchFileName, { fecha: data.fecha, cliente: s.clientLabel || shortName(company.razonSocial), venta: a.venta ?? "", sucursal: part.sucursal, ubs }) : formatPedidoFileName(data);
+    files.push({ fileName, data, sucursal: part.sucursal, venta: a.venta, ubs });
+  }
+  const buffers = await Promise.all(files.map((f) => buildPedidoXlsx(f.data)));
   await clearPending(store, ctx.from);
   if (prefix) await ctx.reply(prefix);
-  await ctx.sendDocument(xlsx, fileName, undefined, XLSX_MIME);
+  for (let i = 0; i < files.length; i++) await ctx.sendDocument(buffers[i], files[i].fileName, undefined, XLSX_MIME);
 
+  const items = s.items ?? [];
   const total = itemsTotal(items);
   const taxPct = items[0]?.igvPct ?? 18;
   const totalSinIgv = r2(total / (1 + taxPct / 100));
   const unidades = items.reduce((n, it) => n + it.cantidad, 0);
+
+  // corrida H: contador de stock (el mismo pedido rehecho reemplaza lo que había descontado)
+  const ps = await priceStore();
+  const stockKey = orderStockKey(company.id, s.numero, s.orderId);
+  const deductions = deductionsFor(items);
+  let stockNote = "";
+  try {
+    await ps.setStockDeductions(stockKey, `OC ${s.numero ?? "s/n"} · ${shortName(company.razonSocial)}`, deductions, now);
+    if (deductions.length) {
+      const rows = await ps.allRows();
+      const committed = committedMap(await ps.listStockDeductions());
+      const left = deductions.map((d) => {
+        const row = rows.find((r) => r.id === d.rowId);
+        const c = committed.get(d.rowId) ?? 0;
+        return row && row.stock !== null ? `${d.description}: ${availableText({ cargadas: row.stock, enPedidos: c, disponible: row.stock - c })}` : null;
+      });
+      stockNote = `📦 Descontado del stock: ${left.filter(Boolean).join(" · ")}`;
+    }
+  } catch (err) {
+    ctx.log(`portal: no pude descontar el stock del pedido ${stockKey}: ${(err as Error).message}`);
+  }
+  // condiciones de cada proveedor: se recuerdan en la lista de proveedores
+  const suppliers = await ps.listSuppliers().catch(() => [] as Supplier[]);
+  for (const a of allAnswers) {
+    for (const [name, t] of Object.entries(a.proveedores ?? {})) {
+      const x = findSupplier(name, suppliers);
+      if (x) await ps.setSupplierTerms(supplierKey(x.name), { payment: t.pago || undefined, delivery: t.entrega || undefined }).catch((err) => ctx.log(`portal: no pude recordar las condiciones de ${name}: ${(err as Error).message}`));
+    }
+  }
 
   // oportunidad: la de la OC si sigue abierta, la abierta de la empresa, o una nueva; a Cerrado ganado
   let opp = s.opportunityId ? await store.getOpportunity(s.opportunityId) : null;
@@ -783,56 +1357,143 @@ async function finishOrder(ctx: PortalContext, s: OcStep, company: Company, pref
   await store.updateOpportunity(opp.id, { montoEstimado: total, ...(s.quoteNumber && !opp.quoteNumber ? { quoteNumber: s.quoteNumber } : {}) });
   opp = (await store.moveStage(opp.id, "cerrado_ganado", user.id, now)) ?? opp;
 
+  const a0 = allAnswers[0];
   await store.addActivity({
     companyId: company.id,
     opportunityId: opp.id,
     userId: user.id,
     tipo: ACT_OC,
-    texto: `OC ${s.numero ?? "s/n"} · ${money(total, cur)} inc. IGV · ${unidades} und. · pedido para Patricia`,
+    texto: `OC ${s.numero ?? "s/n"} · ${money(total, cur)} inc. IGV · ${unidades} und. · pedido para Patricia${files.length > 1 ? ` (${files.length} sucursales)` : ""}`,
     canal: "whatsapp",
     data: {
       orderId: s.orderId,
       numero: s.numero,
       quoteNumber: s.quoteNumber,
-      pedidoFile: fileName,
+      ...(s.quoteNumbers && s.quoteNumbers.length > 1 ? { quoteNumbers: s.quoteNumbers } : {}),
+      pedidoFile: files[0].fileName,
+      ...(files.length > 1 || files[0].sucursal ? { pedidos: files.map((f) => ({ archivo: f.fileName, sucursal: f.sucursal, venta: f.venta, ubs: f.ubs })) } : {}),
+      stockKey,
       ventaEsperada: {
         moneda: cur,
         total,
         totalSinIgv,
         unidades,
-        items: items.map((it) => ({ cantidad: it.cantidad, descripcion: pedidoDescription(it), precioUnitarioConIgv: pedidoUnitPrice(it), ...(it.terceros ? { proveedor: it.terceros.proveedor } : {}) })),
+        items: items.map((it) => ({ cantidad: it.cantidad, descripcion: pedidoDescription(it), precioUnitarioConIgv: pedidoUnitPrice(it), ...(it.terceros ? { proveedor: it.terceros.proveedor } : {}), ...(it.ubs?.length ? { ubs: it.ubs } : {}) })),
       },
-      entrega: data.entrega,
-      plazoCreditoDias: data.plazoCreditoDias,
+      entrega: files[0].data.entrega,
+      plazoCreditoDias: files[0].data.plazoCreditoDias,
     },
     occurredAt: now,
   });
   if (!company.esCliente) await store.updateCompany(company.id, { esCliente: true });
   // el plazo escrito en la OC solo queda como el de la empresa si no tenía uno; si tenía otro, no se cambia (se dice)
   let plazoNote = "";
-  if (a.plazoEscrito && a.plazoCreditoDias != null && a.plazoCreditoDias !== company.creditTermsDays) {
-    if (company.creditTermsDays === null) await setCompanyCreditTerms(store, company.id, a.plazoCreditoDias);
+  if (a0.plazoEscrito && a0.plazoCreditoDias != null && a0.plazoCreditoDias !== company.creditTermsDays) {
+    if (company.creditTermsDays === null) await setCompanyCreditTerms(store, company.id, a0.plazoCreditoDias);
     else plazoNote = `El plazo habitual sigue en ${company.creditTermsDays} días; cámbialo en el portal si corresponde.`;
   }
-  await store.setOrderProfile(company.id, profileFromAnswers(s.qctx?.profile ?? {}, a) as Record<string, unknown>);
+  // memoria del cliente (y de cada sucursal): se relee al guardar y solo se cambian los campos de este pedido (otro pedido
+  // de la misma empresa hecho mientras tanto no se pierde; lo que no se respondió aquí queda como estaba)
+  let root = ((await store.getOrderProfile(company.id))?.data ?? {}) as OrderProfile;
+  parts.forEach((part, i) => {
+    const a = allAnswers[i] ?? s.answers;
+    root = withBranchProfile(root, part.sucursal ?? undefined, profileFromAnswers(branchProfile(root, part.sucursal ?? undefined), a));
+  });
+  await store.setOrderProfile(company.id, root as Record<string, unknown>);
   await store.updatePurchaseOrder(s.orderId, { status: OC_STATUS_DONE, opportunityId: opp.id, quoteNumber: s.quoteNumber });
 
-  const c = data.cliente;
-  const lines = [
-    `✅ Pedido de *${shortName(company.razonSocial)}* listo (${[s.numero ? `OC ${s.numero}` : "OC sin n°", s.quoteNumber ? `cotización ${shortQuoteNumber(s.quoteNumber)}` : ""].filter(Boolean).join(", ")}):`,
-    itemLines(items, cur),
-    `Total: *${money(total, cur)}* inc. IGV (${money(totalSinIgv, cur)} sin IGV)`,
-    `Entrega: ${fechaEntregaLabel(a.fechaEntrega)} en ${c.direccionEntrega || "—"} · Contacto: ${c.contacto || "—"}`,
-    `Enllante: ${a.enllante ?? "—"} · Marcado: ${a.marcado ?? "—"} · Flete: ${[a.flete, a.valorFlete].filter(Boolean).join(" ") || "—"} · ${data.plazoCreditoDias == null ? "Plazo: —" : data.plazoCreditoDias <= 0 ? "Contado" : `Crédito ${data.plazoCreditoDias} días`}`,
-    ...(s.qctx?.terceros ? [`Proveedor: ${a.pagoProveedor || "—"} · Recojo: ${a.recojo || "—"}`] : []),
-    ...(c.agencia ? [`Agencia: ${agenciaText(c)}`] : []),
-    ...(a.observaciones ? [`Obs.: ${a.observaciones}`] : []),
-    `Oportunidad → *${stageLabel(opp.etapa)}*.${s.hasFile ? "" : " _(OC sin adjunto)_"}`,
-    ...(plazoNote ? [plazoNote] : []),
-    "",
-    PATRICIA_REMINDER,
+  const lines: string[] = [
+    `✅ Pedido de *${shortName(company.razonSocial)}* listo (${[s.numero ? `OC ${s.numero}` : "OC sin n°", s.quoteNumbers && s.quoteNumbers.length > 1 ? `cotizaciones ${s.quoteNumbers.map(shortQuoteNumber).join(", ")}` : s.quoteNumber ? `cotización ${shortQuoteNumber(s.quoteNumber)}` : ""].filter(Boolean).join(", ")}):`,
   ];
+  for (const [i, f] of files.entries()) {
+    const a = allAnswers[i] ?? s.answers;
+    const c = f.data.cliente;
+    if (files.length > 1 || f.sucursal) lines.push(`📄 *${f.fileName}*`);
+    lines.push(
+      itemLines(f.data.items, cur),
+      ...(files.length > 1 ? [] : [`Total: *${money(total, cur)}* inc. IGV (${money(totalSinIgv, cur)} sin IGV)`]),
+      `Entrega: ${fechaEntregaLabel(a.fechaEntrega)} en ${c.direccionEntrega || "—"} · Contacto: ${c.contacto || "—"}`,
+      `Enllante: ${a.enllante ?? "—"} · Marcado: ${a.marcado ?? "—"} · Flete: ${[a.flete, a.valorFlete].filter(Boolean).join(" ") || "—"} · ${f.data.plazoCreditoDias == null ? "Plazo: —" : f.data.plazoCreditoDias <= 0 ? "Contado" : `Crédito ${f.data.plazoCreditoDias} días`}`,
+      ...Object.entries(a.proveedores ?? {}).map(([n, t]) => `Proveedor ${n}: ${t.pago || "—"} · Recojo: ${t.entrega || "—"}`),
+      ...(!a.proveedores && f.data.items.some((it) => it.terceros) ? [`Proveedor: ${a.pagoProveedor || "—"} · Recojo: ${a.recojo || "—"}`] : []),
+      ...(c.agencia ? [`Agencia: ${agenciaText(c)}`] : []),
+      ...(f.data.observaciones ? [`Obs.: ${f.data.observaciones}`] : []),
+      ...(a.observacionesTerceros ? [`Obs. despacho: ${a.observacionesTerceros}`] : []),
+    );
+  }
+  if (files.length > 1) lines.push(`Total: *${money(total, cur)}* inc. IGV (${money(totalSinIgv, cur)} sin IGV)`);
+  lines.push(`Oportunidad → *${stageLabel(opp.etapa)}*.${s.hasFile ? "" : " _(OC sin adjunto)_"}`, ...(stockNote ? [stockNote] : []), ...(plazoNote ? [plazoNote] : []), "", files.length > 1 ? PATRICIA_REMINDER_BRANCHES : PATRICIA_REMINDER);
   const progress = await companyProgressLine(store, company, 7);
   if (progress) lines.push(progress);
   await ctx.reply(lines.join("\n"));
 }
+
+// ── corrida H: anular un pedido (devuelve su stock) y ver los descuentos de stock ──
+
+/** "oc 4500123", "pedido 4500123 de zbuss", "la oc 4500123" -> el número de OC (y la empresa si se escribió). */
+export function parseAnular(args: string): { numero: string; empresa: string } | null {
+  const t = args.trim().replace(/^(?:la\s+)?(?:oc|o\/c|pedido|orden(?:\s+de\s+compra)?)\s*(?:n[°ºo]\.?|nro\.?|#)?\s*/i, "");
+  const m = t.match(/^([A-Za-z0-9][\w/-]*)(?:\s+(?:de|del|para)?\s*(.+))?$/);
+  if (!m || !/\d/.test(m[1])) return null;
+  return { numero: m[1], empresa: (m[2] ?? "").trim() };
+}
+
+registerPortalCommand("anular", async (ctx, args) => {
+  const p = parseAnular(args);
+  if (!p) {
+    await ctx.reply("Escríbelo así: *anular oc 4500123* (el n° de la OC del pedido; devuelve al stock lo que había descontado).");
+    return;
+  }
+  const all = await ctx.store.listPurchaseOrders({ status: OC_STATUS_DONE });
+  const hits = [];
+  for (const o of all) {
+    if (!o.numero || o.numero.toUpperCase() !== p.numero.toUpperCase()) continue;
+    const company = await ctx.store.getCompany(o.companyId);
+    if (!company || !canEditCompany(ctx.user, company)) continue;
+    if (p.empresa && !fold(company.razonSocial).includes(fold(p.empresa)) && company.ruc !== p.empresa) continue;
+    hits.push({ o, company });
+  }
+  if (!hits.length) {
+    await ctx.reply(`No encontré un pedido generado de la OC *${p.numero}* que puedas anular.`);
+    return;
+  }
+  if (hits.length > 1) {
+    await ctx.reply(`Hay ${hits.length} pedidos con la OC *${p.numero}* (${hits.map((h) => shortName(h.company.razonSocial)).join(", ")}). Escribe *anular oc ${p.numero} <empresa>*.`);
+    return;
+  }
+  const { o, company } = hits[0];
+  const ps = await priceStore();
+  const key = orderStockKey(company.id, o.numero, o.id);
+  const before = (await ps.listStockDeductions().catch(() => [])).filter((d) => d.orderKey === key);
+  await ps.releaseStockDeductions(key, ctx.now);
+  await ctx.store.updatePurchaseOrder(o.id, { status: OC_STATUS_VOIDED });
+  const back = before.length ? `\n📦 Devolví al stock: ${before.map((d) => `${d.quantity} × ${d.description}`).join(" · ")}.` : "";
+  await ctx.reply(`🗑️ Anulé el pedido de la OC *${o.numero}* de *${shortName(company.razonSocial)}*.${back}\nSi Patricia ya lo recibió, avísale por correo.`);
+});
+
+registerPortalCommand("descuentos", async (ctx) => {
+  if (ctx.user.rol !== "admin" && ctx.user.rol !== "supervisor") {
+    await ctx.reply("Los descuentos de stock los ve el supervisor o el administrador. Para ver el disponible de una medida: *stock 295/80R22.5*.");
+    return;
+  }
+  const ps = await priceStore();
+  const list = await ps.listStockDeductions();
+  if (!list.length) {
+    await ctx.reply("📦 No hay descuentos de stock activos: el disponible es lo cargado (Odoo).");
+    return;
+  }
+  const rows = await ps.allRows();
+  const byRow = new Map<string, typeof list>();
+  for (const d of list) byRow.set(d.rowId, [...(byRow.get(d.rowId) ?? []), d]);
+  const lines = ["📦 *Descuentos de stock activos* (contador de apoyo; la referencia es Odoo):"];
+  for (const [rowId, ds] of byRow) {
+    const row = rows.find((r) => r.id === rowId);
+    const committed = ds.reduce((n, d) => n + d.quantity, 0);
+    const where = [...new Set(ds.map((d) => d.warehouse).filter(Boolean))].join(", ");
+    const avail = row && row.stock !== null ? availableText({ cargadas: row.stock, enPedidos: committed, disponible: row.stock - committed }) : `${committed} en pedidos`;
+    lines.push(`• *${ds[0].description}*${where ? ` (${where})` : ""}: ${avail}`);
+    for (const d of ds) lines.push(`   − ${d.quantity} · ${d.label} · ${d.createdAt.slice(8, 10)}/${d.createdAt.slice(5, 7)}`);
+  }
+  lines.push("", "Un pedido anulado (*anular oc …*) devuelve lo suyo; una carga nueva de stock pone el contador en cero.");
+  await ctx.reply(lines.join("\n"));
+});

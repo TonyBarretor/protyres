@@ -479,6 +479,41 @@ export const STATEMENTS = [
     created_at timestamptz not null default now(),
     primary key (user_id, aviso)
   )`,
+  // Corrida H, punto 3b: proveedores de la lista de contactos (npm run portal:import-suppliers). `key` = nombre plegado;
+  // `provider` = proveedor del cotizador que le corresponde ("JCH"); last_* = últimas condiciones de pago y entrega del pedido.
+  `create table if not exists suppliers (
+    key text primary key,
+    name text not null,
+    contact text,
+    phone text,
+    email text,
+    brands jsonb not null default '[]'::jsonb,
+    provider text,
+    last_payment text,
+    last_delivery text,
+    updated_at timestamptz not null default now()
+  )`,
+  // Corrida H, punto 4: contador de stock. Cada carga de una lista (proveedor|tipo) deja su hora; un descuento cuenta solo
+  // mientras su load_at sea la hora de la última carga de su origen y no esté liberado (pedido anulado o rehecho).
+  `create table if not exists stock_loads (
+    origin text primary key,
+    loaded_at timestamptz not null default now()
+  )`,
+  `create table if not exists stock_deductions (
+    id serial primary key,
+    order_key text not null,
+    label text,
+    row_id text not null,
+    origin text not null,
+    warehouse text not null default '',
+    quantity integer not null,
+    description text not null default '',
+    load_at timestamptz,
+    created_at timestamptz not null default now(),
+    released_at timestamptz
+  )`,
+  `create index if not exists stock_deductions_order_idx on stock_deductions (order_key)`,
+  `create index if not exists stock_deductions_active_idx on stock_deductions (row_id) where released_at is null`,
 ];
 
 /** Desde aquí empiezan las sentencias del portal: antes de ejecutarlas se pasa la guardia (migrate-guard.ts). */

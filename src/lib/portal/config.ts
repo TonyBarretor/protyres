@@ -144,6 +144,30 @@ const PublicInputsSchema = z.looseObject({
   salesUpload: SalesUploadSchema.prefault({}),
 });
 
+/**
+ * Corrida H, punto 3: pedido para Patricia. `ownStock` = cómo se llena el bloque "PRODUCTOS DE TERCEROS" de un producto
+ * de stock propio (como lo hace el vendedor a mano); `warehouse` = almacén propio donde se descuenta el stock.
+ * `supplierProviders`: proveedor de la lista de contactos -> proveedor del cotizador (config/providers.json, listas de
+ * precios), cuando el nombre no basta para emparejarlos. `branchFileName`: nombre del Excel de un pedido por sucursal
+ * ({Mes} Nov, {aa} 26, {Cliente}, {Venta}, {Sucursal}, {UBs} 1231-1812).
+ */
+const OrdersSchema = z.looseObject({
+  ownStock: z
+    .object({
+      proveedor: z.string().default("STOCK 360PT"),
+      contacto: z.string().default("PATRICIA"),
+      telefono: z.string().default(""),
+      email: z.string().default("-"),
+      precioCompra: z.number().default(0),
+      pago: z.string().default("contado"),
+      entrega: z.string().default("SAN LUIS STOCK"),
+      warehouse: z.string().default("SAN LUIS"),
+    })
+    .prefault({}),
+  supplierProviders: z.record(z.string(), z.string()).default({}),
+  branchFileName: z.string().default("{Mes}{aa}- {Cliente} - Venta {Venta} {Sucursal} UBs {UBs}"),
+});
+
 export const PortalConfigSchema = z.looseObject({
   import: ImportSchema.prefault({}),
   appointments: AppointmentsSchema.prefault({}),
@@ -157,6 +181,8 @@ export const PortalConfigSchema = z.looseObject({
   publicInputs: PublicInputsSchema.prefault({}),
   /** Corrida G: puntaje de atractivo (src/lib/portal/scoring/config.ts). */
   scoring: ScoringSchema.prefault({}),
+  /** Corrida H: pedido para Patricia (bloque de proveedor / stock propio). */
+  orders: OrdersSchema.prefault({}),
 });
 
 export type PortalConfig = z.infer<typeof PortalConfigSchema>;
@@ -170,6 +196,7 @@ export type PortalLimitsConfig = PortalConfig["limits"];
 export type PortalPublicInputsConfig = PortalConfig["publicInputs"];
 export type RateRule = z.infer<typeof RateRuleSchema>;
 export type PortalScoringConfig = PortalConfig["scoring"];
+export type PortalOrdersConfig = PortalConfig["orders"];
 
 export function portalConfigPath(): string {
   return process.env.PORTAL_CONFIG || path.join(process.cwd(), "config", "portal.json");
