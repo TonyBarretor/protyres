@@ -36,14 +36,18 @@ export async function createTestDatabase(log: (m: string) => void = () => undefi
   }
   const base = process.env.DATABASE_URL;
   if (!base) throw new Error("test:pg necesita PGTEST_URL (Postgres local) o DATABASE_URL (crea una base aparte en ese servidor)");
-  const name = `${TEST_DB_PREFIX}${process.pid}_${Math.random().toString(36).slice(2, 8)}`;
+  // el segundo del reloj va en el nombre: así se reconocen las bases que quedaron de corridas cortadas a la mitad
+  const name = `${TEST_DB_PREFIX}${Math.floor(Date.now() / 1000)}_${Math.random().toString(36).slice(2, 8)}`;
   const admin = adminClient(base);
   try {
-    // bases de corridas anteriores que se cortaron a la mitad (más de 2 h)
-    const old = await admin<{ datname: string }[]>`
-      select datname from pg_database d where datname like ${TEST_DB_PREFIX + "%"}
-        and not exists (select 1 from pg_stat_activity a where a.datname = d.datname and a.backend_start > now() - interval '2 hours')`;
-    for (const o of old) if (o.datname.startsWith(TEST_DB_PREFIX)) await admin.unsafe(`drop database if exists "${o.datname}" with (force)`).catch(() => undefined);
+    // bases de corridas anteriores que se cortaron a la mitad: más de 3 h según el segundo de su nombre (otras corridas
+    // que estén en marcha a la vez no se tocan)
+    const old = await admin<{ datname: string }[]>`select datname from pg_database where datname like ${TEST_DB_PREFIX + "%"}`;
+    const limit = Date.now() / 1000 - 3 * 3600;
+    for (const o of old) {
+      const m = /^protyres_pgtest_(\d{10})_[a-z0-9]+$/.exec(o.datname);
+      if (m && Number(m[1]) < limit) await admin.unsafe(`drop database if exists "${o.datname}" with (force)`).catch(() => undefined);
+    }
     await admin.unsafe(`create database "${name}"`);
   } finally {
     await admin.end({ timeout: 5 });
