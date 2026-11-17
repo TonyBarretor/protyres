@@ -15,7 +15,13 @@
  */
 import { fold } from "../../tyre/brands";
 import { findTyreSizes } from "../../tyre/spec";
-import { checkSizes, dictatedProfileQuote, displaySize, fixQuoteVerb, normalizeDictation, normalizeSpoken, normalizeVoiceCorrection, spokenToDigits, type DictatedQuote } from "../voice/dictation";
+import { checkSizes, dictatedProfileQuote, displaySize, fixQuoteVerb, normalizeDictation, normalizeSpoken, normalizeVoiceCorrection, spokenToDigits, type DictatedQuote, type DictationCatalog } from "../voice/dictation";
+import { applyOps, draftFromText, draftToText, llmDraftOps, opsToCommands, validateOps, type DraftOp } from "../voice/draft-edit";
+import type { VoiceCatalog } from "../voice/catalog";
+import { llmAvailable } from "../../llm/client";
+import { isOffTopic, OFF_TOPIC_REPLY } from "../../guard/off-topic";
+import { UsageCapExceeded } from "../../guard/usage";
+import { loadSettings } from "../../settings";
 import { isSizeOnly, resolveSpokenSizes, type AmbiguousSize } from "../voice/sizes";
 import { joinUbDigits, parseVoiceEdit, type VoiceEdit } from "../voice/items";
 import { recordVoice, understoodOf } from "./voice-log";
@@ -64,6 +70,11 @@ async function catalogOf(ctx: PortalContext) {
   }
 }
 
+/** Lo del catálogo que usa el dictado (marcas, diseños, medidas, lonas y, si se pide, los clientes con perfil). */
+function dictCatalog(c: VoiceCatalog | null, extra: Partial<DictationCatalog> = {}, withProfiles = false): DictationCatalog {
+  return { designs: c?.designs, brands: c?.brands, sizes: c?.sizes, plies: c?.plies, ...(withProfiles ? { profiles: c?.profiles } : {}), ...extra };
+}
+
 async function learned(ctx: PortalContext) {
   return (await ctx.store.listVocabulary().catch(() => [])).map((v) => ({ term: v.term, meaning: v.meaning }));
 }
@@ -78,7 +89,7 @@ export async function spokenForRouting(ctx: PortalContext, transcript: string): 
 export async function isProfileVoiceQuote(ctx: PortalContext, transcript: string): Promise<boolean> {
   const catalog = await catalogOf(ctx);
   if (!catalog?.profiles?.length) return false;
-  return dictatedProfileQuote(applyVocabulary(transcript, await learned(ctx)), { designs: catalog.designs, brands: catalog.brands, sizes: catalog.sizes, profiles: catalog.profiles });
+  return dictatedProfileQuote(applyVocabulary(transcript, await learned(ctx)), dictCatalog(catalog, {}, true));
 }
 
 /** Nota de voz que es una cotización: `🎙 Escuché: …` y al cotizador (o la pregunta por la medida). */
@@ -86,12 +97,23 @@ export async function startVoiceQuote(ctx: PortalContext, transcript: string): P
   await logTranscript(ctx, transcript);
   await ctx.reply(heardLine(transcript));
   const catalog = await catalogOf(ctx);
-  const d = normalizeDictation(applyVocabulary(transcript, await learned(ctx)), { designs: catalog?.designs, brands: catalog?.brands, sizes: catalog?.sizes, profiles: catalog?.profiles });
+  const d = normalizeDictation(applyVocabulary(transcript, await learned(ctx)), dictCatalog(catalog, {}, true));
   const notes = d.fixes.length ? [`🔤 Corregí lo que oí: ${d.fixes.map((f) => `«${f.from}» → ${f.to}`).join(", ")}.`] : [];
   if (d.profile) notes.push(profileNote(d.profile));
   if (d.inherited.length) notes.push(inheritedNote(d.inherited));
+  notes.push(...dictationNotes(d));
   const extra: SizeExtra = { choices: d.sizeChoices, unheard: d.unheardSizes, dictated: d, raw: !!d.profile };
-  const flow: SplitFlow = { text: d.text, transcript, customer: d.customer, profile: !!d.profile, ubIssues: d.ubIssues, offset: d.profile ? 1 : 0, sizeChoices: d.sizeChoices, unheard: d.unheardSizes };
+  const flow: SplitFlow = {
+    text: d.text,
+    transcript,
+    customer: d.customer,
+    profile: !!d.profile,
+    ubIssues: d.ubIssues,
+    offset: d.profile ? 1 : 0,
+    sizeChoices: d.sizeChoices,
+    unheard: d.unheardSizes,
+    ...(d.brandAsCustomer ? { askCustomer: d.brandAsCustomer } : {}),
+  };
   // varias llantas que no se pudieron separar con seguridad: lo entendido y la pregunta (nunca se mezclan ni se descartan)
   if (d.doubts.length) {
     if (notes.length) await ctx.reply(notes.join("\n"));
@@ -102,7 +124,49 @@ export async function startVoiceQuote(ctx: PortalContext, transcript: string): P
     return;
   }
   if (notes.length) await ctx.reply(notes.join("\n"));
+  // corrida I: se juntó en una llanta algo que podía ser otra: se asume UNA y se pregunta (botones)
+  if (d.single) {
+    const step: Omit<VoiceOneStep, "createdAt"> = { kind: VOICE_ONE, captureText: true, ...flow, why: d.single.why, alt: d.single.alt };
+    await setPending(ctx.store, ctx.from, step, ctx.now);
+    await replyButtons(ctx, oneQuestion({ text: flow.text, offset: flow.offset, why: d.single.why }), ONE_BUTTONS);
+    await recordVoice(ctx, { transcript, context: "cotizacion", understood: understoodOf(d, { questions: [`¿una o varias? ${d.single.why.join("; ")}`] }), outcome: "pregunta" });
+    return;
+  }
   return afterSplit(ctx, flow, extra);
+}
+
+/** Corrida I: avisos de lo dictado (moneda, IGV sin decir, lonas que no existen, precio dictado con IGV). */
+function quoteSettings(): { currency: string; taxPct: number; taxLabel: string } {
+  try {
+    const p = loadSettings().pricing;
+    return { currency: p.currency, taxPct: p.taxPct, taxLabel: p.taxLabel };
+  } catch {
+    return { currency: "USD", taxPct: 18, taxLabel: "IGV" };
+  }
+}
+
+const CURRENCY_NAME: Record<string, string> = { PEN: "soles", USD: "dólares" };
+
+export function dictationNotes(d: DictatedQuote, settings = quoteSettings()): string[] {
+  const notes: string[] = [];
+  if (d.currency && d.currency !== settings.currency.toUpperCase()) {
+    notes.push(`💱 Dijiste *${CURRENCY_NAME[d.currency] ?? d.currency}*, pero la cotización va en *${CURRENCY_NAME[settings.currency.toUpperCase()] ?? settings.currency}*: dejé el número tal cual. Si no es así, corrígelo (p. ej. *precio 1 75*).`);
+  }
+  if (d.taxMention) notes.push(`🧾 Dijiste «${d.taxMention}» sin decir si el precio lo incluye: uso lo de siempre. Si no, escribe *con igv* o *sin igv*.`);
+  for (const p of d.plyIssues) {
+    notes.push(`🛞 *${p.ply}PR* no está en el catálogo para ${displaySize(p.size)} (hay ${p.available.map((x) => `${x}PR`).join(", ")}): cotizo sin lonas en la línea ${p.item + 1}.`);
+  }
+  // "precio 298, incluido impuestos": en el cotizador "precio 298" es sin IGV y "con igv" lo muestra con IGV encima
+  if (/^con\s+igv$/im.test(d.text)) {
+    const priced = d.items.map((l, i) => ({ i, m: l.match(/\bprecio\s+(\d+(?:\.\d+)?)/i) })).filter((x) => x.m);
+    if (priced.length) {
+      const f = 1 + settings.taxPct / 100;
+      const ex = priced[0];
+      const net = Math.round((parseFloat(ex.m![1]) / f) * 100) / 100;
+      notes.push(`🧾 Ojo: el precio dictado va *sin ${settings.taxLabel}* (como *precio ${ex.m![1]}* escrito) y la cotización lo muestra con ${settings.taxLabel} encima. Si ${ex.m![1]} ya incluye ${settings.taxLabel}, escribe *precio ${ex.i + 1} ${net}*.`);
+    }
+  }
+  return notes;
 }
 
 /** Lo dictado ya separado en llantas: falta la UB de alguna línea, el cliente contra los conocidos, y al cotizador. */
@@ -119,10 +183,13 @@ interface SplitFlow {
   offset: number;
   sizeChoices?: AmbiguousSize[];
   unheard?: string[];
+  /** Corrida I: lo dicho como "cliente …" era esta marca del catálogo: se pregunta el cliente antes de cotizar. */
+  askCustomer?: string;
 }
 
 async function afterSplit(ctx: PortalContext, flow: SplitFlow, extra: SizeExtra = {}): Promise<void> {
   if (flow.ubIssues.length) return askUb(ctx, flow);
+  if (flow.askCustomer && !flow.customer && !flow.profile) return askCustomerName(ctx, flow);
   if (!flow.customer || flow.profile) return continueVoiceQuote(ctx, flow.text, flow.transcript, { ...extra, choices: flow.sizeChoices, unheard: flow.unheard, raw: flow.profile });
   const catalog = await catalogOf(ctx);
   const notes: string[] = [];
@@ -194,7 +261,8 @@ function splitQuestion(s: Pick<VoiceSplitStep, "text" | "offset" | "doubts">): s
 
 registerPendingHandler(VOICE_SPLIT, async (ctx, step, rawText) => {
   const s = step as VoiceSplitStep;
-  if (ctx.msg.type === "audio") return false; // otra nota de voz: el pedido dictado de nuevo
+  // otra nota de voz: el pedido dictado de nuevo, o (corrida I) una corrección libre del borrador
+  if (ctx.msg.type === "audio") return freeEditInDraft(ctx, s, rawText);
   const t = foldName(rawText);
   if (/^(?:si|sí|ok|dale|correcto|asi esta bien|si asi esta bien|esta bien|listo)$/.test(t)) {
     await clearPending(ctx.store, ctx.from);
@@ -206,7 +274,8 @@ registerPendingHandler(VOICE_SPLIT, async (ctx, step, rawText) => {
     await ctx.reply("Listo, no lo cotizo. Díctalo de nuevo separando cada llanta, o escríbelo (una llanta por línea).");
     return true;
   }
-  return false; // lo escribió de nuevo: va al cotizador como un pedido escrito
+  // lo escribió de nuevo (va al cotizador como un pedido escrito) o es una corrección libre ("únelas, es una sola")
+  return freeEditInDraft(ctx, s, rawText);
 });
 
 registerPausable(VOICE_SPLIT, {
@@ -216,6 +285,279 @@ registerPausable(VOICE_SPLIT, {
   },
   async resume(ctx, step, prefix) {
     await askAgain(ctx, step, prefix, splitQuestion(step as VoiceSplitStep), SPLIT_BUTTONS);
+  },
+});
+
+// ── ¿una sola llanta o varias? (corrida I) ──
+
+export const VOICE_ONE = "voice_one";
+
+/** Se juntó en UNA llanta algo que podía ser otra: esperando "Es una sola llanta" o "Son varias". */
+export interface VoiceOneStep extends PendingStep, SplitFlow {
+  kind: typeof VOICE_ONE;
+  captureText: true;
+  /** Por qué se duda ("dos productos («Flama 77»)"). */
+  why: string[];
+  /** El texto separando en cada pausa ("" si eso no da más llantas). */
+  alt: string;
+}
+
+export const ONE_BUTTONS = [
+  { id: "una sola", title: "Es una sola llanta" },
+  { id: "son varias", title: "Son varias" },
+];
+
+function oneQuestion(s: Pick<VoiceOneStep, "text" | "offset" | "why">): string {
+  const lines = itemLinesOf(s.text, s.offset).map((l, i) => `${i + 1}. ${l}`);
+  return `Entendí *una sola llanta*:\n${lines.join("\n")}\n\n⚠️ Lo dictado tiene ${s.why.join("; ")}. ¿Es una sola llanta o son varias? (También puedes decirme el cambio, p. ej. «son dos: la Flama 77 es otra llanta».)`;
+}
+
+registerPendingHandler(VOICE_ONE, async (ctx, step, rawText) => {
+  const s = step as VoiceOneStep;
+  if (ctx.msg.type !== "audio") {
+    const t = foldName(rawText);
+    if (/^(?:una sola(?: llanta)?|es una sola(?: llanta)?|una|si|ok|correcto)$/.test(t)) {
+      await clearPending(ctx.store, ctx.from);
+      await afterSplit(ctx, flowOf(s), { context: "seguimiento" });
+      return true;
+    }
+    if (/^(?:son varias|varias|no)$/.test(t)) {
+      await clearPending(ctx.store, ctx.from);
+      if (!s.alt) {
+        await ctx.reply("Listo. Díctalas de nuevo separando cada llanta con «y» (p. ej. «ocho Valor 99 en 295 80 22.5, y cuatro Flama 77 en 275 80 22.5») o escríbelas, una por línea.");
+        return true;
+      }
+      // la lectura separando en cada pausa, para confirmar (o corregir)
+      const split: Omit<VoiceSplitStep, "createdAt"> = { ...flowOf(s), kind: VOICE_SPLIT, captureText: true, text: s.alt, ubIssues: [], doubts: ["las separé en cada pausa (coma o punto)"] };
+      await setPending(ctx.store, ctx.from, split, ctx.now);
+      await replyButtons(ctx, splitQuestion({ text: s.alt, offset: s.offset, doubts: ["las separé en cada pausa (coma o punto)"] }), SPLIT_BUTTONS);
+      return true;
+    }
+  }
+  return freeEditInDraft(ctx, s, rawText);
+});
+
+registerPausable(VOICE_ONE, {
+  async describe(_ctx, step) {
+    const t = oneLine(String((step as VoiceOneStep).transcript ?? ""));
+    return { companyId: null, label: `cotización por voz «${t.length > 40 ? `${t.slice(0, 39).trimEnd()}…` : t}»`, missing: "falta confirmar si es una sola llanta" };
+  },
+  async resume(ctx, step, prefix) {
+    await askAgain(ctx, step, prefix, oneQuestion(step as VoiceOneStep), ONE_BUTTONS);
+  },
+});
+
+/** Lo de un paso que es el pedido dictado (sin lo propio del paso). */
+function flowOf(s: SplitFlow): SplitFlow {
+  return {
+    text: s.text,
+    transcript: s.transcript,
+    customer: s.customer,
+    profile: s.profile,
+    ubIssues: s.ubIssues,
+    offset: s.offset,
+    ...(s.sizeChoices ? { sizeChoices: s.sizeChoices } : {}),
+    ...(s.unheard ? { unheard: s.unheard } : {}),
+    ...(s.askCustomer ? { askCustomer: s.askCustomer } : {}),
+  };
+}
+
+// ── el cliente, cuando se dijo una marca como cliente (corrida I) ──
+
+export const VOICE_CUSTOMER_NAME = "voice_customer_name";
+
+export interface VoiceCustomerNameStep extends PendingStep, SplitFlow {
+  kind: typeof VOICE_CUSTOMER_NAME;
+  captureText: true;
+}
+
+const CUSTOMER_NAME_BUTTONS = [{ id: "sin cliente", title: "Sin cliente" }];
+const customerNameQuestion = (brand: string) =>
+  `👤 «${brand}» es una marca del catálogo: la tomé como la marca de la llanta. ¿Para qué cliente es la cotización? Escríbelo o díctalo (p. ej. *ZBUSS*), o *sin cliente*.`;
+
+async function askCustomerName(ctx: PortalContext, flow: SplitFlow): Promise<void> {
+  const step: Omit<VoiceCustomerNameStep, "createdAt"> = { kind: VOICE_CUSTOMER_NAME, captureText: true, ...flow };
+  await setPending(ctx.store, ctx.from, step, ctx.now);
+  await replyButtons(ctx, customerNameQuestion(flow.askCustomer ?? ""), CUSTOMER_NAME_BUTTONS);
+  await recordVoice(ctx, { transcript: flow.transcript, context: "cotizacion", understood: understoodOf(null, { questions: [`cliente («${flow.askCustomer}» es marca)`], text: flow.text }), outcome: "pregunta" });
+}
+
+registerPendingHandler(VOICE_CUSTOMER_NAME, async (ctx, step, rawText) => {
+  const s = step as VoiceCustomerNameStep;
+  let answer = rawText.trim();
+  if (ctx.msg.type === "audio" && ctx.msg.media) {
+    const r = await fetchVoice(ctx, { id: ctx.msg.media.id, mimeType: ctx.msg.media.mimeType });
+    if (!r.ok) {
+      await ctx.reply(r.reply.replace(/el reporte/, "el cliente"));
+      return true;
+    }
+    answer = r.text;
+    if (await looksLikeOrder(ctx, answer)) return false; // otro pedido dictado
+    await logTranscript(ctx, answer);
+    await ctx.reply(heardLine(answer));
+  } else if (await looksLikeOrder(ctx, answer)) return false;
+  const name = oneLine(answer.replace(/[.!?¡¿]+$/g, "").replace(/^(?:(?:es\s+)?(?:para|el\s+cliente\s+es|cliente|la\s+empresa)\s*:?\s*)+/i, "")).slice(0, 80);
+  const flow: SplitFlow = { ...flowOf(s), askCustomer: undefined };
+  await clearPending(ctx.store, ctx.from);
+  if (!name || /^(?:sin cliente|ninguno|no se|no sé|despues|después)$/.test(foldName(name))) {
+    await afterSplit(ctx, flow, { context: "seguimiento" });
+    return true;
+  }
+  const d = draftFromText(flow.text, flow.offset);
+  d.customer = name;
+  await afterSplit(ctx, { ...flow, text: draftToText(d), customer: name }, { context: "seguimiento" });
+  return true;
+});
+
+registerPausable(VOICE_CUSTOMER_NAME, {
+  async describe(_ctx, step) {
+    const t = oneLine(String((step as VoiceCustomerNameStep).transcript ?? ""));
+    return { companyId: null, label: `cotización por voz «${t.length > 40 ? `${t.slice(0, 39).trimEnd()}…` : t}»`, missing: "falta el cliente" };
+  },
+  async resume(ctx, step, prefix) {
+    await askAgain(ctx, step, prefix, customerNameQuestion((step as VoiceCustomerNameStep).askCustomer ?? ""), CUSTOMER_NAME_BUTTONS);
+  },
+});
+
+// ── correcciones libres sobre el borrador (corrida I, punto 6) ──
+
+export const VOICE_FREE_EDIT = "voice_free_edit";
+
+/** El borrador corregido por una corrección libre, esperando "Sí" para seguir (o "No" para volver al de antes). */
+export interface VoiceFreeEditStep extends PendingStep, SplitFlow {
+  kind: typeof VOICE_FREE_EDIT;
+  captureText: true;
+  /** El paso de antes de la corrección (para "No"). */
+  previous: PendingStep;
+  /** Lo hecho y lo descartado, en palabras. */
+  summary: string;
+}
+
+const FREE_EDIT_BUTTONS = [
+  { id: "sí", title: "Sí, así" },
+  { id: "no", title: "No" },
+];
+export const FREE_EDIT_NOT_UNDERSTOOD = "No entendí un cambio que pueda hacer en el borrador.";
+export const FREE_EDIT_UNAVAILABLE = "No pude leer esa corrección ahora.";
+export const FREE_EDIT_HELP = "Responde con los botones, dime el cambio de otra forma (p. ej. «únelas, es una sola llanta», «la segunda es 11R22.5», «quita la tercera») o escríbelo, una llanta por línea.";
+
+/** VOICE_FREE_EDITS=off apaga las correcciones libres (se lee en cada mensaje). */
+export function freeEditsOn(env: Record<string, string | undefined>): boolean {
+  const v = (env.VOICE_FREE_EDITS ?? "").trim().toLowerCase();
+  return v !== "off" && v !== "0" && v !== "false";
+}
+
+/** ¿Es un pedido completo nuevo (no una corrección)? */
+async function looksLikeOrder(ctx: PortalContext, text: string): Promise<boolean> {
+  const sp = await spokenForRouting(ctx, text);
+  return explicitQuoteStart(sp) || strongTyreQuote(sp);
+}
+
+function freeEditQuestion(s: Pick<VoiceFreeEditStep, "text" | "offset" | "summary">): string {
+  const lines = s.text.split("\n").slice(s.offset);
+  const items = itemLinesOf(s.text, s.offset).map((l, i) => `${i + 1}. ${l}`);
+  const rest = lines.filter((l) => /^(?:para\s|plazo:|margen\s|dscto\s|con\s+igv|sin\s+igv)/i.test(l));
+  return `✏️ ${s.summary}\nQueda así:\n${items.join("\n")}${rest.length ? `\n${rest.join("\n")}` : ""}\n\n¿Lo dejo así?`;
+}
+
+/**
+ * Un mensaje que no es respuesta a la pregunta del borrador (VOICE_SPLIT, VOICE_ONE, VOICE_FREE_EDIT): un pedido nuevo
+ * (false: lo toma el router, como antes), fuera de tema (la línea fija, sin modelo) o una corrección libre: el modelo la
+ * traduce a operaciones cerradas, se validan, se aplican al borrador y se muestra para confirmar. Sin modelo (o apagado)
+ * el mensaje sigue como antes (false).
+ */
+async function freeEditInDraft(ctx: PortalContext, s: SplitFlow & PendingStep, rawText: string): Promise<boolean> {
+  let message = rawText.trim();
+  const voiced = ctx.msg.type === "audio";
+  if (!freeEditsOn(ctx.env) || !llmAvailable()) return false;
+  if (voiced && ctx.msg.media) {
+    const r = await fetchVoice(ctx, { id: ctx.msg.media.id, mimeType: ctx.msg.media.mimeType });
+    if (!r.ok) return false; // el router responde lo de siempre (la transcripción queda en caché)
+    message = r.text;
+  }
+  if (!message || (await looksLikeOrder(ctx, message))) return false;
+  if (voiced) {
+    await logTranscript(ctx, message);
+    await ctx.reply(heardLine(message));
+  }
+  // fuera de tema: la línea fija, sin modelo (corrida E); el borrador sigue esperando
+  if (isOffTopic(message)) {
+    await ctx.reply(OFF_TOPIC_REPLY);
+    return true;
+  }
+  const draft = draftFromText(s.text, s.offset);
+  const catalog = await catalogOf(ctx);
+  const brands = catalog?.brands ?? [];
+  let res: Awaited<ReturnType<typeof llmDraftOps>> = null;
+  try {
+    res = await llmDraftOps(message, draft);
+  } catch (err) {
+    if (!(err instanceof UsageCapExceeded)) ctx.log(`portal: corrección libre: ${(err as Error).message}`);
+  }
+  const record = (outcome: "ok" | "pregunta" | "fallo", text: string) =>
+    recordVoice(ctx, { transcript: message, context: "correccion_libre", voiced, understood: understoodOf(null, { questions: outcome === "ok" ? [] : [text], text }), outcome });
+  if (!res) {
+    await ctx.reply(`${FREE_EDIT_UNAVAILABLE} ${FREE_EDIT_HELP}`);
+    await record("fallo", "sin modelo");
+    return true;
+  }
+  const v = res.isCorrection ? validateOps(res.raw, { message, lineCount: draft.items.length, brands }) : { ops: [] as DraftOp[], rejected: [] as string[] };
+  if (!v.ops.length) {
+    await ctx.reply(`${FREE_EDIT_NOT_UNDERSTOOD}${v.rejected.length ? ` (${v.rejected.join("; ")})` : ""} ${FREE_EDIT_HELP}`);
+    await record("fallo", v.rejected.join("; ") || "no es una corrección");
+    return true;
+  }
+  const a = applyOps(draft, v.ops, brands);
+  if (!a.done.length) {
+    await ctx.reply(`No pude hacer ese cambio: ${[...a.failed, ...v.rejected].join("; ")}. ${FREE_EDIT_HELP}`);
+    await record("fallo", a.failed.join("; "));
+    return true;
+  }
+  const text = draftToText(a.draft);
+  // la UB de cada línea otra vez (las líneas pueden haber cambiado), solo si el pedido las traía
+  const hadUb = /\bub\s+\d{4}\b/i.test(s.text) || s.ubIssues.length > 0;
+  const ubIssues = hadUb ? a.draft.items.map((l, i) => (/\bub\s+\d{4}\b/i.test(l) ? null : { item: i })).filter((x): x is { item: number } => !!x) : [];
+  const customerOp = v.ops.some((o) => o.op === "customer");
+  const flow: SplitFlow = { ...flowOf(s), text, customer: a.draft.customer, ubIssues, ...(customerOp ? { askCustomer: undefined } : {}) };
+  const skipped = [...a.failed, ...v.rejected];
+  const summary = `${a.done.join("; ")}.${skipped.length ? ` ⚠️ No hice: ${skipped.join("; ")}.` : ""}`;
+  const previous = (s as PendingStep).kind === VOICE_FREE_EDIT ? (s as unknown as VoiceFreeEditStep).previous : (s as PendingStep);
+  const step: Omit<VoiceFreeEditStep, "createdAt"> = { kind: VOICE_FREE_EDIT, captureText: true, ...flow, previous, summary };
+  await setPending(ctx.store, ctx.from, step, ctx.now);
+  await replyButtons(ctx, freeEditQuestion({ text, offset: flow.offset, summary }), FREE_EDIT_BUTTONS);
+  await record("pregunta", `corrección libre: ${a.done.join("; ")}`);
+  return true;
+}
+
+registerPendingHandler(VOICE_FREE_EDIT, async (ctx, step, rawText) => {
+  const s = step as VoiceFreeEditStep;
+  if (ctx.msg.type !== "audio") {
+    const t = foldName(rawText);
+    if (/^(?:si|sí|si asi|si, asi|ok|dale|correcto|asi esta bien|esta bien|listo)$/.test(t)) {
+      await clearPending(ctx.store, ctx.from);
+      await afterSplit(ctx, flowOf(s), { context: "seguimiento" });
+      return true;
+    }
+    if (/^(?:no|no asi no|deshacer)$/.test(t)) {
+      // vuelve el borrador de antes, con su pregunta
+      const prev = s.previous as PendingStep & SplitFlow & { kind: string };
+      await setPending(ctx.store, ctx.from, prev, ctx.now);
+      const q = prev.kind === VOICE_ONE ? oneQuestion(prev as VoiceOneStep) : splitQuestion(prev as VoiceSplitStep);
+      await replyButtons(ctx, `Listo, lo dejo como estaba.\n\n${q}`, prev.kind === VOICE_ONE ? ONE_BUTTONS : SPLIT_BUTTONS);
+      return true;
+    }
+  }
+  // otra corrección sobre el borrador ya corregido
+  return freeEditInDraft(ctx, s, rawText);
+});
+
+registerPausable(VOICE_FREE_EDIT, {
+  async describe(_ctx, step) {
+    const t = oneLine(String((step as VoiceFreeEditStep).transcript ?? ""));
+    return { companyId: null, label: `cotización por voz «${t.length > 40 ? `${t.slice(0, 39).trimEnd()}…` : t}»`, missing: "falta confirmar la corrección" };
+  },
+  async resume(ctx, step, prefix) {
+    await askAgain(ctx, step, prefix, freeEditQuestion(step as VoiceFreeEditStep), FREE_EDIT_BUTTONS);
   },
 });
 
@@ -622,7 +964,7 @@ export async function voiceInQuote(ctx: PortalContext, transcript: string, quote
   // con medida: otro pedido (el cotizador pregunta si es un cambio, otra llanta o una cotización nueva)
   if (correction && !reportish && findTyreSizes(c.text).length) {
     const catalog = await catalogOf(ctx);
-    const d = normalizeDictation(c.text, { designs: catalog?.designs, brands: catalog?.brands, sizes: catalog?.sizes });
+    const d = normalizeDictation(c.text, dictCatalog(catalog));
     await continueVoiceQuote(ctx, d.text, transcript, { choices: d.sizeChoices, unheard: d.unheardSizes, dictated: d, context: "correccion" });
     return { what: "pedido por voz" };
   }
@@ -632,7 +974,7 @@ export async function voiceInQuote(ctx: PortalContext, transcript: string, quote
     // "Valor 99 en 12R22.5 a 280" como 280 llantas)
     if (findTyreSizes(spoken).length) {
       const catalog = await catalogOf(ctx);
-      const d = normalizeDictation(fixed, { designs: catalog?.designs, brands: catalog?.brands, sizes: catalog?.sizes, ubLevel: 1 });
+      const d = normalizeDictation(fixed, dictCatalog(catalog, { ubLevel: 1 }));
       if (d.items.length) {
         await ctx.requote(d.text, { voice: transcript });
         return { what: "pedido por voz" };
@@ -641,6 +983,10 @@ export async function voiceInQuote(ctx: PortalContext, transcript: string, quote
     await ctx.requote(spoken, { voice: transcript });
     return { what: "respuesta por voz" };
   }
+  // corrida I: con la cotización a la vista, lo que no encaja en las formas conocidas va al modelo SOLO para traducirlo a
+  // los comandos de corrección (cantidad, quitar, precio dicho, IGV, plazo, modelo); el cotizador la vuelve a mostrar
+  // y por voz nunca arma el PDF sin un *ok* escrito
+  if (correction && !reportish && freeEditsOn(ctx.env) && llmAvailable()) return freeEditInQuote(ctx, transcript);
   if (reportish) {
     await ctx.reply(VOICE_PAUSED_IN_QUOTE);
     return { what: "en pausa", pause: { kind: "intent_choice", text: transcript, occurredAt: ctx.now.toISOString(), voice: true } };
@@ -649,6 +995,37 @@ export async function voiceInQuote(ctx: PortalContext, transcript: string, quote
   return { what: "no entendida" };
 }
 
+/** Corrección libre con una cotización ya armada: los comandos escritos que tiene; el resto se explica. */
+async function freeEditInQuote(ctx: PortalContext, transcript: string): Promise<VoiceInQuoteResult> {
+  if (isOffTopic(transcript)) {
+    await ctx.reply(OFF_TOPIC_REPLY);
+    return { what: "fuera de tema" };
+  }
+  const catalog = await catalogOf(ctx);
+  let res: Awaited<ReturnType<typeof llmDraftOps>> = null;
+  try {
+    res = await llmDraftOps(transcript, { header: [], items: [], customer: "", terms: [] });
+  } catch (err) {
+    if (!(err instanceof UsageCapExceeded)) ctx.log(`portal: corrección libre: ${(err as Error).message}`);
+  }
+  const v = res?.isCorrection ? validateOps(res.raw, { message: transcript, lineCount: MAX_QUOTE_LINES, brands: catalog?.brands ?? [] }) : { ops: [] as DraftOp[], rejected: [] as string[] };
+  const { commands, unsupported } = opsToCommands(v.ops);
+  const record = (outcome: "ok" | "fallo", text: string) => recordVoice(ctx, { transcript, context: "correccion_libre", understood: understoodOf(null, { questions: outcome === "ok" ? [] : [text], text }), outcome });
+  const cannot = unsupported.length ? " Sobre una cotización ya armada no puedo unir líneas ni cambiar marca, medida o cliente: escribe *cancelar* y díctala de nuevo." : "";
+  if (!commands.length) {
+    await ctx.reply(`No entendí «${oneLine(transcript).slice(0, 80)}» como un cambio de la cotización.${cannot}${v.rejected.length ? ` (${v.rejected.join("; ")})` : ""} ${VOICE_CORRECTION_HELP}`);
+    await record("fallo", [...v.rejected, ...unsupported.map((o) => o.op)].join("; ") || "no es una corrección");
+    return { what: "no entendida" };
+  }
+  await ctx.reply(`✏️ Entendí: ${commands.map((c) => `*${c}*`).join(", ")}.${cannot}${v.rejected.length ? ` ⚠️ No hice: ${v.rejected.join("; ")}.` : ""}`);
+  await record("ok", commands.join(" · "));
+  for (const c of commands) await ctx.requote(c, { voice: transcript });
+  return { what: "corrección libre por voz" };
+}
+
+/** Líneas que puede nombrar una corrección sobre una cotización armada (el cotizador dice si la línea no existe). */
+const MAX_QUOTE_LINES = 30;
+
 /**
  * La corrección dirigida o lo agregado por voz como el comando escrito del cotizador ("cantidad 2 10", "quitar 3",
  * "precio 1 259", "agregar Fenixway Flama 77 275/80R22.5 x4"). null si no se puede (ya se respondió por qué).
@@ -656,7 +1033,7 @@ export async function voiceInQuote(ctx: PortalContext, transcript: string, quote
 async function editCommand(ctx: PortalContext, edit: VoiceEdit, transcript: string): Promise<string | null> {
   if (edit.kind === "add") {
     const catalog = await catalogOf(ctx);
-    const d = normalizeDictation(applyVocabulary(edit.text, await learned(ctx)), { designs: catalog?.designs, brands: catalog?.brands, sizes: catalog?.sizes, ubLevel: 1 });
+    const d = normalizeDictation(applyVocabulary(edit.text, await learned(ctx)), dictCatalog(catalog, { ubLevel: 1 }));
     if (!d.items.length || d.doubts.length) {
       const lines = d.items.map((l, i) => `${i + 1}. ${l}`).join("\n");
       await ctx.reply(`No pude separar con seguridad lo que quieres agregar${lines ? `:\n${lines}` : ""}${d.doubts.length ? `\n⚠️ ${d.doubts.join("; ")}.` : ""}\nDíctalo de nuevo (p. ej. «agrega cuatro Flama 77 en 275 80 22.5») o escríbelo: *agregar 275/80R22.5 Flama 77 x4*.`);
