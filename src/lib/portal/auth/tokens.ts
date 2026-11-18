@@ -120,6 +120,21 @@ export interface NewSession {
   expiresAt: Date;
 }
 
+/**
+ * Hotfix login: firma + consumo del enlace + sesión nueva, en UNA operación confirmada antes de responder (Postgres: una
+ * transacción en una conexión reservada, que antes descarta una transacción abierta de antes: pg-options.ts). null si la
+ * firma no vale o el enlace no existe, venció o ya se usó.
+ */
+export async function loginWithToken(store: PortalStore, token: string | null | undefined, opts: AuthOptions & { ttlMs?: number } = {}): Promise<{ userId: number; session: NewSession } | null> {
+  if (!hasValidSignature(token, opts.env ?? process.env)) return null;
+  const now = opts.now ?? new Date();
+  const raw = (token ?? "").split(".")[0];
+  const cookieValue = randomId();
+  const expiresAt = new Date(now.getTime() + (opts.ttlMs ?? SESSION_TTL_MS));
+  const userId = await store.consumeLoginTokenIntoSession(sha256(raw), now, { id: sha256(cookieValue), expiresAt });
+  return userId === null ? null : { userId, session: { cookieValue, expiresAt } };
+}
+
 export async function createSession(store: PortalStore, userId: number, opts: AuthOptions & { ttlMs?: number } = {}): Promise<NewSession> {
   const now = opts.now ?? new Date();
   const cookieValue = randomId();

@@ -321,6 +321,10 @@ export class PgPortalStore implements PortalStore {
     return Number(r.hits);
   }
 
+  async refundRateLimit(bucket: string, windowStart: Date): Promise<void> {
+    await this.sql`update rate_limit_hits set hits = greatest(hits - 1, 0), updated_at = now() where bucket = ${bucket} and window_start = ${windowStart}`;
+  }
+
   async pruneRateLimitHits(before: Date): Promise<number> {
     const r = await this.sql`delete from rate_limit_hits where window_start < ${before}`;
     return r.count;
@@ -898,6 +902,20 @@ export class PgPortalStore implements PortalStore {
       on conflict (id) do update set user_id = excluded.user_id, expires_at = excluded.expires_at
       returning *`;
     return toSession(r);
+  }
+
+  consumeLoginTokenIntoSession(tokenHash: string, now: Date, session: { id: string; expiresAt: Date }): Promise<number | null> {
+    return this.sql.begin(async (tx) => {
+      const [t] = await tx`
+        update login_tokens set used_at = ${now}
+        where token_hash = ${tokenHash} and used_at is null and expires_at > ${now}
+        returning user_id`;
+      if (!t) return null;
+      await tx`
+        insert into portal_sessions (id, user_id, expires_at) values (${session.id}, ${t.user_id}, ${session.expiresAt})
+        on conflict (id) do update set user_id = excluded.user_id, expires_at = excluded.expires_at`;
+      return Number(t.user_id);
+    }) as Promise<number | null>;
   }
 
   async getSession(id: string, now: Date): Promise<PortalSession | null> {

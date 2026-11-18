@@ -774,6 +774,13 @@ export class JsonPortalStore implements PortalStore {
     return copy(s);
   }
 
+  async consumeLoginTokenIntoSession(tokenHash: string, now: Date, session: { id: string; expiresAt: Date }): Promise<number | null> {
+    const userId = await this.consumeLoginToken(tokenHash, now);
+    if (userId === null) return null;
+    await this.createSession({ ...session, userId });
+    return userId;
+  }
+
   async getSession(id: string, now: Date): Promise<PortalSession | null> {
     const s = this.sessions.get(id);
     if (!s || s.expiresAt.getTime() <= now.getTime()) return null;
@@ -1276,6 +1283,11 @@ export class JsonPortalStore implements PortalStore {
     // sin cron en desarrollo: si crece, se olvidan las ventanas de hace más de un día
     if (this.rateHits.size > 10_000) await this.pruneRateLimitHits(new Date(windowStart.getTime() - 24 * 3600_000));
     return row.hits;
+  }
+
+  async refundRateLimit(bucket: string, windowStart: Date): Promise<void> {
+    const row = this.rateHits.get(`${bucket}|${windowStart.getTime()}`);
+    if (row) row.hits = Math.max(0, row.hits - 1);
   }
 
   async pruneRateLimitHits(before: Date): Promise<number> {

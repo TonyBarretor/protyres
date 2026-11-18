@@ -57,14 +57,13 @@ describe("/portal/login: límite de intentos", () => {
     expect((await loginPost(post("basura.firma", "200.9.9.9"), store, opts())).status).toBe(401);
   });
 
-  it("por token: el mismo enlace desde muchas IPs se bloquea al pasar perToken (GET y POST cuentan)", async () => {
+  // hotfix login (18/11): abrir un enlace bien firmado (GET) ya no cuenta (la vista previa de WhatsApp y volver a abrirlo
+  // bloqueaban a usuarios legítimos: "Demasiados intentos"); el límite por token sigue para los POST que fallan
+  it("por token: el mismo enlace ya usado, enviado desde muchas IPs, se bloquea al pasar perToken", async () => {
     const link = await createLoginLink(store, frank, { env });
-    for (let i = 0; i < rule.perToken!; i++) {
-      const res = await loginGet(new Request(link.url, { headers: ipHeaders(`201.0.0.${i}`) }), opts());
-      expect(res.status).toBe(200);
-    }
-    const res = await loginPost(post(link.token, "201.0.1.1"), store, opts());
-    expect(res.status).toBe(429);
+    expect((await loginPost(post(link.token, "201.0.0.250"), store, opts())).status).toBe(303);
+    for (let i = 0; i < rule.perToken!; i++) expect((await loginPost(post(link.token, `201.0.0.${i}`), store, opts())).status).toBe(401);
+    expect((await loginPost(post(link.token, "201.0.1.1"), store, opts())).status).toBe(429);
   });
 
   it("un login normal (GET + POST) pasa y el GET sin token no cuenta", async () => {
@@ -122,5 +121,56 @@ describe("route handler /portal/login usa el límite", () => {
     for (let i = 0; i <= rule.perIp; i++) last = (await routePost(post(`x${i}.y`, "202.2.2.2"))).status;
     expect(last).toBe(429);
     expect((await routeGet(new Request(`${BASE}?t=x.y`, { headers: ipHeaders("202.2.2.2") }))).status).toBe(429);
+  });
+});
+
+describe("hotfix login (18/11): un usuario legítimo no queda bloqueado", () => {
+  it("pide 4 enlaces seguidos, abre cada uno dos veces (vista previa + él) y entra con cada uno: nunca 429", async () => {
+    for (let round = 0; round < 3; round++)
+      for (let i = 0; i < 4; i++) {
+        const link = await createLoginLink(store, frank, { env });
+        for (let k = 0; k < 2; k++) expect((await loginGet(new Request(link.url, { headers: ipHeaders("190.5.5.5") }), opts())).status).toBe(200);
+        expect((await loginPost(post(link.token, "190.5.5.5"), store, opts())).status).toBe(303);
+      }
+  });
+
+  it("una entrada que salió bien no cuenta como intento fallido", async () => {
+    // perIp - 1 intentos fallidos desde la IP de la oficina
+    for (let i = 0; i < rule.perIp - 1; i++) expect((await loginPost(post(`basura${i}.firma`, "190.6.6.6"), store, opts())).status).toBe(401);
+    // varias entradas buenas: no suman
+    for (let i = 0; i < 5; i++) expect((await loginPost(post((await createLoginLink(store, frank, { env })).token, "190.6.6.6"), store, opts())).status).toBe(303);
+    // el siguiente fallido es el número perIp: todavía pasa (401), el de después ya no
+    expect((await loginPost(post("basura.otra", "190.6.6.6"), store, opts())).status).toBe(401);
+    expect((await loginPost(post("basura.mas", "190.6.6.6"), store, opts())).status).toBe(429);
+  });
+});
+
+describe("hotfix login (18/11): enlace ya usado con una sesión vigente", () => {
+  const cookieOf = (res: Response) => (res.headers.get("set-cookie") ?? "").match(/portal_session=([^;]+)/)?.[1] ?? "";
+  const withCookie = (c: string) => ({ cookie: `portal_session=${c}` });
+
+  it("GET y POST del enlace ya usado llevan al portal (sin gastar nada); sin sesión, «Enlace vencido»", async () => {
+    const link = await createLoginLink(store, frank, { env });
+    const first = await loginPost(post(link.token), store, opts());
+    expect(first.status).toBe(303);
+    const c = cookieOf(first);
+    const get = await loginGet(new Request(link.url, { headers: { ...ipHeaders("200.1.1.1"), ...withCookie(c) } }), { ...opts(), store });
+    expect(get.status).toBe(303);
+    expect(get.headers.get("location")).toBe("https://portal.example.pe/portal");
+    const again = await loginPost(post(link.token, "200.1.1.1", withCookie(c)), store, opts());
+    expect(again.status).toBe(303);
+    expect(again.headers.get("location")).toBe("https://portal.example.pe/portal");
+    expect(again.headers.get("set-cookie")).toBeNull();
+    // sin la cookie (u otro navegador): como siempre
+    expect((await loginPost(post(link.token, "200.1.1.1"), store, opts())).status).toBe(401);
+    expect((await loginPost(post(link.token, "200.1.1.1", withCookie("cookie-falsa")), store, opts())).status).toBe(401);
+  });
+
+  it("un enlace nuevo con una sesión vigente: al portal sin gastarlo (sirve después)", async () => {
+    const first = await loginPost(post((await createLoginLink(store, frank, { env })).token), store, opts());
+    const link2 = await createLoginLink(store, frank, { env });
+    const get = await loginGet(new Request(link2.url, { headers: withCookie(cookieOf(first)) }), { ...opts(), store });
+    expect(get.status).toBe(303);
+    expect((await loginPost(post(link2.token), store, opts())).status).toBe(303);
   });
 });

@@ -342,6 +342,11 @@ export interface UserRepo {
   /** Un solo uso: si el token existe, no venció y no se usó, lo marca usado y devuelve el userId; si no, null. Atómico. */
   consumeLoginToken(tokenHash: string, now: Date): Promise<number | null>;
   createSession(session: { id: string; userId: number; expiresAt: Date }): Promise<PortalSession>;
+  /**
+   * Hotfix login: consume el enlace y crea la sesión en UNA operación confirmada antes de volver (Postgres: una transacción
+   * en una conexión reservada). userId, o null si el enlace no existe, venció o ya se usó (entonces no hay sesión).
+   */
+  consumeLoginTokenIntoSession(tokenHash: string, now: Date, session: { id: string; expiresAt: Date }): Promise<number | null>;
   /** null si no existe o venció. */
   getSession(id: string, now: Date): Promise<PortalSession | null>;
   deleteSession(id: string): Promise<void>;
@@ -899,6 +904,8 @@ export interface SurveyRepo {
 export interface RateLimitRepo {
   /** Suma 1 al contador de (bucket, ventana) de forma atómica y devuelve el total de esa ventana. */
   hitRateLimit(bucket: string, windowStart: Date): Promise<number>;
+  /** Hotfix login: resta el intento (una entrada que salió bien no cuenta como intento). Nunca baja de 0. */
+  refundRateLimit(bucket: string, windowStart: Date): Promise<void>;
   /** Borra las ventanas que empezaron antes de `before` (limpieza del cron). Devuelve cuántas. */
   pruneRateLimitHits(before: Date): Promise<number>;
 }

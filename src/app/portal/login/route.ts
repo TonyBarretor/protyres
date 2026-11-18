@@ -12,7 +12,7 @@ export const dynamic = "force-dynamic";
 const limits = { store: getPortalStore };
 
 export function GET(req: Request): Promise<Response> {
-  return loginGet(req, { limits });
+  return loginGet(req, { limits, store: getPortalStore });
 }
 
 export function POST(req: Request): Promise<Response> {

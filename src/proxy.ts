@@ -17,6 +17,8 @@ export async function proxy(request: NextRequest) {
   if (pathname.startsWith(`${SURVEY_PATH}/`)) return (await surveyGate(request, { store: proxyRateLimitStore })) ?? NextResponse.next();
   if (pathname === LOGIN_PATH || pathname.startsWith(`${LOGIN_PATH}/`)) return NextResponse.next();
   if (request.cookies.get(SESSION_COOKIE)?.value) return NextResponse.next();
+  // hotfix login (18/11): sin cookie (el navegador no la guardó o no la mandó): que quede en los registros
+  console.log(`[portal] ${pathname} sin cookie de sesión: a la entrada`);
   const url = request.nextUrl.clone();
   url.pathname = LOGIN_PATH;
   url.search = "";

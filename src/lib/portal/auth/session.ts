@@ -19,7 +19,10 @@ export { canEditCompany, canSeeAll } from "./permissions";
 export const getCurrentUser = cache(async (): Promise<PortalUser | null> => {
   const value = (await cookies()).get(SESSION_COOKIE)?.value;
   if (!value) return null;
-  return getSessionUser(await getPortalStore(), value);
+  const user = await getSessionUser(await getPortalStore(), value);
+  // hotfix login (18/11): la cookie llegó pero la sesión no está (o venció): que quede en los registros
+  if (!user) console.warn("[portal] cookie de sesión presente pero sin sesión vigente en la base: a la entrada");
+  return user;
 });
 
 /** Usuario de la sesión; sin sesión válida redirige a /portal/login. */

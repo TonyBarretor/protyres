@@ -52,6 +52,7 @@ export async function reservedBegin<T>(sql: Client, fn: (tx: postgres.Transactio
   const conn = await sql.reserve();
   let open = false;
   try {
+    await discardStaleTransaction(conn);
     await conn.unsafe(`begin ${mode.replace(/[^a-z ]/gi, "")}`);
     open = true;
     const tx = Object.assign(conn, {
@@ -73,6 +74,21 @@ export async function reservedBegin<T>(sql: Client, fn: (tx: postgres.Transactio
   } finally {
     conn.release();
   }
+}
+
+/**
+ * Hotfix login (18/11): una conexión que trae una transacción abierta de antes (un BEGIN sin COMMIT: el error del 16/11, o
+ * una función cortada a mitad de una transacción) se traga todo lo que se escriba por ella: nadie más lo ve y, cuando la
+ * conexión se cierra, se pierde. Con el login pasaba eso: la sesión creada no existía para la página siguiente y el enlace
+ * quedaba "ya usado" en esa conexión. Antes de cada transacción se mira (dentro de una transacción, now() es la hora de su
+ * inicio y no la de la sentencia); si la trae, se deshace y se registra. Lo que hubiera en ella ya estaba perdido.
+ */
+export async function discardStaleTransaction(conn: { unsafe(q: string): Promise<unknown> }, log: (m: string) => void = console.error): Promise<boolean> {
+  const [r] = (await conn.unsafe("select (now() <> statement_timestamp()) as stale")) as { stale: boolean }[];
+  if (!r?.stale) return false;
+  log("[pg] la conexión traía una transacción abierta de antes (sin COMMIT): se deshace antes de seguir");
+  await conn.unsafe("rollback");
+  return true;
 }
 
 /** Cliente `postgres` para los stores: opciones de arriba y `begin` seguro (reservedBegin). */

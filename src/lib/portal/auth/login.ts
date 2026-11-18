@@ -16,8 +16,8 @@ import { NextResponse } from "next/server";
 import type { PortalStore } from "../store/types";
 import { HOME_PATH, LOGIN_PATH, SESSION_COOKIE, safeNextPath } from "./constants";
 import { configErrorPage, confirmLoginPage, expiredLinkPage, forbiddenOriginPage, noSessionPage, payloadTooLargePage, tooManyAttemptsPage } from "./pages";
-import { checkRateLimit, clientIp, publicInputsConfig, retryText, type RateLimitDeps } from "./rate-limit";
-import { PortalAuthConfigError, createSession, destroySession, hasValidSignature, sessionCookie, verifyLoginToken, type AuthOptions } from "./tokens";
+import { checkRateLimit, clientIp, publicInputsConfig, refundRateLimit, retryText, type RateLimitDeps } from "./rate-limit";
+import { PortalAuthConfigError, destroySession, getSessionUser, hasValidSignature, loginWithToken, sessionCookie, type AuthOptions } from "./tokens";
 
 /**
  * Corrida E, punto 5. `limits`: límite de intentos por IP y por token (el route handler lo pasa siempre; sin él, p. ej. en
@@ -25,6 +25,29 @@ import { PortalAuthConfigError, createSession, destroySession, hasValidSignature
  */
 export interface LoginOptions extends AuthOptions {
   limits?: RateLimitDeps;
+  /**
+   * Hotfix login: el store para mirar si el navegador ya tiene una sesión vigente (GET: un enlace ya usado lleva al portal
+   * en vez de "Enlace vencido"). Sin él, el GET no la mira.
+   */
+  store?: PortalStore | (() => Promise<PortalStore>);
+}
+
+/** El usuario de la cookie de sesión de la petición, si la sesión sigue vigente (null si no, o si el store falla). */
+async function sessionUserOf(req: Request, store: PortalStore | (() => Promise<PortalStore>) | undefined, opts: AuthOptions): Promise<{ nombre: string } | null> {
+  const value = readCookie(req, SESSION_COOKIE);
+  if (!value || !store) return null;
+  try {
+    return await getSessionUser(typeof store === "function" ? await store() : store, value, opts);
+  } catch {
+    return null;
+  }
+}
+
+/** Ya hay sesión: al portal (o al destino `next` de la lista cerrada), sin gastar el enlace. */
+function toPortal(req: Request, next: string | null): Response {
+  const res = NextResponse.redirect(new URL(safeNextPath(next) ?? HOME_PATH, req.url), 303);
+  res.headers.set("cache-control", "no-store");
+  return res;
 }
 
 /** Forma de un token de enlace (base64url + "." + firma) y largo razonable: lo demás ni se cuenta ni se busca. */
@@ -52,9 +75,18 @@ export function loginGet(req: Request, opts: LoginOptions = {}): Promise<Respons
     const token = params.get("t");
     if (!token) return noSessionPage();
     if (!plausibleToken(token)) return expiredLinkPage();
-    const blocked = await limited(req, token, opts);
-    if (blocked) return blocked;
-    if (!hasValidSignature(token, opts.env ?? process.env)) return expiredLinkPage();
+    // hotfix login: abrir un enlace bien firmado no gasta nada ni cuenta como intento (la vista previa de WhatsApp y volver
+    // a abrirlo no deben bloquear a nadie); uno con la firma mala sí cuenta
+    if (!hasValidSignature(token, opts.env ?? process.env)) {
+      const blocked = await limited(req, token, opts);
+      return blocked ?? expiredLinkPage();
+    }
+    // ya hay sesión vigente en este navegador (p. ej. el enlace se abrió otra vez): directo al portal
+    const current = await sessionUserOf(req, opts.store, opts);
+    if (current) {
+      console.log(`[portal] enlace abierto con sesión vigente de ${current.nombre}: al portal`);
+      return toPortal(req, params.get("next"));
+    }
     if (opts.limits) console.log(`[portal] enlace de entrada abierto (GET, no se gasta): ${browserHint(req)}`);
     return confirmLoginPage(token, safeNextPath(params.get("next")));
   });
@@ -148,14 +180,26 @@ export function loginPost(req: Request, store: PortalStore | (() => Promise<Port
     if (blocked) return blocked;
     if (!hasValidSignature(token, opts.env ?? process.env)) return expiredLinkPage();
     const s = typeof store === "function" ? await store() : store;
-    const userId = await verifyLoginToken(s, token, opts);
-    const user = userId === null ? null : await s.getUser(userId);
-    if (!user || !user.activo) {
+    // hotfix login: consumo del enlace y sesión en una sola operación, confirmada antes de responder
+    const login = await loginWithToken(s, token, opts);
+    const user = login === null ? null : await s.getUser(login.userId);
+    if (!login || !user || !user.activo) {
+      if (login) await destroySession(s, login.session.cookieValue);
       await s.flush();
+      // el enlace ya se usó pero este navegador tiene una sesión vigente: al portal, no "Enlace vencido"
+      const current = await sessionUserOf(req, s, opts);
+      if (current) {
+        console.log(`[portal] enlace ya usado con sesión vigente de ${current.nombre}: al portal`);
+        return toPortal(req, sent.next);
+      }
       return expiredLinkPage();
     }
-    if (opts.limits) console.log(`[portal] entrada de ${user.nombre} (envío ${sent.via === "auto" ? "automático" : sent.via === "boton" ? "con el botón" : sent.via}): ${browserHint(req)}`);
-    const session = await createSession(s, user.id, opts);
+    if (opts.limits) {
+      console.log(`[portal] entrada de ${user.nombre} (envío ${sent.via === "auto" ? "automático" : sent.via === "boton" ? "con el botón" : sent.via}): ${browserHint(req)}`);
+      // una entrada que salió bien no cuenta como intento
+      await refundRateLimit({ ...opts.limits, now: opts.limits.now ?? opts.now }, "login", { ip: clientIp(req.headers), token });
+    }
+    const session = login.session;
     await s.flush(); // store JSON: que el consumo y la sesión queden escritos antes de responder
     // destino solo de la lista cerrada (rutas exactas del mismo sitio); otro valor entra al inicio
     const res = NextResponse.redirect(new URL(safeNextPath(sent.next) ?? HOME_PATH, req.url), 303);
