@@ -4,7 +4,7 @@ import { JsonStore } from "../../store/json-store";
 import { FakeWhatsAppClient } from "../../whatsapp/client";
 import { BotHandler } from "../../whatsapp/handler";
 import type { InboundMessage } from "../../whatsapp/webhook";
-import { verifyLoginToken } from "../auth/tokens";
+import { createSession, getSessionUser, loginWithToken, peekLoginLink } from "../auth/tokens";
 import { JsonPortalStore } from "../store";
 import { handlePortalCommand, NOT_REGISTERED, PORTAL_ROUTE_TIMEOUT_MS, routePortal } from ".";
 
@@ -45,16 +45,53 @@ beforeEach(async () => {
 });
 
 describe("bot command 'portal'", () => {
-  it("replies with a one-time link to a registered user (any case / accents)", async () => {
+  // hotfix login 2 (cambio pedido): el enlace ya no es de un solo uso; sirve 24 h y `portal` reenvía el vigente
+  const linkOf = (reply: string) => reply.match(/https:\/\/portal\.example\.pe\/portal\/login\?t=\S+/)?.[0] ?? "";
+  const tokenOf = (reply: string) => new URL(linkOf(reply)).searchParams.get("t")!;
+
+  it("replies with a reusable link to a registered user (any case / accents)", async () => {
     await bot.handle(text(FRANK, "Pórtal"));
     const reply = client.texts().at(-1) ?? "";
     expect(reply).toContain("Hola Frank");
-    expect(reply).toContain("15 min");
-    const url = reply.match(/https:\/\/portal\.example\.pe\/portal\/login\?t=\S+/)?.[0];
-    expect(url).toBeTruthy();
-    const token = new URL(url!).searchParams.get("t")!;
-    expect(await verifyLoginToken(portal, token)).toBeGreaterThan(0);
-    expect(await verifyLoginToken(portal, token)).toBeNull();
+    expect(reply).toContain("Sirve por 24 horas. Después de entrar, tu teléfono queda con la sesión abierta por 30 días.");
+    expect(linkOf(reply)).toBeTruthy();
+    const token = tokenOf(reply);
+    // entra, y vuelve a entrar con el mismo enlace (otro navegador, el teléfono después de cerrar el navegador)
+    expect((await loginWithToken(portal, token))?.userId).toBeGreaterThan(0);
+    expect((await loginWithToken(portal, token))?.userId).toBeGreaterThan(0);
+  });
+
+  it("'portal' three times in a row: the same link each time, and the three messages work", async () => {
+    for (let i = 0; i < 3; i++) await bot.handle(text(FRANK, "portal"));
+    const replies = client.texts().slice(-3);
+    const links = replies.map(linkOf);
+    expect(links[0]).toBeTruthy();
+    expect(new Set(links).size).toBe(1);
+    for (const r of replies) expect((await loginWithToken(portal, tokenOf(r)))?.userId).toBeGreaterThan(0);
+  });
+
+  it("'cerrar portal' closes every session and voids the links; 'portal' then gives a new link", async () => {
+    await bot.handle(text(FRANK, "portal"));
+    const token = tokenOf(client.texts().at(-1) ?? "");
+    const frank = (await portal.getUserByWhatsapp(FRANK))!;
+    const a = await loginWithToken(portal, token);
+    const b = await createSession(portal, frank.id);
+    await bot.handle(text(FRANK, "Cerrar portal"));
+    expect(client.texts().at(-1)).toContain("cerré tu portal en todos los teléfonos (2 sesiones abiertas)");
+    expect(await getSessionUser(portal, a!.session.cookieValue)).toBeNull();
+    expect(await getSessionUser(portal, b.cookieValue)).toBeNull();
+    expect(await peekLoginLink(portal, token)).toBeNull();
+    expect(await loginWithToken(portal, token)).toBeNull();
+    await bot.handle(text(FRANK, "portal"));
+    const fresh = tokenOf(client.texts().at(-1) ?? "");
+    expect(fresh).not.toBe(token);
+    expect((await loginWithToken(portal, fresh))?.userId).toBe(frank.id);
+  });
+
+  it("'cerrar portal' from a number that is not in the portal goes to the quoter (not handled)", async () => {
+    const replies: string[] = [];
+    expect(await handlePortalCommand({ from: STRANGER, text: "cerrar portal", reply: async (b) => void replies.push(b), store: portal })).toBe(false);
+    expect(replies).toEqual([]);
   });
 
   it("rejects a number that is not registered", async () => {

@@ -323,6 +323,18 @@ export interface LoginToken {
   tokenHash: string;
   userId: number;
   expiresAt: Date;
+  /**
+   * Hotfix login 2: con él se vuelve a armar el mismo enlace (token = HMAC(PORTAL_SESSION_SECRET, nonce)) para que `portal`
+   * lo reenvíe en vez de crear otro. Los enlaces de antes no lo tienen.
+   */
+  nonce?: string | null;
+}
+
+/** El enlace vigente de un usuario que se puede reenviar (hotfix login 2). */
+export interface CurrentLoginToken {
+  tokenHash: string;
+  nonce: string;
+  expiresAt: Date;
 }
 
 export interface PortalSession {
@@ -339,17 +351,31 @@ export interface UserRepo {
   getUserByWhatsapp(whatsapp: string): Promise<PortalUser | null>;
   listUsers(): Promise<PortalUser[]>;
   saveLoginToken(token: LoginToken): Promise<void>;
-  /** Un solo uso: si el token existe, no venció y no se usó, lo marca usado y devuelve el userId; si no, null. Atómico. */
+  /**
+   * Un solo uso: si el token existe, no venció y no se usó, lo marca usado y devuelve el userId; si no, null. Atómico.
+   * (Primitiva de antes; desde el hotfix login 2 la entrada usa useLoginTokenIntoSession, reutilizable.)
+   */
   consumeLoginToken(tokenHash: string, now: Date): Promise<number | null>;
+  /** Hotfix login 2: el enlace más reciente del usuario, vigente y que se puede reenviar (con nonce); null si no hay. */
+  currentLoginToken(userId: number, now: Date): Promise<CurrentLoginToken | null>;
+  /** Hotfix login 2: alarga el vencimiento del enlace hasta `expiresAt` (nunca lo acorta). */
+  extendLoginToken(tokenHash: string, expiresAt: Date): Promise<void>;
+  /** Hotfix login 2: userId si el enlace existe y no venció (ni anulado); null si no. No lo gasta ni lo marca. */
+  peekLoginToken(tokenHash: string, now: Date): Promise<number | null>;
   createSession(session: { id: string; userId: number; expiresAt: Date }): Promise<PortalSession>;
   /**
-   * Hotfix login: consume el enlace y crea la sesión en UNA operación confirmada antes de volver (Postgres: una transacción
-   * en una conexión reservada). userId, o null si el enlace no existe, venció o ya se usó (entonces no hay sesión).
+   * Entrada con el enlace: si existe y no venció (hotfix login 2: sirve las veces que haga falta hasta vencer; la primera
+   * deja `used_at`), crea la sesión. En UNA operación confirmada antes de volver (Postgres: una transacción en una conexión
+   * reservada). userId, o null si el enlace no existe, venció o fue anulado (entonces no hay sesión).
    */
-  consumeLoginTokenIntoSession(tokenHash: string, now: Date, session: { id: string; expiresAt: Date }): Promise<number | null>;
+  useLoginTokenIntoSession(tokenHash: string, now: Date, session: { id: string; expiresAt: Date }): Promise<number | null>;
   /** null si no existe o venció. */
   getSession(id: string, now: Date): Promise<PortalSession | null>;
+  /** Hotfix login 2: alarga la sesión hasta `expiresAt` (con el uso; nunca la acorta). */
+  renewSession(id: string, expiresAt: Date): Promise<void>;
   deleteSession(id: string): Promise<void>;
+  /** Hotfix login 2 (`cerrar portal`): borra todas las sesiones del usuario y anula sus enlaces vigentes. Cuántos. */
+  revokeUserAccess(userId: number, now: Date): Promise<{ sessions: number; links: number }>;
 }
 
 // ── CRM ──
@@ -904,8 +930,6 @@ export interface SurveyRepo {
 export interface RateLimitRepo {
   /** Suma 1 al contador de (bucket, ventana) de forma atómica y devuelve el total de esa ventana. */
   hitRateLimit(bucket: string, windowStart: Date): Promise<number>;
-  /** Hotfix login: resta el intento (una entrada que salió bien no cuenta como intento). Nunca baja de 0. */
-  refundRateLimit(bucket: string, windowStart: Date): Promise<void>;
   /** Borra las ventanas que empezaron antes de `before` (limpieza del cron). Devuelve cuántas. */
   pruneRateLimitHits(before: Date): Promise<number>;
 }

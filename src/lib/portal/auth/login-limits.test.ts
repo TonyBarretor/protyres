@@ -7,7 +7,7 @@ import { loadPortalConfig } from "../config";
 import { JsonPortalStore, __setPortalStoreForTests } from "../store";
 import type { PortalStore, PortalUser } from "../store/types";
 import { loginGet, loginPost } from "./login";
-import { createLoginLink } from "./tokens";
+import { createLoginLink, revokeAccess } from "./tokens";
 import { GET as routeGet, POST as routePost } from "@/app/portal/login/route";
 
 const env = { PORTAL_SESSION_SECRET: "test-secret-0123456789abcdef", PORTAL_BASE_URL: "https://portal.example.pe" };
@@ -57,11 +57,12 @@ describe("/portal/login: límite de intentos", () => {
     expect((await loginPost(post("basura.firma", "200.9.9.9"), store, opts())).status).toBe(401);
   });
 
-  // hotfix login (18/11): abrir un enlace bien firmado (GET) ya no cuenta (la vista previa de WhatsApp y volver a abrirlo
-  // bloqueaban a usuarios legítimos: "Demasiados intentos"); el límite por token sigue para los POST que fallan
-  it("por token: el mismo enlace ya usado, enviado desde muchas IPs, se bloquea al pasar perToken", async () => {
+  // hotfix login 2 (cambio pedido): un enlace vigente sirve las veces que haga falta y no cuenta; el límite por token es
+  // para los enlaces que no sirven (vencidos o anulados), enviados desde muchas IPs
+  it("por token: un enlace anulado, enviado desde muchas IPs, se bloquea al pasar perToken", async () => {
     const link = await createLoginLink(store, frank, { env });
-    expect((await loginPost(post(link.token, "201.0.0.250"), store, opts())).status).toBe(303);
+    for (let i = 0; i < 3; i++) expect((await loginPost(post(link.token, "201.0.0.250"), store, opts())).status).toBe(303);
+    await revokeAccess(store, frank.id);
     for (let i = 0; i < rule.perToken!; i++) expect((await loginPost(post(link.token, `201.0.0.${i}`), store, opts())).status).toBe(401);
     expect((await loginPost(post(link.token, "201.0.1.1"), store, opts())).status).toBe(429);
   });
@@ -124,12 +125,12 @@ describe("route handler /portal/login usa el límite", () => {
   });
 });
 
-describe("hotfix login (18/11): un usuario legítimo no queda bloqueado", () => {
+describe("hotfix login: un usuario legítimo no queda bloqueado", () => {
   it("pide 4 enlaces seguidos, abre cada uno dos veces (vista previa + él) y entra con cada uno: nunca 429", async () => {
     for (let round = 0; round < 3; round++)
       for (let i = 0; i < 4; i++) {
         const link = await createLoginLink(store, frank, { env });
-        for (let k = 0; k < 2; k++) expect((await loginGet(new Request(link.url, { headers: ipHeaders("190.5.5.5") }), opts())).status).toBe(200);
+        for (let k = 0; k < 2; k++) expect((await loginGet(new Request(link.url, { headers: ipHeaders("190.5.5.5") }), { ...opts(), store })).status).toBe(200);
         expect((await loginPost(post(link.token, "190.5.5.5"), store, opts())).status).toBe(303);
       }
   });
@@ -143,13 +144,32 @@ describe("hotfix login (18/11): un usuario legítimo no queda bloqueado", () => 
     expect((await loginPost(post("basura.otra", "190.6.6.6"), store, opts())).status).toBe(401);
     expect((await loginPost(post("basura.mas", "190.6.6.6"), store, opts())).status).toBe(429);
   });
+
+  it("el mismo enlace tocado 10 veces (GET + POST, sin cookie: navegador cerrado) entra las 10; nada cuenta", async () => {
+    const link = await createLoginLink(store, frank, { env });
+    for (let i = 0; i < 10; i++) {
+      expect((await loginGet(new Request(link.url, { headers: ipHeaders("190.7.7.7") }), { ...opts(), store })).status).toBe(200);
+      expect((await loginPost(post(link.token, "190.7.7.7"), store, opts())).status).toBe(303);
+    }
+  });
+
+  it("un enlace vencido tocado 6 veces sin sesión: la entrada con el botón cada vez, nunca «Demasiados intentos»", async () => {
+    const link = await createLoginLink(store, frank, { env, now: new Date(Date.now() - 25 * 3_600_000) });
+    expect(rule.perToken!).toBeGreaterThanOrEqual(12);
+    for (let i = 0; i < 6; i++) {
+      const get = await loginGet(new Request(link.url, { headers: ipHeaders("190.8.8.8") }), { ...opts(), store });
+      expect(get.status).toBe(401);
+      expect(await get.text()).toContain("Este enlace ya venció");
+      expect((await loginPost(post(link.token, "190.8.8.8"), store, opts())).status).toBe(401);
+    }
+  });
 });
 
-describe("hotfix login (18/11): enlace ya usado con una sesión vigente", () => {
+describe("hotfix login 2: con sesión vigente, cualquier enlace entra", () => {
   const cookieOf = (res: Response) => (res.headers.get("set-cookie") ?? "").match(/portal_session=([^;]+)/)?.[1] ?? "";
   const withCookie = (c: string) => ({ cookie: `portal_session=${c}` });
 
-  it("GET y POST del enlace ya usado llevan al portal (sin gastar nada); sin sesión, «Enlace vencido»", async () => {
+  it("GET y POST del enlace ya usado con la cookie: al portal sin crear otra sesión; sin cookie, el enlace vuelve a entrar", async () => {
     const link = await createLoginLink(store, frank, { env });
     const first = await loginPost(post(link.token), store, opts());
     expect(first.status).toBe(303);
@@ -161,16 +181,61 @@ describe("hotfix login (18/11): enlace ya usado con una sesión vigente", () => 
     expect(again.status).toBe(303);
     expect(again.headers.get("location")).toBe("https://portal.example.pe/portal");
     expect(again.headers.get("set-cookie")).toBeNull();
-    // sin la cookie (u otro navegador): como siempre
-    expect((await loginPost(post(link.token, "200.1.1.1"), store, opts())).status).toBe(401);
-    expect((await loginPost(post(link.token, "200.1.1.1", withCookie("cookie-falsa")), store, opts())).status).toBe(401);
+    // sin la cookie (otro navegador, o el mismo después de cerrarlo): el enlace sigue sirviendo
+    const other = await loginPost(post(link.token, "200.1.1.1"), store, opts());
+    expect(other.status).toBe(303);
+    expect(cookieOf(other)).not.toBe("");
+    // una cookie que no es de una sesión vigente no cuenta como sesión: el enlace decide
+    expect((await loginPost(post(link.token, "200.1.1.1", withCookie("cookie-falsa")), store, opts())).status).toBe(303);
   });
 
-  it("un enlace nuevo con una sesión vigente: al portal sin gastarlo (sirve después)", async () => {
-    const first = await loginPost(post((await createLoginLink(store, frank, { env })).token), store, opts());
-    const link2 = await createLoginLink(store, frank, { env });
-    const get = await loginGet(new Request(link2.url, { headers: withCookie(cookieOf(first)) }), { ...opts(), store });
-    expect(get.status).toBe(303);
-    expect((await loginPost(post(link2.token), store, opts())).status).toBe(303);
+  it("vencido, anulado, inexistente, con firma mala o sin token: al portal, sin gastar nada ni contar (más veces que el límite)", async () => {
+    const c = cookieOf(await loginPost(post((await createLoginLink(store, frank, { env })).token), store, opts()));
+    const expired = await createLoginLink(store, frank, { env, now: new Date(Date.now() - 25 * 3_600_000) });
+    const tokens = [`?t=${encodeURIComponent(expired.token)}`, "?t=basura.firma", `?t=${"a".repeat(200)}`, "", `?t=${encodeURIComponent(expired.token)}&next=%2Fportal%2Fvalidar-ranking`];
+    for (let i = 0; i <= rule.perIp; i++)
+      for (const q of tokens) {
+        const res = await loginGet(new Request(`${BASE}${q}`, { headers: { ...ipHeaders("200.3.3.3"), ...withCookie(c) } }), { ...opts(), store });
+        expect(res.status, q).toBe(303);
+        expect(res.headers.get("location"), q).toBe(q.includes("next=") ? "https://portal.example.pe/portal/validar-ranking" : "https://portal.example.pe/portal");
+      }
+    const post303 = await loginPost(post(expired.token, "200.3.3.3", withCookie(c)), store, opts());
+    expect(post303.status).toBe(303);
+    // y nada de eso contó: desde esa IP, sin cookie, el primer intento fallido no es 429
+    expect((await loginPost(post("basura.firma", "200.3.3.3"), store, opts())).status).toBe(401);
+  });
+
+  it("la vista previa de WhatsApp (GET sin cookie, muchas veces) no gasta, no invalida ni cuenta", async () => {
+    const link = await createLoginLink(store, frank, { env });
+    const { store: s, calls } = countingStore(store);
+    for (let i = 0; i <= rule.perIp; i++) expect((await loginGet(new Request(link.url, { headers: { ...ipHeaders("200.4.4.4"), "user-agent": "WhatsApp/2.24" } }), { ...opts(s), store: s })).status).toBe(200);
+    expect(calls.filter((c) => c !== "peekLoginToken")).toEqual([]);
+    expect((await loginPost(post(link.token, "200.4.4.4"), store, opts())).status).toBe(303);
+  });
+});
+
+describe("hotfix login 2: sin sesión, la entrada con el botón para pedir el enlace", () => {
+  const envBot = { ...env, PORTAL_BOT_WHATSAPP: "51 999 888 777" };
+
+  it("sin token y con un enlace vencido: botón «Pedir enlace por WhatsApp» al chat del bot con portal escrito", async () => {
+    const expired = await createLoginLink(store, frank, { env, now: new Date(Date.now() - 25 * 3_600_000) });
+    for (const url of [BASE, expired.url]) {
+      const html = await (await loginGet(new Request(url), { env: envBot, store })).text();
+      expect(html).toContain('<a class="btn" href="https://wa.me/51999888777?text=portal"');
+      expect(html).toContain("Pedir enlace por WhatsApp");
+      expect(html).toContain("Se abre el chat del bot con la palabra <b>portal</b> ya escrita");
+      expect(html).toContain("El enlace sirve por 24 horas. Después de entrar, tu teléfono queda con la sesión abierta por 30 días.");
+    }
+    // también la de «Demasiados intentos»
+    let last: Response | null = null;
+    for (let i = 0; i <= rule.perIp; i++) last = await loginPost(post(`basura${i}.firma`, "200.5.5.5"), store, { ...opts(), env: envBot });
+    expect(last!.status).toBe(429);
+    expect(await last!.text()).toContain("https://wa.me/51999888777?text=portal");
+  });
+
+  it("sin número del bot configurado: la instrucción escrita (sin botón roto)", async () => {
+    const html = await (await loginGet(new Request(BASE), { env, store })).text();
+    expect(html).not.toContain("wa.me");
+    expect(html).toContain("Escribe <b>portal</b> al bot de WhatsApp");
   });
 });

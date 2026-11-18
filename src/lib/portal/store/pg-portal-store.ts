@@ -34,6 +34,7 @@ import type {
   FleetVehicle,
   FleetVehicleInput,
   IsoDate,
+  CurrentLoginToken,
   LoginToken,
   MarcaCount,
   Opportunity,
@@ -321,9 +322,6 @@ export class PgPortalStore implements PortalStore {
     return Number(r.hits);
   }
 
-  async refundRateLimit(bucket: string, windowStart: Date): Promise<void> {
-    await this.sql`update rate_limit_hits set hits = greatest(hits - 1, 0), updated_at = now() where bucket = ${bucket} and window_start = ${windowStart}`;
-  }
 
   async pruneRateLimitHits(before: Date): Promise<number> {
     const r = await this.sql`delete from rate_limit_hits where window_start < ${before}`;
@@ -884,7 +882,7 @@ export class PgPortalStore implements PortalStore {
 
   async saveLoginToken(token: LoginToken): Promise<void> {
     await this.sql`
-      insert into login_tokens (token_hash, user_id, expires_at) values (${token.tokenHash}, ${token.userId}, ${token.expiresAt})
+      insert into login_tokens (token_hash, user_id, expires_at, nonce) values (${token.tokenHash}, ${token.userId}, ${token.expiresAt}, ${token.nonce ?? null})
       on conflict (token_hash) do nothing`;
   }
 
@@ -904,11 +902,28 @@ export class PgPortalStore implements PortalStore {
     return toSession(r);
   }
 
-  consumeLoginTokenIntoSession(tokenHash: string, now: Date, session: { id: string; expiresAt: Date }): Promise<number | null> {
+  async currentLoginToken(userId: number, now: Date): Promise<CurrentLoginToken | null> {
+    const [r] = await this.sql`
+      select token_hash, nonce, expires_at from login_tokens
+      where user_id = ${userId} and nonce is not null and expires_at > ${now}
+      order by created_at desc, expires_at desc limit 1`;
+    return r ? { tokenHash: String(r.token_hash), nonce: String(r.nonce), expiresAt: new Date(r.expires_at as string) } : null;
+  }
+
+  async extendLoginToken(tokenHash: string, expiresAt: Date): Promise<void> {
+    await this.sql`update login_tokens set expires_at = ${expiresAt} where token_hash = ${tokenHash} and expires_at < ${expiresAt}`;
+  }
+
+  async peekLoginToken(tokenHash: string, now: Date): Promise<number | null> {
+    const [r] = await this.sql`select user_id from login_tokens where token_hash = ${tokenHash} and expires_at > ${now}`;
+    return r ? Number(r.user_id) : null;
+  }
+
+  useLoginTokenIntoSession(tokenHash: string, now: Date, session: { id: string; expiresAt: Date }): Promise<number | null> {
     return this.sql.begin(async (tx) => {
       const [t] = await tx`
-        update login_tokens set used_at = ${now}
-        where token_hash = ${tokenHash} and used_at is null and expires_at > ${now}
+        update login_tokens set used_at = coalesce(used_at, ${now})
+        where token_hash = ${tokenHash} and expires_at > ${now}
         returning user_id`;
       if (!t) return null;
       await tx`
@@ -923,8 +938,20 @@ export class PgPortalStore implements PortalStore {
     return r ? toSession(r) : null;
   }
 
+  async renewSession(id: string, expiresAt: Date): Promise<void> {
+    await this.sql`update portal_sessions set expires_at = ${expiresAt} where id = ${id} and expires_at < ${expiresAt}`;
+  }
+
   async deleteSession(id: string): Promise<void> {
     await this.sql`delete from portal_sessions where id = ${id}`;
+  }
+
+  revokeUserAccess(userId: number, now: Date): Promise<{ sessions: number; links: number }> {
+    return this.sql.begin(async (tx) => {
+      const sessions = await tx`delete from portal_sessions where user_id = ${userId} returning id`;
+      const links = await tx`update login_tokens set expires_at = ${now} where user_id = ${userId} and expires_at > ${now} returning token_hash`;
+      return { sessions: sessions.length, links: links.length };
+    }) as Promise<{ sessions: number; links: number }>;
   }
 
   // ── contactos ──

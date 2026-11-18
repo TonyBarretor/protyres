@@ -514,6 +514,11 @@ export const STATEMENTS = [
   )`,
   `create index if not exists stock_deductions_order_idx on stock_deductions (order_key)`,
   `create index if not exists stock_deductions_active_idx on stock_deductions (row_id) where released_at is null`,
+  // Hotfix login 2: enlace de entrada reutilizable 24 h. `nonce` deja volver a armar el MISMO enlace (el token es
+  // HMAC(PORTAL_SESSION_SECRET, nonce): sin el secreto, la base sola no da el enlace) para que `portal` lo reenvíe en vez
+  // de crear otro; los enlaces viejos (sin nonce) siguen valiendo hasta su vencimiento. Índice para buscar el vigente.
+  `alter table login_tokens add column if not exists nonce text`,
+  `create index if not exists login_tokens_user_idx on login_tokens (user_id, expires_at)`,
 ];
 
 /** Desde aquí empiezan las sentencias del portal: antes de ejecutarlas se pasa la guardia (migrate-guard.ts). */

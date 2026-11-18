@@ -5,10 +5,13 @@
 /** Cookie de sesión (httpOnly). Su valor es el id de sesión; en el store se guarda solo su sha256. */
 export const SESSION_COOKIE = "portal_session";
 
-/** Vigencia del enlace que manda el bot (un solo uso). */
-export const LOGIN_TOKEN_TTL_MS = 15 * 60 * 1000;
+/**
+ * Vigencia del enlace que manda el bot, por defecto (hotfix login 2: sirve todas las veces que haga falta en ese plazo).
+ * El valor en uso es config/portal.json → access.linkHours (auth/access.ts).
+ */
+export const LOGIN_TOKEN_TTL_MS = 24 * 60 * 60 * 1000;
 
-/** Vigencia de la sesión (cookie y fila en el store). */
+/** Vigencia de la sesión por defecto (se renueva con cada visita); la en uso es access.sessionDays (auth/access.ts). */
 export const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
 /** Ruta pública del portal: con ?t=... entra; sin token muestra cómo pedir el enlace. */

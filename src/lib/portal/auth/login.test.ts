@@ -28,7 +28,7 @@ describe("/portal/login", () => {
     expect(await res.text()).toContain("portal");
   });
 
-  it("GET with a valid link does not consume it; POST logs in, sets the cookie and redirects to /portal", async () => {
+  it("GET with a valid link does not use it; POST logs in, sets the cookie and redirects to /portal (and again later)", async () => {
     const link = await createLoginLink(store, frank, { env });
     const page = await loginGet(new Request(link.url), { env });
     expect(page.status).toBe(200);
@@ -44,10 +44,10 @@ describe("/portal/login", () => {
     const value = decodeURIComponent(setCookie.split(";")[0].split("=")[1]);
     expect((await getSessionUser(store, value))?.id).toBe(frank.id);
 
-    // second use: expired page
+    // hotfix login 2 (cambio pedido): el enlace sirve otra vez (otro navegador, o el mismo después de cerrarlo)
     const again = await loginPost(post(link.token), store, { env });
-    expect(again.status).toBe(401);
-    expect(await again.text()).toContain("Enlace vencido o ya usado");
+    expect(again.status).toBe(303);
+    expect(again.headers.get("set-cookie") ?? "").toContain(`${SESSION_COOKIE}=`);
 
     // logout removes the session and clears the cookie
     const out = await logout(new Request("https://portal.example.pe/api/portal/logout", { method: "POST", headers: { cookie: `${SESSION_COOKIE}=${encodeURIComponent(value)}` } }), store);

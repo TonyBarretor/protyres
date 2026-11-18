@@ -45,18 +45,40 @@ const PORTAL_PAGE_CSS = [
   "p{margin:0 0 .75rem;color:var(--muted)}p b{color:var(--ink)}",
   ".btn{display:block;width:100%;min-height:3.25rem;margin:1rem 0 .75rem;border:0;border-radius:10px;background:var(--accent);color:var(--accent-ink);font:inherit;font-size:1.1rem;font-weight:700;cursor:pointer;-webkit-appearance:none;appearance:none}",
   ".btn:active{filter:brightness(.92)}",
+  "a.btn{display:flex;align-items:center;justify-content:center;gap:.5rem;text-decoration:none;text-align:center;padding:0 1rem}",
   ".small{font-size:.85rem}",
 ].join("");
 
 const ASK_AGAIN = "Escribe <b>portal</b> al bot de WhatsApp para pedir otro.";
 
-/** Sin token: pantalla pública "Sin sesión". */
-export function noSessionPage(): Response {
-  return portalPage("Portal", `<h1>Portal 360 Tyres</h1><p>No has iniciado sesión. Escribe <b>portal</b> al bot de WhatsApp y te mandará un enlace para entrar (válido 15 minutos, un solo uso).</p>`);
+/**
+ * Hotfix login 2, punto 5: lo que necesitan las pantallas sin sesión. `chatUrl` = chat del bot con `portal` ya escrito
+ * (wa.me; null si no está configurado el número); los plazos en texto ("24 horas", "30 días").
+ */
+export interface AccessHelp {
+  chatUrl: string | null;
+  linkText: string;
+  sessionText: string;
 }
 
-export function expiredLinkPage(): Response {
-  return portalPage("Enlace vencido", `<h1>Enlace vencido o ya usado</h1><p>${ASK_AGAIN}</p>`, 401);
+const DEFAULT_HELP: AccessHelp = { chatUrl: null, linkText: "24 horas", sessionText: "30 días" };
+
+/** Botón grande al chat del bot y la línea que lo explica (sin número configurado: la instrucción escrita). */
+function askLinkBlock(help: AccessHelp): string {
+  const terms = `<p class="small">El enlace sirve por ${esc(help.linkText)}. Después de entrar, tu teléfono queda con la sesión abierta por ${esc(help.sessionText)}.</p>`;
+  if (!help.chatUrl) return `<p>Escribe <b>portal</b> al bot de WhatsApp y te responde con tu enlace para entrar.</p>${terms}`;
+  return `<a class="btn" href="${esc(help.chatUrl)}" rel="noopener">Pedir enlace por WhatsApp</a>
+<p>Se abre el chat del bot con la palabra <b>portal</b> ya escrita: envíala y el bot te responde con tu enlace.</p>${terms}`;
+}
+
+/** Sin sesión y sin enlace (también /portal sin sesión): la entrada con el botón para pedir el enlace. */
+export function noSessionPage(help: AccessHelp = DEFAULT_HELP): Response {
+  return portalPage("Entrar al portal", `<h1>Entra al portal</h1><p>Para entrar necesitas tu enlace personal del bot.</p>${askLinkBlock(help)}`);
+}
+
+/** Sin sesión y con un enlace que ya no sirve (vencido, anulado o mal copiado): la misma entrada con el botón. */
+export function expiredLinkPage(help: AccessHelp = DEFAULT_HELP): Response {
+  return portalPage("Enlace vencido", `<h1>Este enlace ya venció</h1><p>Pide uno nuevo: es un momento.</p>${askLinkBlock(help)}`, 401);
 }
 
 /** POST con cabecera Origin de otro sitio (posible CSRF de inicio de sesión). */
@@ -74,8 +96,8 @@ export function configErrorPage(message: string): Response {
 }
 
 /**
- * Envío automático del formulario de confirmación: UNA sola vez, al terminar de cargar (un segundo envío con el primero en
- * camino gastaría el token y mostraría "Enlace vencido"). Marca `via=auto` para el registro del servidor (así se ve en los
+ * Envío automático del formulario de confirmación: UNA sola vez, al terminar de cargar (un segundo envío crearía otra
+ * sesión de más). Marca `via=auto` para el registro del servidor (así se ve en los
  * registros si el navegador de WhatsApp lo ejecutó o el usuario pulsó). Al volver atrás (página restaurada de la caché)
  * no se reenvía. Si el navegador no lo ejecuta, queda el botón.
  */
@@ -88,17 +110,17 @@ const AUTO_SUBMIT = [
 ].join("");
 
 /**
- * Paso intermedio del GET: el token se consume solo con POST, para que la vista previa de WhatsApp, un visor de enlaces o
- * un antivirus que abra la URL no lo gaste. El formulario se envía solo (JS, ver AUTO_SUBMIT) y el botón grande queda
- * por si el navegador interno de WhatsApp no ejecuta el envío automático.
+ * Paso intermedio del GET: la sesión se crea solo con POST, para que la vista previa de WhatsApp, un visor de enlaces o
+ * un antivirus que abra la URL no entre por el usuario. El formulario se envía solo (JS, ver AUTO_SUBMIT) y el botón
+ * grande queda por si el navegador interno de WhatsApp no ejecuta el envío automático.
  */
 /** `next`: pantalla a la que entra (ya validada con safeNextPath; null = el inicio). */
-export function confirmLoginPage(token: string, next: string | null = null): Response {
+export function confirmLoginPage(token: string, next: string | null = null, help: AccessHelp = DEFAULT_HELP): Response {
   const nextField = next ? `<input type="hidden" name="next" value="${esc(next)}">` : "";
   return portalPage(
     "Entrar al portal",
     `<h1>Entrar al portal</h1>
-<p>Tu enlace personal está listo. Pulsa el botón para entrar (es de un solo uso y vence en 15 minutos).</p>
+<p>Tu enlace personal está listo. Pulsa el botón para entrar (el enlace sirve por ${esc(help.linkText)}).</p>
 <form method="post" id="f"><input type="hidden" name="t" value="${esc(token)}">${nextField}<input type="hidden" name="via" value="boton"><button class="btn" type="submit">Entrar al portal</button></form>
 <p class="small" id="st" aria-live="polite"></p>`,
     200,
@@ -106,11 +128,11 @@ export function confirmLoginPage(token: string, next: string | null = null): Res
   );
 }
 
-/** Límite de intentos superado (corrida E, punto 5): 429 con Retry-After. */
-export function tooManyAttemptsPage(retryAfterSec: number, minutesText: string): Response {
+/** Límite de intentos superado (corrida E, punto 5): 429 con Retry-After, y el botón para pedir un enlace nuevo. */
+export function tooManyAttemptsPage(retryAfterSec: number, minutesText: string, help: AccessHelp = DEFAULT_HELP): Response {
   return portalPage(
     "Demasiados intentos",
-    `<h1>Demasiados intentos</h1><p>Espera unos ${esc(minutesText)} y vuelve a intentarlo. Si el problema sigue, escribe <b>portal</b> al bot de WhatsApp.</p>`,
+    `<h1>Demasiados intentos</h1><p>Hubo muchos intentos con enlaces que ya no sirven. Espera unos ${esc(minutesText)}, o pide un enlace nuevo.</p>${askLinkBlock(help)}`,
     429,
     { extraHeaders: { "retry-after": String(retryAfterSec) } },
   );

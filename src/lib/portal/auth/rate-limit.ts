@@ -88,26 +88,6 @@ export async function checkRateLimit(deps: RateLimitDeps, scope: RateScope, who:
   }
 }
 
-/**
- * Hotfix login: devuelve el intento que contó checkRateLimit (una entrada que salió bien no es un intento fallido). Si el
- * store falla, se registra y sigue.
- */
-export async function refundRateLimit(deps: RateLimitDeps, scope: RateScope, who: { ip: string; token?: string | null }): Promise<void> {
-  const cfg = deps.config ?? publicInputsConfig();
-  const rule = cfg.rateLimits[scope];
-  const env = deps.env ?? process.env;
-  const ws = windowStartOf(deps.now ?? new Date(), rule.windowMinutes * 60_000);
-  const buckets = [`${scope}:ip:${hashBucketPart("ip", who.ip, env)}`];
-  if (who.token && rule.perToken) buckets.push(`${scope}:tk:${hashBucketPart("token", who.token, env)}`);
-  try {
-    const store = typeof deps.store === "function" ? await deps.store() : deps.store;
-    if (!("refundRateLimit" in store)) return;
-    for (const b of buckets) await (store as Pick<PortalStore, "refundRateLimit">).refundRateLimit(b, ws);
-  } catch (err) {
-    (deps.log ?? console.warn)(`[rate-limit] ${scope}: no se pudo devolver el intento (${err instanceof Error ? err.message : String(err)})`);
-  }
-}
-
 let proxyLocal: JsonPortalStore | null = null;
 
 /**

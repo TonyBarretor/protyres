@@ -102,9 +102,9 @@
     "validacion": { "total": 20, "porNivel": { "A": 7, "B": 7, "C": 6 } }
   },
   "publicInputs": {
-    "_comment": "Corrida E, punto 5 — entradas públicas. Límite de intentos por ventana fija de windowMinutes, contado por IP (sha256 con PORTAL_SESSION_SECRET, nunca en claro) y por token del enlace, en la tabla rate_limit_hits (vale entre instancias de Vercel). Al pasarse: 429 con una página breve. login: cada entrada real son 2 intentos (abrir el enlace + el envío automático), así que 20 por IP en 15 min dejan ~10 entradas desde una misma oficina; 6 por token cubren la vista previa de WhatsApp y un reintento (el token es de un solo uso). surveyView/surveySubmit: un cliente abre, envía y vuelve a ver (~3-4 visitas), 20 vistas y 5 envíos por enlace en 1 h sobran (los errores de validación reenvían); 60 vistas y 30 envíos por IP permiten varios contactos de una empresa tras la misma red. cron: Vercel lo llama una vez al día; 10 por IP por hora frenan a quien adivine CRON_SECRET. maxTokenChars: los tokens reales miden 43 (encuesta) y 87 (login).",
+    "_comment": "Corrida E, punto 5 — entradas públicas. Límite de intentos por ventana fija de windowMinutes, contado por IP (sha256 con PORTAL_SESSION_SECRET, nunca en claro) y por token del enlace, en la tabla rate_limit_hits (vale entre instancias de Vercel). Al pasarse: 429 con una página breve. login (hotfix login 2): solo cuentan los enlaces que no sirven (firma mala, vencidos, anulados); abrir un enlace vigente o entrar con sesión no cuenta. 20 por token: tocar cinco o seis veces un enlace vencido no bloquea a nadie; 30 por IP dejan varias personas de una oficina con enlaces viejos. surveyView/surveySubmit: un cliente abre, envía y vuelve a ver (~3-4 visitas), 20 vistas y 5 envíos por enlace en 1 h sobran (los errores de validación reenvían); 60 vistas y 30 envíos por IP permiten varios contactos de una empresa tras la misma red. cron: Vercel lo llama una vez al día; 10 por IP por hora frenan a quien adivine CRON_SECRET. maxTokenChars: los tokens reales miden 43 (encuesta) y 87 (login).",
     "rateLimits": {
-      "login": { "windowMinutes": 15, "perIp": 20, "perToken": 6 },
+      "login": { "windowMinutes": 15, "perIp": 30, "perToken": 20 },
       "surveyView": { "windowMinutes": 60, "perIp": 60, "perToken": 20 },
       "surveySubmit": { "windowMinutes": 60, "perIp": 30, "perToken": 5 },
       "cron": { "windowMinutes": 60, "perIp": 10 }
@@ -114,6 +114,12 @@
     "maxSurveyBodyBytes": 32768,
     "_commentExcel": "Subir ventas (.xlsx, además de los 4 MB del formulario): se comprueba la firma ZIP (PK) y el índice del ZIP antes de abrirlo (maxSheets hojas, maxUncompressedMB descomprimido: corta un zip bomb). maxRows: filas con datos por hoja; 20.000 son años de facturas de llantas de 360 Tyres y mantienen la vista previa y el guardado bajo el límite de tiempo de la función. maxColumns: columnas leídas por fila (las de la derecha se ignoran).",
     "salesUpload": { "maxRows": 20000, "maxColumns": 60, "maxSheets": 20, "maxUncompressedMB": 100 }
+  },
+  "access": {
+    "_comment": "Hotfix login 2 — sessionDays: la sesión del portal dura esto y se renueva sola con cada visita. linkHours: el enlace que manda el bot sirve todas las veces que haga falta durante ese plazo; si el vendedor vuelve a escribir portal, el bot reenvía el mismo enlace renovado. botWhatsapp: número del bot (solo dígitos, con 51) para el botón Pedir enlace por WhatsApp de la entrada; la variable PORTAL_BOT_WHATSAPP lo reemplaza.",
+    "sessionDays": 30,
+    "linkHours": 24,
+    "botWhatsapp": ""
   },
   "orders": {
     "_comment": "Corrida H — pedido para Patricia. ownStock: cómo se llena el bloque de PRODUCTOS DE TERCEROS de un producto de stock propio (almacén San Luis; Arriola, Frutales y Lurín son almacenes de un proveedor). supplierProviders: proveedor de la lista de contactos -> proveedor del cotizador. branchFileName: nombre del Excel de un pedido por sucursal (Prosegur).",

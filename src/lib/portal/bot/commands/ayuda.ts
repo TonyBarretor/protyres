@@ -4,7 +4,8 @@ import { registerPortalCommand } from "../registry";
 export const PORTAL_HELP = [
   "*Portal 360 Tyres* 🗂️",
   "",
-  "• *portal* — enlace para entrar al portal",
+  "• *portal* — enlace para entrar al portal (sirve varias veces; después tu teléfono queda con la sesión abierta)",
+  "• *cerrar portal* — cierra el portal en todos tus teléfonos y anula tus enlaces",
   "• *empresa ZBUSS* (o el RUC) — ficha corta",
   "• *asignarme ZBUSS* (o el RUC; también por voz) — la empresa pasa a ti, con su ficha",
   "• *contacto ZBUSS: Juan Pérez, jefe de flota, 987654321* — guarda un contacto",

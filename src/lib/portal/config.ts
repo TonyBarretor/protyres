@@ -129,7 +129,7 @@ const SalesUploadSchema = z.looseObject({
 const PublicInputsSchema = z.looseObject({
   rateLimits: z
     .looseObject({
-      login: RateRuleSchema.default({ windowMinutes: 15, perIp: 20, perToken: 6 }),
+      login: RateRuleSchema.default({ windowMinutes: 15, perIp: 30, perToken: 20 }),
       surveyView: RateRuleSchema.default({ windowMinutes: 60, perIp: 60, perToken: 20 }),
       surveySubmit: RateRuleSchema.default({ windowMinutes: 60, perIp: 30, perToken: 5 }),
       cron: RateRuleSchema.default({ windowMinutes: 60, perIp: 10 }),
@@ -142,6 +142,18 @@ const PublicInputsSchema = z.looseObject({
   /** Cuerpo del envío de la encuesta (Content-Length, en el proxy). */
   maxSurveyBodyBytes: z.number().int().min(1024).default(32_768),
   salesUpload: SalesUploadSchema.prefault({}),
+});
+
+/**
+ * Hotfix login 2: acceso al portal. `sessionDays`: vigencia de la sesión, que se renueva sola con cada visita.
+ * `linkHours`: el enlace del bot sirve todas las veces que haga falta durante ese plazo (y `portal` lo reenvía renovado).
+ * `botWhatsapp`: número del bot (solo dígitos, con 51) para el botón "Pedir enlace por WhatsApp" (wa.me con `portal`
+ * escrito); la variable PORTAL_BOT_WHATSAPP lo reemplaza.
+ */
+const AccessSchema = z.looseObject({
+  sessionDays: z.number().min(1).max(365).default(30),
+  linkHours: z.number().min(0.25).max(24 * 7).default(24),
+  botWhatsapp: z.string().regex(/^\d*$/).default(""),
 });
 
 /**
@@ -183,6 +195,8 @@ export const PortalConfigSchema = z.looseObject({
   scoring: ScoringSchema.prefault({}),
   /** Corrida H: pedido para Patricia (bloque de proveedor / stock propio). */
   orders: OrdersSchema.prefault({}),
+  /** Hotfix login 2: sesión, enlace de entrada y número del bot. */
+  access: AccessSchema.prefault({}),
 });
 
 export type PortalConfig = z.infer<typeof PortalConfigSchema>;
@@ -197,6 +211,7 @@ export type PortalPublicInputsConfig = PortalConfig["publicInputs"];
 export type RateRule = z.infer<typeof RateRuleSchema>;
 export type PortalScoringConfig = PortalConfig["scoring"];
 export type PortalOrdersConfig = PortalConfig["orders"];
+export type PortalAccessConfig = PortalConfig["access"];
 
 export function portalConfigPath(): string {
   return process.env.PORTAL_CONFIG || path.join(process.cwd(), "config", "portal.json");

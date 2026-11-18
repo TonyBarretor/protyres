@@ -124,6 +124,19 @@ body:has(.pt-shell) {
   padding: 1.25rem 1rem 3rem;
 }
 
+/* hotfix login 2: dirección fija del portal al pie */
+.pt-foot {
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: 1rem 1rem 2rem;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+.pt-foot p { margin: 0 0 0.25rem; }
+.pt-foot b { color: var(--ink); word-break: break-all; }
+.pt-foot-how { font-size: 0.8rem; }
+
 /* ── piezas comunes ── */
 .pt-card {
   background: var(--surface);
@@ -422,6 +435,7 @@ body:has(.pt-shell) {
 @media (max-width: 720px) {
   .pt-shell { font-size: 15px; }
   .pt-main { padding: 1rem 0.75rem 3rem; }
+  .pt-foot { padding: 0.75rem 0.75rem 1.5rem; }
   .pt-top-inner { gap: 0.4rem 0.75rem; padding: 0.5rem 0.75rem; }
   /* en el celular las pestañas bajan a otra línea: con scroll lateral oculto, "Subir ventas" quedaba cortada */
   .pt-nav { order: 3; flex-basis: 100%; flex-wrap: wrap; overflow-x: visible; }

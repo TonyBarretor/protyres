@@ -33,6 +33,7 @@ import type {
   FleetVehicle,
   FleetVehicleInput,
   IsoDate,
+  CurrentLoginToken,
   LoginToken,
   MarcaCount,
   Opportunity,
@@ -774,11 +775,34 @@ export class JsonPortalStore implements PortalStore {
     return copy(s);
   }
 
-  async consumeLoginTokenIntoSession(tokenHash: string, now: Date, session: { id: string; expiresAt: Date }): Promise<number | null> {
-    const userId = await this.consumeLoginToken(tokenHash, now);
-    if (userId === null) return null;
-    await this.createSession({ ...session, userId });
-    return userId;
+  async currentLoginToken(userId: number, now: Date): Promise<CurrentLoginToken | null> {
+    let best: StoredLoginToken | null = null;
+    for (const t of this.loginTokens.values()) {
+      if (t.userId !== userId || !t.nonce || t.expiresAt.getTime() <= now.getTime()) continue;
+      if (!best || t.createdAt.getTime() > best.createdAt.getTime() || (t.createdAt.getTime() === best.createdAt.getTime() && t.expiresAt > best.expiresAt)) best = t;
+    }
+    return best ? { tokenHash: best.tokenHash, nonce: best.nonce!, expiresAt: new Date(best.expiresAt) } : null;
+  }
+
+  async extendLoginToken(tokenHash: string, expiresAt: Date): Promise<void> {
+    const t = this.loginTokens.get(tokenHash);
+    if (!t || t.expiresAt.getTime() >= expiresAt.getTime()) return;
+    t.expiresAt = new Date(expiresAt);
+    this.changed();
+  }
+
+  async peekLoginToken(tokenHash: string, now: Date): Promise<number | null> {
+    const t = this.loginTokens.get(tokenHash);
+    return t && t.expiresAt.getTime() > now.getTime() ? t.userId : null;
+  }
+
+  async useLoginTokenIntoSession(tokenHash: string, now: Date, session: { id: string; expiresAt: Date }): Promise<number | null> {
+    const t = this.loginTokens.get(tokenHash);
+    if (!t || t.expiresAt.getTime() <= now.getTime()) return null;
+    t.usedAt ??= now; // sin await entre la lectura y la marca: atómico en el event loop
+    this.sessions.set(session.id, { ...session, userId: t.userId, createdAt: new Date() });
+    this.changed();
+    return t.userId;
   }
 
   async getSession(id: string, now: Date): Promise<PortalSession | null> {
@@ -787,8 +811,32 @@ export class JsonPortalStore implements PortalStore {
     return copy(s);
   }
 
+  async renewSession(id: string, expiresAt: Date): Promise<void> {
+    const s = this.sessions.get(id);
+    if (!s || s.expiresAt.getTime() >= expiresAt.getTime()) return;
+    s.expiresAt = new Date(expiresAt);
+    this.changed();
+  }
+
   async deleteSession(id: string): Promise<void> {
     if (this.sessions.delete(id)) this.changed();
+  }
+
+  async revokeUserAccess(userId: number, now: Date): Promise<{ sessions: number; links: number }> {
+    let sessions = 0;
+    let links = 0;
+    for (const [id, s] of this.sessions) {
+      if (s.userId !== userId) continue;
+      this.sessions.delete(id);
+      sessions++;
+    }
+    for (const t of this.loginTokens.values()) {
+      if (t.userId !== userId || t.expiresAt.getTime() <= now.getTime()) continue;
+      t.expiresAt = new Date(now);
+      links++;
+    }
+    if (sessions || links) this.changed();
+    return { sessions, links };
   }
 
   // ── contactos ──
@@ -1285,10 +1333,6 @@ export class JsonPortalStore implements PortalStore {
     return row.hits;
   }
 
-  async refundRateLimit(bucket: string, windowStart: Date): Promise<void> {
-    const row = this.rateHits.get(`${bucket}|${windowStart.getTime()}`);
-    if (row) row.hits = Math.max(0, row.hits - 1);
-  }
 
   async pruneRateLimitHits(before: Date): Promise<number> {
     let n = 0;

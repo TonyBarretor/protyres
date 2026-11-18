@@ -106,6 +106,29 @@ async function scenario(s: PortalStore, trace: (label: string, v: unknown) => vo
   trace("session.getExpired", await s.getSession("sess-1", day(31)));
   await s.deleteSession("sess-1");
   trace("session.deleted", await s.getSession("sess-1", T0));
+  // hotfix login 2: enlace reutilizable (nonce para reenviarlo), renovar la sesión, `cerrar portal`
+  await s.saveLoginToken({ tokenHash: "h-n1", userId: frank.id, expiresAt: at(60), nonce: "n1" });
+  await s.saveLoginToken({ tokenHash: "h-n2", userId: juan.id, expiresAt: at(60), nonce: "n2" });
+  await s.saveLoginToken({ tokenHash: "h-sin-nonce", userId: juan.id, expiresAt: at(90) });
+  trace("token.current", await s.currentLoginToken(frank.id, T0));
+  trace("token.currentJuan", await s.currentLoginToken(juan.id, T0));
+  trace("token.currentLater", await s.currentLoginToken(frank.id, at(61)));
+  await s.extendLoginToken("h-n1", at(120));
+  await s.extendLoginToken("h-n1", at(30)); // no acorta
+  trace("token.extended", await s.currentLoginToken(frank.id, at(100)));
+  trace("token.peek", [await s.peekLoginToken("h-n1", at(100)), await s.peekLoginToken("h-n1", at(121)), await s.peekLoginToken("nope", T0)]);
+  trace("token.use", await s.useLoginTokenIntoSession("h-n1", at(1), { id: "sess-2", expiresAt: day(30) }));
+  trace("token.useAgain", await s.useLoginTokenIntoSession("h-n1", at(2), { id: "sess-3", expiresAt: day(30) }));
+  trace("token.useExpired", await s.useLoginTokenIntoSession("h-viejo", at(2), { id: "sess-x", expiresAt: day(30) }));
+  trace("session.fromToken", [await s.getSession("sess-2", T0), await s.getSession("sess-3", T0), await s.getSession("sess-x", T0)]);
+  await s.renewSession("sess-2", day(40));
+  await s.renewSession("sess-2", day(35)); // no acorta
+  trace("session.renewed", await s.getSession("sess-2", day(39)));
+  await s.createSession({ id: "sess-juan", userId: juan.id, expiresAt: day(30) });
+  trace("access.revoke", await s.revokeUserAccess(frank.id, at(5)));
+  trace("access.afterRevoke", [await s.getSession("sess-2", at(6)), await s.getSession("sess-3", at(6)), await s.peekLoginToken("h-n1", at(6)), await s.currentLoginToken(frank.id, at(6))]);
+  trace("access.othersKeep", [await s.getSession("sess-juan", at(6)), await s.peekLoginToken("h-n2", at(6))]);
+  trace("access.revokeAgain", await s.revokeUserAccess(frank.id, at(7)));
 
   // ── contactos ──
   const ct = await s.addContact({ companyId: A, nombre: "Carlos Quispe", cargo: "Jefe de flota", telefono: "987654321", createdBy: frank.id });

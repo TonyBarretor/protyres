@@ -116,7 +116,7 @@ export interface ClassifyInput {
 
 // ── comandos explícitos del portal ──
 
-export type PortalCommandName = "portal" | "ayuda_portal" | "hoy" | "empresa" | "asignarme" | "contacto" | "cita" | "oc" | "avance" | "prepropuesta" | "aprende" | "enlazar" | "reenviada" | "estado" | "mejores" | "anular" | "descuentos";
+export type PortalCommandName = "portal" | "cerrar_portal" | "ayuda_portal" | "hoy" | "empresa" | "asignarme" | "contacto" | "cita" | "oc" | "avance" | "prepropuesta" | "aprende" | "enlazar" | "reenviada" | "estado" | "mejores" | "anular" | "descuentos";
 
 interface CommandSpec {
   name: PortalCommandName;
@@ -136,6 +136,9 @@ const MEJORES_RE =
 
 const COMMANDS: CommandSpec[] = [
   { name: "portal", re: /^portal$/ },
+  // hotfix login 2: cierra las sesiones del portal en todos los teléfonos y anula los enlaces (teléfono perdido, enlace
+  // reenviado por error)
+  { name: "cerrar_portal", re: /^(?:cerrar|cierra|cierrame)\s+(?:(?:la\s+|mi\s+)?sesion\s+(?:del?\s+|en\s+el\s+)?)?portal$/ },
   { name: "ayuda_portal", re: /^(?:ayuda|help|comandos)\s+portal$|^portal\s+(?:ayuda|help|comandos)$/ },
   { name: "hoy", re: /^hoy$/ },
   { name: "empresa", re: /^empresa\s+\S/ },
@@ -158,6 +161,8 @@ const COMMANDS: CommandSpec[] = [
 /** La palabra del comando en el texto original ("Empresa", "asignarme", "pre-propuesta"...). */
 const RAW_HEAD: Record<PortalCommandName, RegExp> = {
   portal: /^portal\b/i,
+  // la frase entera es el comando: no lleva argumentos
+  cerrar_portal: /^[\s\S]*$/,
   ayuda_portal: /^(?:ayuda|help|comandos)\s+portal\b|^portal\s+(?:ayuda|help|comandos)\b/i,
   hoy: /^hoy\b/i,
   empresa: /^empresa\b/i,
