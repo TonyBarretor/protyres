@@ -3,6 +3,7 @@ import type { Appointment, FleetGroup, Opportunity, PortalUser } from "../store/
 import { filtersQuery, hasActiveFilters, isShortcutActive, ORDERS, pageCount, parseProspectFilters, toCompanySearch, BRAND_SHORTCUTS } from "./filters";
 import { groupByBrand, yearRange } from "./fleet";
 import { parseContactForm } from "./labels";
+import { DEFAULT_SALES_SETTINGS } from "../sales/config";
 import { canAssignSelf, canEditOpportunity, canReassign, canSeeRankingReport, canUploadSales, canValidateRanking } from "./permissions";
 import { groupPipeline, pipelineTotals } from "./pipeline";
 import { limaDateKey, limaStartOfDay, parseLimaLocal, toLimaLocalInput } from "./time";
@@ -198,8 +199,12 @@ describe("permisos de acciones", () => {
     expect(canEditOpportunity(user(1, "vendedor"), { ownerUserId: 2 })).toBe(false);
     expect(canEditOpportunity(user(1, "vendedor"), { ownerUserId: 2 }, { ownerUserId: 1 })).toBe(true);
     expect(canEditOpportunity(user(3, "supervisor"), { ownerUserId: 2 })).toBe(true);
-    expect(canUploadSales(user(1, "vendedor"))).toBe(false);
+    // ventas-odoo, punto 14 (cambio pedido): por defecto también el vendedor sube ventas; los roles son configurables
+    expect(canUploadSales(user(1, "vendedor"))).toBe(true);
     expect(canUploadSales(user(3, "supervisor"))).toBe(true);
+    expect(canUploadSales(user(4, "tecnico"))).toBe(false);
+    expect(canUploadSales(user(1, "vendedor", false))).toBe(false);
+    expect(canUploadSales(user(1, "vendedor"), { ...DEFAULT_SALES_SETTINGS, uploadRoles: ["admin", "supervisor"] })).toBe(false);
   });
 
   it("validar el ranking: vendedor, supervisor y admin activos; técnico no. El informe en el tablero: solo admin", () => {

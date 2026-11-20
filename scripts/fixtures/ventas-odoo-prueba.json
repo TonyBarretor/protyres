@@ -1,0 +1,8 @@
+[
+  { "fecha": "2026-07-15", "documento": "F003-96001", "ruc": "20999000077", "razon": "TRANSPORTES QUIMERA PRUEBA S.A.C.", "descripcion": "[P0759] 295/80R22.5 18PR FENIXWAY VALOR 89", "cantidad": 6, "precio": 248, "costo": 192, "proveedor": "PROVEEDOR INVENTADO SAC", "margen": "22.58%" },
+  { "fecha": "2026-08-20", "documento": "F003-96002", "ruc": "20999000077", "razon": "TRANSPORTES QUIMERA PRUEBA S.A.C.", "descripcion": "[P0433] 295/80R22.5 18PR FENIXWAY FLAMA 66 DEL", "cantidad": 2, "precio": 250, "costo": 195, "proveedor": "PROVEEDOR INVENTADO SAC", "margen": "22.00%" },
+  { "fecha": "2026-09-12", "documento": "F003-96003", "ruc": "20999000077", "razon": "TRANSPORTES QUIMERA PRUEBA S.A.C.", "descripcion": "[P0759] 295/80R22.5 18PR FENIXWAY VALOR 89", "cantidad": 8, "precio": 255, "costo": 199.15, "proveedor": "PROVEEDOR INVENTADO SAC", "margen": "21.90%" },
+  { "fecha": "2026-10-01", "documento": "F003-96004", "ruc": "20999000077", "razon": "TRANSPORTES QUIMERA PRUEBA S.A.C.", "descripcion": "[P0434] 11R22.5 18PR FENIXWAY VALOR 96 MIX", "cantidad": 4, "precio": 1050, "costo": 800, "moneda": "PEN", "proveedor": "PROVEEDOR INVENTADO SAC", "margen": "23.81%" },
+  { "fecha": "2026-10-04", "documento": "F003-96005", "ruc": "20100047218", "razon": "BANCO DE CREDITO DEL PERU", "descripcion": "[P0759] 295/80R22.5 18PR FENIXWAY VALOR 89", "cantidad": 10, "precio": 258, "costo": 200, "proveedor": "PROVEEDOR INVENTADO SAC", "margen": "22.48%" },
+  { "fecha": "2026-10-04", "documento": "F003-96005", "ruc": "20100047218", "razon": "BANCO DE CREDITO DEL PERU", "descripcion": "[SERV.BALAN] SERVICIO DE BALANCEO VEHICULAR", "cantidad": 10, "precio": 20, "moneda": "PEN", "margen": "SERVICIO SIN COSTO" }
+]

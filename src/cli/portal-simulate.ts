@@ -35,6 +35,9 @@
  *   @empresa-prueba <RUC> <razón social>
  *                                crea en la copia de datos una empresa inventada como lo hace el import del padrón MTC
  *                                (upsertCompanies; la razón social es dato de terceros: HTML, instrucciones…), sin dueño
+ *   @ventas-odoo <archivo.json>  carga en la copia de datos un reporte de ventas de Odoo inventado (líneas con la forma de
+ *                                OdooFixtureLine, p. ej. scripts/fixtures/ventas-odoo-prueba.json) por el mismo camino que
+ *                                "Subir ventas" (.xlsx de Odoo, vista previa y guardado con recálculo del puntaje)
  *   @encuesta <comentario>       crea (en la copia) una encuesta para una empresa de prueba inventada y la responde con
  *                                ese comentario en "¿qué deberíamos mejorar?" por la MISMA función que la server action
  *                                (surveyFormTooLarge + submitSurvey); cuenta modelo/Deepgram igual que un mensaje
@@ -689,6 +692,28 @@ async function main() {
     } else thrown.push("@empresa-prueba solo sobre la copia de datos (sin --db ni --persist)");
   };
 
+  /** @ventas-odoo <archivo.json>: reporte de Odoo inventado cargado como "Subir ventas", en la copia de datos. */
+  const odooSales = async (file: string) => {
+    if (!args.pgTest && (args.db || args.persist)) {
+      thrown.push("@ventas-odoo solo sobre la copia de datos (sin --db ni --persist)");
+      return;
+    }
+    const abs = path.resolve(process.cwd(), file);
+    if (!fs.existsSync(abs)) {
+      thrown.push(`@ventas-odoo: no existe ${file}`);
+      return;
+    }
+    try {
+      const { seedOdoo } = await import("../lib/portal/sales/odoo-seed");
+      const user = (await portal.listUsers()).find((u) => u.whatsapp === me.phone) ?? { id: 0, nombre: "Simulador", rol: "admin" as const };
+      const r = await seedOdoo(portal, JSON.parse(fs.readFileSync(abs, "utf8")), user, { fileName: path.basename(abs).replace(/\.json$/i, ".xlsx"), prices: store, log: (m) => console.error(`[puntaje] ${m}`) });
+      console.log(`🧾 ventas de Odoo de prueba (${path.basename(abs)}): ${r.inserted} líneas nuevas, ${r.updated} actualizadas`);
+    } catch (err) {
+      thrown.push(`@ventas-odoo ${file}: ${(err as Error).message}`);
+      console.log(`💥 ${(err as Error).stack ?? err}`);
+    }
+  };
+
   /** @encuesta <comentario>: encuesta nueva para una empresa inventada, respondida por la función de la server action. */
   const SURVEY_RUC = "20999999901";
   const survey = async (comment: string, lineNo: number, snapshot: boolean) => {
@@ -741,13 +766,15 @@ async function main() {
   }
   if (args.audio) lines.push({ t: `@audio ${args.audio}`, no: 0 });
 
-  /** Una línea: verificación, preparación (@pausa, @empresa-prueba) o un caso (mensaje, @rafaga, @encuesta…). */
+  /** Una línea: verificación, preparación (@pausa, @empresa-prueba, @ventas-odoo) o un caso (mensaje, @rafaga, @encuesta…). */
   const step = async (line: string, lineNo: number, wantsSnapshot: boolean) => {
     if (isCheckLine(line)) return runCheck(line, lineNo);
     const pausa = line.match(/^@pausa\s+(\d+)\s*$/);
     if (pausa) return pause(Number(pausa[1]));
     const empresa = line.match(/^@empresa-prueba\s+(\d{11})\s+(\S.*)$/);
     if (empresa) return testCompany(empresa[1], empresa[2].trim());
+    const ventas = line.match(/^@ventas-odoo\s+(\S+)\s*$/);
+    if (ventas) return odooSales(ventas[1]);
     const encuesta = line.match(/^@encuesta\s+(\S.*)$/);
     if (encuesta) return survey(encuesta[1].replace(/\\n/g, "\n"), lineNo, wantsSnapshot);
     const largo = line.match(/^@texto-largo\s+(\d+)\s+(\S.*)$/);

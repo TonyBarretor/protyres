@@ -458,3 +458,23 @@ body:has(.pt-shell) {
 .pt-credit-aprobado { background: #ecfdf3; color: var(--ok); }
 .pt-credit-observado { background: #fff6e5; color: #9a5b00; }
 .pt-credit-rechazado { background: #fef3f2; color: var(--danger); }
+
+/* ── Ventas (ventas-odoo): historial en la ficha, cliente final, vista previa del reporte de Odoo ── */
+.pt-shortcuts a[aria-current="page"] { background: var(--ink); color: #fff; border-color: var(--ink); }
+.pt-tag-nc { background: #fef3f2; color: var(--danger); margin-left: 0.3rem; }
+.pt-nc .pt-qty { color: var(--danger); font-weight: 600; }
+.pt-table tr.pt-nc { background: #fffafa; }
+.pt-cards .pt-card.pt-nc { border-color: #fecdca; }
+.pt-leasing { color: #5b3bb5; }
+.pt-chip-contrato { background: #ecfdf3; color: var(--ok); border-color: #abefc6; }
+ul.pt-cards { list-style: none; margin: 0; padding: 0; }
+.pt-cards .pt-card { min-width: 0; overflow-wrap: anywhere; }
+.pt-fieldset { border: 1px solid var(--line); border-radius: var(--radius); padding: 0.6rem 0.8rem; margin: 0; min-width: 0; }
+.pt-fieldset legend { font-weight: 600; font-size: 0.9rem; padding: 0 0.3rem; }
+.pt-check-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.45rem; }
+.pt-check-list label { display: flex; gap: 0.5rem; align-items: flex-start; overflow-wrap: anywhere; cursor: pointer; }
+.pt-check-list input { margin-top: 0.2rem; flex: 0 0 auto; width: auto; }
+.pt-ok-text { color: var(--ok); font-weight: 600; }
+@media (max-width: 720px) {
+  .pt-table-wrap.pt-sales-table { display: none; }
+}

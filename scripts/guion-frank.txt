@@ -93,7 +93,27 @@ más
 @espera-texto 6–10 de
 @btn 1
 @espera-texto Empresa asignada a ti
+# 10b. ventas-odoo: historial de ventas en el bot. La copia no trae ventas de Odoo: se carga un reporte inventado
+#      (scripts/fixtures/ventas-odoo-prueba.json, RUC y razones sociales ficticios; el banco es el RUC público del BCP,
+#      entidad de leasing por defecto) por el mismo camino que "Subir ventas".
+@empresa-prueba 20999000077 TRANSPORTES QUIMERA PRUEBA S.A.C.
+@ventas-odoo scripts/fixtures/ventas-odoo-prueba.json
+#      Las 3 últimas ventas de esa medida, con precio, costo y margen (internos: solo vendedor, supervisor y admin)
+ultima venta quimera prueba 295/80R22.5
+@espera-texto Últimas ventas a TRANSPORTES QUIMERA PRUEBA
+@espera-texto costo US$ 199.15 · margen 21.90%
+#      La factura del banco (leasing) pasa a contar para la empresa; la última venta ya la muestra "vía leasing"
+cliente final F003-96005 quimera prueba
+@espera-texto ahora cuenta para *TRANSPORTES QUIMERA PRUEBA* (vía leasing con BANCO DE CREDITO DEL PERU)
+última venta 20999000077 295/80R22.5
+@espera-texto vía leasing con BANCO DE CREDITO DEL PERU
+#      Al cotizarle esa medida, el Entendí (solo para el vendedor) recuerda la última venta; el precio no cambia
+Fenixway Valor 89 295/80R22.5 x4 para Transportes Quimera Prueba RUC 20999000077
+@espera-texto Última venta a este cliente: Valor 89 a US$ 258 el 04/10/2026
+cancelar
 # 11. Pendientes del día y ayuda
 hoy
 ayuda portal
 @espera-texto *mejores*
+@espera-texto *ultima venta ZBUSS 295/80R22.5*
+@espera-texto *cliente final F003-4050 ZBUSS*

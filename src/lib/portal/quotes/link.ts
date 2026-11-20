@@ -11,6 +11,9 @@
  *    mismo mensaje del portal suma la línea "⚠️ Crédito de … sin evaluar" / "⛔ Crédito RECHAZADO …" (credit/warning.ts).
  *  - startRequest -> portalCreditTerm: plazo de crédito de la empresa (companies.credit_terms_days) cuando el pedido no
  *    trae plazo y la memoria del cliente no dio otro, en lugar del plazo de config/pilot.json.
+ *  - startRequest -> portalSaleReference (ventas-odoo, punto 8): si ya se le vendió esa medida al cliente, una línea
+ *    informativa en el "Entendí" del vendedor ("Última venta a este cliente: Valor 89 a US$ 255 el 12/09/2026"). No toca
+ *    el precio ni nada de lo que ve el cliente (PDF, correo).
  *
  * Todo lo que llama el handler es seguro: si el número no es del portal, si el store falla o tarda, no hace nada (lo
  * registra en el log) y el cotizador sigue igual.
@@ -22,6 +25,7 @@ import type { PortalContext } from "../bot/registry";
 import { isExpired, type PendingStep } from "../bot/state";
 import { stageIndex, stageLabel } from "../stages";
 import { getPortalStore } from "../store";
+import { lastSaleReference } from "../sales/history";
 import { foldText } from "../store/shared";
 import type { Activity, Company, Opportunity, PortalStore, PortalUser } from "../store/types";
 import { fmtMoney } from "../../quote/pricing";
@@ -403,4 +407,50 @@ export async function portalCreditTerm(input: HookOptions & { from: string; text
     if (!company || !days || days <= 0) return null;
     return { line: `plazo: ${days} días`, term: `${days} días`, note: `📒 plazo ${days} días (condiciones de *${company.razonSocial}* en el portal)`, days, company };
   });
+}
+
+// ── referencia de la última venta (ventas-odoo, punto 8) ──
+
+/** Roles que ven el historial de ventas (también en el "Entendí"). */
+const SALE_REFERENCE_ROLES = new Set(["vendedor", "supervisor", "admin"]);
+
+/** Cliente por nombre sin dudas: una sola razón social igual al nombre (sin S.A.C. ni tildes). */
+async function companyByExactName(store: PortalStore, name: string | undefined): Promise<Company | null> {
+  const key = name ? companyKey(name) : "";
+  if (key.length < 3) return null;
+  const { rows } = await findCompanies(store, name!, 5);
+  const exact = rows.filter((c) => companyKey(c.razonSocial) === key);
+  return exact.length === 1 ? exact[0] : null;
+}
+
+/**
+ * Líneas "Última venta a este cliente: …" para el "Entendí" del vendedor del portal (vendedor, supervisor o admin): el
+ * cliente por RUC escrito en el pedido (aunque no esté en el padrón: ventas fuera del padrón), por un cliente que el
+ * vendedor ya enlazó antes o por su nombre exacto en el padrón; una línea por medida pedida que ya se le vendió (con la
+ * medida al final si el pedido trae varias). Solo informativa: no cambia el precio ni va a ningún documento del cliente.
+ * [] fuera del portal o si no hay nada.
+ */
+export async function portalSaleReference(input: HookOptions & { from: string; text: string; req: Pick<QuoteRequest, "lines" | "customerCompany" | "customerName" | "customerEmail" | "customerRef"> }): Promise<string[]> {
+  const { req } = input;
+  const sizes = [...new Set(req.lines.map((l) => l.size?.canonical).filter((s): s is string => !!s))];
+  if (!sizes.length) return [];
+  const rucs = rucsIn(input.text, req.customerRef);
+  const customer = { key: customerKeyOf({ company: req.customerCompany, name: req.customerName }), email: req.customerEmail?.trim() || null };
+  if (!rucs.length && !customer.key && !customer.email) return [];
+  const out = await safely("leer la última venta", input.from, input, async (store, user) => {
+    if (!SALE_REFERENCE_ROLES.has(user.rol)) return [];
+    let ruc = rucs.length === 1 ? rucs[0] : null;
+    if (!ruc) {
+      const company = (await companyByRuc(store, rucs)) ?? (await previouslyLinked(store, user.id, customer)) ?? (await companyByExactName(store, req.customerCompany ?? req.customerName));
+      ruc = company?.ruc ?? null;
+    }
+    if (!ruc) return [];
+    const lines: string[] = [];
+    for (const size of sizes.slice(0, 5)) {
+      const ref = await lastSaleReference(store, ruc, size);
+      if (ref) lines.push(sizes.length > 1 ? `${ref} (${size})` : ref);
+    }
+    return lines;
+  });
+  return out ?? [];
 }

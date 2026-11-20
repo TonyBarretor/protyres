@@ -1,6 +1,7 @@
 /**
  * Ficha de empresa: indicadores, flota por marca (dato MTC + medida inferida), dueño (Asignarme), temperatura,
  * oportunidad abierta, contactos, actividad y bloque de crédito. Corrida G: bloque "Por qué este nivel" (WhyLevel).
+ * ventas-odoo: "Historial de ventas", servicios, otros productos y cliente final del banco (SalesHistory).
  */
 import Link from "next/link";
 import { notFound } from "next/navigation";
@@ -17,6 +18,7 @@ import { formatLimaDateTime, toLimaLocalInput } from "@/lib/portal/ui/time";
 import { addContact, assignCompany, deleteContact, moveOpportunityStage, releaseCompany, setNextAction, setTemperatura, updateContact } from "../../actions";
 import { DemoTag, Flash, InferidaTag, MTC_LEGEND, MtcTag, TempChip } from "../../_components/bits";
 import { CreditBlock } from "../../_components/CreditBlock";
+import { loadSalesHistory, SalesHistory } from "./SalesHistory";
 import { SurveyBlock } from "./SurveyBlock";
 import { WhyLevel } from "./WhyLevel";
 
@@ -75,6 +77,7 @@ export default async function EmpresaPage({ params, searchParams }: Props) {
     store.participation([company.ruc], defaultSince()),
   ]);
   const history = opp ? await store.stageHistory(opp.id) : [];
+  const sales = await loadSalesHistory(store, company, user, sp);
   const brands = groupByBrand(fleet);
   const participacion = part[company.ruc] ?? { cantidad: 0, demo: false };
   const userName = (uid: number | null) => (uid === null ? "—" : (users.find((u) => u.id === uid)?.nombre ?? `#${uid}`));
@@ -198,6 +201,8 @@ export default async function EmpresaPage({ params, searchParams }: Props) {
               </div>
             )}
           </section>
+
+          <SalesHistory company={company} data={sales} />
 
           <section className="pt-card" aria-labelledby="contactos-title">
             <div className="pt-section-head">

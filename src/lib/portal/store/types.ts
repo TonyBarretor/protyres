@@ -240,6 +240,99 @@ export interface SaleInput {
   isDemo?: boolean;
   /** De dónde salió la carga, para no repetirla: "xlsx:<sha256 del archivo>". */
   sourceRef?: string | null;
+  /** Detalle del reporte de Odoo (ventas-odoo); las ventas del formato simple no lo traen. */
+  detalle?: SaleDetailInput | null;
+}
+
+/** Tipo de línea de una venta: solo `neumatico` cuenta para participación, "es cliente", consumo y puntaje. */
+export type SaleLineType = "neumatico" | "servicio" | "otro";
+
+/** Documento: las notas de crédito restan (cantidad y montos vienen ya con signo); las de débito no suman unidades. */
+export type SaleDocType = "factura" | "boleta" | "nota_credito" | "nota_debito" | "otro";
+
+/** Documento del cliente: RUC (11), DNI (8, persona natural: venta minorista) u otro (fila con advertencia). */
+export type SaleClientDoc = "ruc" | "dni" | "otro";
+
+/**
+ * Tipos de servicio normalizados (ventas-odoo, punto 4). El contrato de neumáticos viene en tres componentes
+ * (personal / insumos / equipos), cada uno con su tipo.
+ */
+export const SERVICE_TYPES = [
+  "enllante",
+  "desenllante",
+  "balanceo",
+  "alineamiento",
+  "rotacion",
+  "parchado",
+  "cambio_neumaticos",
+  "mantenimiento_correctivo",
+  "reencauche",
+  "contrato_personal",
+  "contrato_insumos",
+  "contrato_equipos",
+  "software",
+  "otros",
+] as const;
+export type ServiceType = (typeof SERVICE_TYPES)[number];
+
+/**
+ * Campos de una línea del reporte de Odoo. Montos y tipo de cambio tal como vienen en el archivo (no se recalculan); en
+ * una nota de crédito van con signo negativo, igual que la cantidad. Costos, proveedor y margen son internos: los ven
+ * vendedor, supervisor y admin, nunca un documento para el cliente.
+ */
+export interface SaleDetailInput {
+  /** Clave estable de la línea: tipo de documento + N° + código de producto + n.º de aparición del código en el documento. */
+  lineKey: string;
+  tipoDoc: SaleDocType;
+  documento: string;
+  vencimiento?: IsoDate | null;
+  moneda?: string | null;
+  tipoCambio?: number | null;
+  estadoSunat?: string | null;
+  /** STATUS del reporte (columna del bloque COMPRA). */
+  status?: string | null;
+  ocOdoo?: string | null;
+  /** "OC PROVEEDOR": en las notas de crédito trae "Reversión de: <factura>, <motivo>". */
+  ocProveedor?: string | null;
+  guia?: string | null;
+  condVenta?: string | null;
+  descripcion: string;
+  codigoProducto?: string | null;
+  tipoLinea: SaleLineType;
+  tipoServicio?: ServiceType | null;
+  docCliente: SaleClientDoc;
+  vendedorUserId?: number | null;
+  totalSinServ?: number | null;
+  precioUnitarioUsd?: number | null;
+  totalUsd?: number | null;
+  costoUnitario?: number | null;
+  costoTotal?: number | null;
+  costoUnitarioUsd?: number | null;
+  costoTotalUsd?: number | null;
+  facturaProveedor?: string | null;
+  proveedor?: string | null;
+  monedaProveedor?: string | null;
+  tipoCambioProveedor?: number | null;
+  /** MARGEN tal como viene ("19.68%", "SERVICIO SIN COSTO") y su número (19.68) si lo tiene. */
+  margen?: string | null;
+  margenPct?: number | null;
+  /** false: la línea no suma neumáticos (no es neumático, nota de débito, nota de crédito solo de monto, STATUS excluido). */
+  cuentaUnidades: boolean;
+  /** STATUS excluido (Cancelado / Borrador): se guarda para el historial de cargas, pero no cuenta en nada. */
+  excluida: boolean;
+  advertencia?: string | null;
+  uploadId?: number | null;
+}
+
+/** Línea de venta guardada con su detalle de Odoo y el cliente final (leasing), si se asignó. */
+export interface SaleDetail extends Required<Omit<SaleDetailInput, "uploadId">> {
+  uploadId: number | null;
+  /** Cliente final (leasing): la empresa del portal a la que se le atribuyen los neumáticos en lugar del banco. */
+  clienteFinalCompanyId: number | null;
+  clienteFinalRuc: string | null;
+  clienteFinalAt: Date | null;
+  clienteFinalBy: number | null;
+  updatedAt: Date | null;
 }
 
 export interface Sale {
@@ -258,6 +351,8 @@ export interface Sale {
   isDemo: boolean;
   sourceRef: string | null;
   createdAt: Date;
+  /** null en las ventas del formato simple y las demo. */
+  detalle: SaleDetail | null;
 }
 
 export interface Participation {
@@ -298,6 +393,75 @@ export interface SalesRepo {
   participation(rucs: string[], since: Date | IsoDate): Promise<Record<string, Participation>>;
   /** Ventas con fecha entre `since` y `until` (ambas inclusive) agrupadas por (RUC, fecha, vendedor); sin orden garantizado. */
   salesAggregate(since: Date | IsoDate, until: Date | IsoDate): Promise<SalesAggRow[]>;
+  /**
+   * ventas-odoo: guarda líneas con `detalle.lineKey`; si la clave ya existe, actualiza todo menos el cliente final (una
+   * carga posterior no lo borra). Las filas sin `detalle` se rechazan (usar insertSales).
+   */
+  upsertSaleLines(rows: SaleInput[]): Promise<{ inserted: number; updated: number }>;
+  /** De estas claves, las que ya están guardadas. */
+  existingSaleLineKeys(keys: string[]): Promise<Set<string>>;
+  /** Líneas según el filtro, la más reciente primero (fecha, id). */
+  querySales(filter: SalesQuery): Promise<Sale[]>;
+  /**
+   * Asigna (o quita, con `company: null`) el cliente final a todas las líneas de esos documentos del RUC del banco.
+   * Devuelve las líneas cambiadas.
+   */
+  setClienteFinal(input: { bankRuc: string; documentos: string[]; company: { id: number; ruc: string } | null; userId: number | null }): Promise<number>;
+  /** Resumen por RUC (al que cuentan las líneas): neumáticos netos, líneas, última fecha y una razón social. Sin demo. */
+  salesByClient(): Promise<SalesClientRow[]>;
+  recordSalesUpload(input: SalesUploadInput): Promise<SalesUpload>;
+  listSalesUploads(limit?: number): Promise<SalesUpload[]>;
+}
+
+export interface SalesQuery {
+  /**
+   * Líneas de estas empresas: RUC del documento o RUC del cliente final (una línea con cliente final sale en la ficha del
+   * banco y en la de la empresa).
+   */
+  companyRucs?: string[];
+  /** Solo por RUC del documento. */
+  docRucs?: string[];
+  documentos?: string[];
+  /** Medida canónica (parseTyreSize().canonical). */
+  medida?: string;
+  tipoLinea?: SaleLineType[];
+  /** Solo líneas sin cliente final. */
+  sinClienteFinal?: boolean;
+  /** Por defecto false: las líneas excluidas (Cancelado / Borrador) no salen. */
+  includeExcluded?: boolean;
+  /** Por defecto false: las ventas demo no salen. */
+  includeDemo?: boolean;
+  /** Solo líneas con detalle de Odoo. */
+  onlyDetailed?: boolean;
+  limit?: number;
+}
+
+export interface SalesClientRow {
+  ruc: string;
+  razonSocial: string | null;
+  docCliente: SaleClientDoc;
+  /** Neumáticos netos (las notas de crédito ya restan). */
+  neumaticos: number;
+  lineas: number;
+  ultimaFecha: IsoDate;
+}
+
+export interface SalesUploadInput {
+  fileName: string;
+  hash: string;
+  formato: "odoo" | "simple";
+  userId: number | null;
+  userName: string | null;
+  userRol: string | null;
+  inserted: number;
+  updated: number;
+  /** Resumen de la vista previa (rango de fechas, líneas por tipo, ...), tal cual se mostró. */
+  stats: Record<string, unknown>;
+}
+
+export interface SalesUpload extends SalesUploadInput {
+  id: number;
+  createdAt: Date;
 }
 
 // ── Usuarios y sesiones ──

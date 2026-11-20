@@ -5,7 +5,8 @@
 import postgres from "postgres";
 import { serverlessPostgres } from "../../store/pg-options";
 import { isClosedStage, stageProbability, type StageId } from "../stages";
-import { dedupeBy, defaultSince, digits, groupFleet, normMarca, pageOf, searchRucPrefix, searchTerms, toIsoDate, topMedidas, ttlCache, type FleetAggRow } from "./shared";
+import { dedupeBy, defaultSince, digits, docClienteOf, groupFleet, normDocumento, normMarca, pageOf, searchRucPrefix, searchTerms, toIsoDate, topMedidas, ttlCache, type FleetAggRow } from "./shared";
+import type { SaleClientDoc, SaleDetail, SaleDocType, SaleLineType, SalesClientRow, SalesQuery, SalesUpload, SalesUploadInput, ServiceType } from "./types";
 import type { BestCompaniesQuery, BestCompany, Nivel, RankingValidation, RankingValidationInput, ScoreDetail, ScoreInput, ScoreInputQuery, ScoreRun, ScoreRunInput, ScoreUpdate, ValidationAnswer } from "./types";
 import type {
   Activity,
@@ -181,8 +182,135 @@ function toSale(r: Row): Sale {
     isDemo: Boolean(r.is_demo),
     sourceRef: str(r.source_ref),
     createdAt: date(r.created_at)!,
+    detalle: r.line_key ? toSaleDetail(r) : null,
   };
 }
+
+function toSaleDetail(r: Row): SaleDetail {
+  return {
+    lineKey: String(r.line_key),
+    tipoDoc: (str(r.tipo_doc) ?? "otro") as SaleDocType,
+    documento: String(r.documento ?? ""),
+    vencimiento: r.vencimiento ? String(r.vencimiento).slice(0, 10) : null,
+    moneda: str(r.moneda),
+    tipoCambio: num(r.tipo_cambio),
+    estadoSunat: str(r.estado_sunat),
+    status: str(r.status),
+    ocOdoo: str(r.oc_odoo),
+    ocProveedor: str(r.oc_proveedor),
+    guia: str(r.guia),
+    condVenta: str(r.cond_venta),
+    descripcion: String(r.descripcion ?? ""),
+    codigoProducto: str(r.codigo_producto),
+    tipoLinea: (str(r.tipo_linea) ?? "neumatico") as SaleLineType,
+    tipoServicio: (str(r.tipo_servicio) as ServiceType | null) ?? null,
+    docCliente: (str(r.doc_cliente) ?? "ruc") as SaleClientDoc,
+    vendedorUserId: num(r.vendedor_user_id),
+    totalSinServ: num(r.total_sin_serv),
+    precioUnitarioUsd: num(r.precio_unitario_usd),
+    totalUsd: num(r.total_usd),
+    costoUnitario: num(r.costo_unitario),
+    costoTotal: num(r.costo_total),
+    costoUnitarioUsd: num(r.costo_unitario_usd),
+    costoTotalUsd: num(r.costo_total_usd),
+    facturaProveedor: str(r.factura_proveedor),
+    proveedor: str(r.proveedor),
+    monedaProveedor: str(r.moneda_proveedor),
+    tipoCambioProveedor: num(r.tipo_cambio_proveedor),
+    margen: str(r.margen),
+    margenPct: num(r.margen_pct),
+    cuentaUnidades: Boolean(r.cuenta_unidades),
+    excluida: Boolean(r.excluida),
+    advertencia: str(r.advertencia),
+    uploadId: num(r.upload_id),
+    clienteFinalCompanyId: num(r.cliente_final_company_id),
+    clienteFinalRuc: str(r.cliente_final_ruc),
+    clienteFinalAt: date(r.cliente_final_at),
+    clienteFinalBy: num(r.cliente_final_by),
+    updatedAt: date(r.updated_at),
+  };
+}
+
+function toSalesUpload(r: Row): SalesUpload {
+  return {
+    id: Number(r.id),
+    fileName: String(r.file_name),
+    hash: String(r.hash),
+    formato: r.formato === "simple" ? "simple" : "odoo",
+    userId: num(r.user_id),
+    userName: str(r.user_name),
+    userRol: str(r.user_rol),
+    inserted: Number(r.inserted ?? 0),
+    updated: Number(r.updated ?? 0),
+    stats: (typeof r.stats === "string" ? JSON.parse(r.stats) : (r.stats ?? {})) as Record<string, unknown>,
+    createdAt: date(r.created_at)!,
+  };
+}
+
+/** Columnas de sales para una línea (insertSales / upsertSaleLines); sin las del cliente final. */
+function saleRow(r: SaleInput): Record<string, unknown> {
+  const d = r.detalle;
+  return {
+    fecha: toIsoDate(r.fecha),
+    ruc: digits(r.ruc),
+    razon_social: r.razonSocial ?? null,
+    medida: r.medida ?? null,
+    marca: r.marca ?? null,
+    diseno: r.diseno ?? null,
+    cantidad: r.cantidad,
+    precio_unitario: r.precioUnitario ?? null,
+    total: r.total ?? null,
+    vendedor: r.vendedor ?? null,
+    origen: r.origen ?? null,
+    is_demo: r.isDemo ?? false,
+    source_ref: r.sourceRef ?? null,
+    line_key: d?.lineKey ?? null,
+    tipo_doc: d?.tipoDoc ?? null,
+    documento: d?.documento ?? null,
+    vencimiento: d?.vencimiento ?? null,
+    moneda: d?.moneda ?? null,
+    tipo_cambio: d?.tipoCambio ?? null,
+    estado_sunat: d?.estadoSunat ?? null,
+    status: d?.status ?? null,
+    oc_odoo: d?.ocOdoo ?? null,
+    oc_proveedor: d?.ocProveedor ?? null,
+    guia: d?.guia ?? null,
+    cond_venta: d?.condVenta ?? null,
+    descripcion: d?.descripcion ?? null,
+    codigo_producto: d?.codigoProducto ?? null,
+    tipo_linea: d?.tipoLinea ?? null,
+    tipo_servicio: d?.tipoServicio ?? null,
+    doc_cliente: d?.docCliente ?? null,
+    vendedor_user_id: d?.vendedorUserId ?? null,
+    total_sin_serv: d?.totalSinServ ?? null,
+    precio_unitario_usd: d?.precioUnitarioUsd ?? null,
+    total_usd: d?.totalUsd ?? null,
+    costo_unitario: d?.costoUnitario ?? null,
+    costo_total: d?.costoTotal ?? null,
+    costo_unitario_usd: d?.costoUnitarioUsd ?? null,
+    costo_total_usd: d?.costoTotalUsd ?? null,
+    factura_proveedor: d?.facturaProveedor ?? null,
+    proveedor: d?.proveedor ?? null,
+    moneda_proveedor: d?.monedaProveedor ?? null,
+    tipo_cambio_proveedor: d?.tipoCambioProveedor ?? null,
+    margen: d?.margen ?? null,
+    margen_pct: d?.margenPct ?? null,
+    cuenta_unidades: d ? d.cuentaUnidades : true,
+    excluida: d ? d.excluida : false,
+    advertencia: d?.advertencia ?? null,
+    upload_id: d?.uploadId ?? null,
+  };
+}
+
+/**
+ * N° de documento comparable en SQL, igual que normDocumento (shared.ts): mayúsculas, sin espacios, sin ceros a la izquierda
+ * del correlativo. Clases POSIX y no barra invertida + s / d: dentro de un template literal de JS esa barra se pierde y a
+ * Postgres le llegaba "s+" (no quitaba los espacios de "F NDI-00000001"; lo encontró la prueba de paridad de ventas-odoo).
+ */
+const DOC_NORM_SQL = "regexp_replace(upper(regexp_replace(coalesce(documento, ''), '[[:space:]]+', '', 'g')), '-0+([0-9])', '-\\1')";
+
+/** Columnas que una carga posterior actualiza (todas menos id, created_at, line_key y las del cliente final). */
+const SALE_UPDATE_COLS = Object.keys(saleRow({ fecha: "2000-01-01", ruc: "", cantidad: 0 })).filter((c) => c !== "line_key");
 
 function toUser(r: Row): PortalUser {
   return { id: Number(r.id), nombre: String(r.nombre), whatsapp: str(r.whatsapp), rol: r.rol as UserRole, activo: Boolean(r.activo), createdAt: date(r.created_at)! };
@@ -353,9 +481,9 @@ export class PgPortalStore implements PortalStore {
       : [];
     const rucs = companies.map((c) => String(c.ruc));
     const sales = await sql`
-      select ruc, coalesce(sum(cantidad) filter (where not is_demo and fecha >= ${q.since12m}::date), 0)::float8 as v12,
+      select coalesce(cliente_final_ruc, ruc) as ruc, coalesce(sum(cantidad) filter (where not is_demo and fecha >= ${q.since12m}::date), 0)::float8 as v12,
         bool_or(not is_demo) as reales, bool_or(is_demo) as demo
-      from sales where true ${ids ? sql`and ruc in ${sql(rucs.length ? rucs : [""])}` : sql``} group by ruc`;
+      from sales where cuenta_unidades ${ids ? sql`and coalesce(cliente_final_ruc, ruc) in ${sql(rucs.length ? rucs : [""])}` : sql``} group by 1`;
     const credit = await sql`select company_id, estado from company_credit where true ${onlyIds("company_id")}`;
     const lost = await sql`
       select company_id, max(closed_at) as at from opportunities
@@ -579,7 +707,8 @@ export class PgPortalStore implements PortalStore {
     const { pageSize, offset } = pageOf(opts.page, opts.pageSize);
     const rows = await sql`
       with p as (
-        select ruc, sum(cantidad)::float8 as cantidad, bool_or(is_demo) as demo from sales where fecha >= ${since}::date group by ruc
+        select coalesce(cliente_final_ruc, ruc) as ruc, sum(cantidad)::float8 as cantidad, bool_or(is_demo) as demo from sales
+        where cuenta_unidades and fecha >= ${since}::date group by 1
       )
       select c.*, coalesce(p.cantidad, 0) as participacion, coalesce(p.demo, false) as participacion_demo, count(*) over () as total_count
       from companies c left join p on p.ruc = c.ruc
@@ -775,24 +904,107 @@ export class PgPortalStore implements PortalStore {
 
   async insertSales(rows: SaleInput[]): Promise<number> {
     for (let i = 0; i < rows.length; i += BATCH) {
-      const chunk = rows.slice(i, i + BATCH).map((r) => ({
-        fecha: toIsoDate(r.fecha),
-        ruc: digits(r.ruc),
-        razon_social: r.razonSocial ?? null,
-        medida: r.medida ?? null,
-        marca: r.marca ?? null,
-        diseno: r.diseno ?? null,
-        cantidad: r.cantidad,
-        precio_unitario: r.precioUnitario ?? null,
-        total: r.total ?? null,
-        vendedor: r.vendedor ?? null,
-        origen: r.origen ?? null,
-        is_demo: r.isDemo ?? false,
-        source_ref: r.sourceRef ?? null,
-      }));
+      const chunk = rows.slice(i, i + BATCH).map(saleRow);
       await this.sql`insert into sales ${this.sql(chunk)}`;
     }
     return rows.length;
+  }
+
+  async upsertSaleLines(rows: SaleInput[]): Promise<{ inserted: number; updated: number }> {
+    if (rows.some((r) => !r.detalle)) throw new Error("upsertSaleLines: falta detalle.lineKey (usa insertSales para el formato simple)");
+    let inserted = 0;
+    let updated = 0;
+    // de a 500 (cada fila lleva ~48 parámetros: 500 × 48 queda bajo el tope de 65535 de Postgres)
+    for (let i = 0; i < rows.length; i += 500) {
+      const chunk = rows.slice(i, i + 500).map((r) => ({ ...saleRow(r), updated_at: null }));
+      const res = await this.sql`
+        insert into sales ${this.sql(chunk)}
+        on conflict (line_key) where line_key is not null do update set
+          ${this.sql.unsafe(SALE_UPDATE_COLS.map((c) => `${c} = excluded.${c}`).join(", "))}, updated_at = now()
+        returning (xmax = 0) as inserted`;
+      for (const r of res) if (r.inserted) inserted++;
+      else updated++;
+    }
+    return { inserted, updated };
+  }
+
+  async existingSaleLineKeys(keys: string[]): Promise<Set<string>> {
+    const list = [...new Set(keys)];
+    const out = new Set<string>();
+    for (let i = 0; i < list.length; i += 5000) {
+      const rows = await this.sql`select line_key from sales where line_key in ${this.sql(list.slice(i, i + 5000))}`;
+      for (const r of rows) out.add(String(r.line_key));
+    }
+    return out;
+  }
+
+  async querySales(f: SalesQuery): Promise<Sale[]> {
+    const sql = this.sql;
+    const conds = [sql`true`];
+    if (!f.includeDemo) conds.push(sql`not is_demo`);
+    if (!f.includeExcluded) conds.push(sql`not excluida`);
+    if (f.onlyDetailed) conds.push(sql`line_key is not null`);
+    if (f.companyRucs) {
+      const r = f.companyRucs.map(digits);
+      conds.push(sql`(ruc in ${sql(r.length ? r : [""])} or cliente_final_ruc in ${sql(r.length ? r : [""])})`);
+    }
+    if (f.docRucs) {
+      const r = f.docRucs.map(digits);
+      conds.push(sql`ruc in ${sql(r.length ? r : [""])}`);
+    }
+    if (f.documentos) {
+      const d = f.documentos.map(normDocumento);
+      conds.push(sql`${sql.unsafe(DOC_NORM_SQL)} in ${sql(d.length ? d : [""])}`);
+    }
+    if (f.medida) conds.push(sql`medida = ${f.medida}`);
+    if (f.tipoLinea) conds.push(sql`coalesce(tipo_linea, 'neumatico') in ${sql(f.tipoLinea.length ? f.tipoLinea : [""])}`);
+    if (f.sinClienteFinal) conds.push(sql`cliente_final_ruc is null`);
+    const rows = await sql`
+      select *, fecha::text as fecha, vencimiento::text as vencimiento from sales where ${where(sql, conds)}
+      order by sales.fecha desc, sales.id desc ${f.limit ? sql`limit ${f.limit}` : sql``}`;
+    return rows.map(toSale);
+  }
+
+  async setClienteFinal(input: { bankRuc: string; documentos: string[]; company: { id: number; ruc: string } | null; userId: number | null }): Promise<number> {
+    const d = input.documentos.map(normDocumento);
+    if (!d.length) return 0;
+    const c = input.company;
+    const r = await this.sql`
+      update sales set cliente_final_company_id = ${c?.id ?? null}, cliente_final_ruc = ${c ? digits(c.ruc) : null},
+        cliente_final_at = ${c ? this.sql`now()` : null}, cliente_final_by = ${c ? input.userId : null}
+      where ruc = ${digits(input.bankRuc)} and line_key is not null
+        and ${this.sql.unsafe(DOC_NORM_SQL)} in ${this.sql(d)}`;
+    return r.count;
+  }
+
+  async salesByClient(): Promise<SalesClientRow[]> {
+    const rows = await this.sql`
+      select coalesce(cliente_final_ruc, ruc) as ruc,
+        max(razon_social) filter (where cliente_final_ruc is null) as razon_social,
+        sum(case when cuenta_unidades then cantidad else 0 end)::float8 as neumaticos, count(*)::int as lineas, max(sales.fecha)::text as ultima
+      from sales where not is_demo and not excluida group by 1`;
+    return rows.map((r) => ({
+      ruc: String(r.ruc),
+      razonSocial: str(r.razon_social),
+      docCliente: docClienteOf(String(r.ruc)),
+      neumaticos: Number(r.neumaticos ?? 0),
+      lineas: Number(r.lineas ?? 0),
+      ultimaFecha: String(r.ultima),
+    }));
+  }
+
+  async recordSalesUpload(input: SalesUploadInput): Promise<SalesUpload> {
+    const [r] = await this.sql`
+      insert into sales_uploads (file_name, hash, formato, user_id, user_name, user_rol, inserted, updated, stats)
+      values (${input.fileName}, ${input.hash}, ${input.formato}, ${input.userId}, ${input.userName}, ${input.userRol}, ${input.inserted}, ${input.updated},
+        ${this.sql.json(input.stats as Parameters<typeof this.sql.json>[0])})
+      returning *`;
+    return toSalesUpload(r);
+  }
+
+  async listSalesUploads(limit = 20): Promise<SalesUpload[]> {
+    const rows = await this.sql`select * from sales_uploads order by created_at desc, id desc limit ${limit}`;
+    return rows.map(toSalesUpload);
   }
 
   async deleteDemoSales(): Promise<number> {
@@ -814,8 +1026,8 @@ export class PgPortalStore implements PortalStore {
     // corrida H: "order by fecha" era ambiguo (la columna y el alias fecha::text) y Postgres rechazaba la consulta: la
     // selección de encuestas (cron) y la encuesta manual fallaban. Se ordena por la columna de la tabla.
     const rows = since === undefined
-      ? await this.sql`select *, fecha::text as fecha from sales where ruc = ${digits(ruc)} order by sales.fecha desc, sales.id desc`
-      : await this.sql`select *, fecha::text as fecha from sales where ruc = ${digits(ruc)} and sales.fecha >= ${toIsoDate(since)}::date order by sales.fecha desc, sales.id desc`;
+      ? await this.sql`select *, fecha::text as fecha, vencimiento::text as vencimiento from sales where coalesce(cliente_final_ruc, ruc) = ${digits(ruc)} and not excluida order by sales.fecha desc, sales.id desc`
+      : await this.sql`select *, fecha::text as fecha, vencimiento::text as vencimiento from sales where coalesce(cliente_final_ruc, ruc) = ${digits(ruc)} and not excluida and sales.fecha >= ${toIsoDate(since)}::date order by sales.fecha desc, sales.id desc`;
     return rows.map(toSale);
   }
 
@@ -824,19 +1036,20 @@ export class PgPortalStore implements PortalStore {
     const out: Record<string, Participation> = {};
     if (!list.length) return out;
     const rows = await this.sql`
-      select ruc, sum(cantidad)::float8 as cantidad, bool_or(is_demo) as demo from sales
-      where ruc in ${this.sql(list)} and fecha >= ${toIsoDate(since)}::date group by ruc`;
+      select coalesce(cliente_final_ruc, ruc) as ruc, sum(cantidad)::float8 as cantidad, bool_or(is_demo) as demo from sales
+      where cuenta_unidades and coalesce(cliente_final_ruc, ruc) in ${this.sql(list)} and fecha >= ${toIsoDate(since)}::date group by 1`;
     for (const r of rows) out[String(r.ruc)] = { cantidad: Number(r.cantidad), demo: Boolean(r.demo) };
     return out;
   }
 
   async salesAggregate(since: Date | IsoDate, until: Date | IsoDate): Promise<SalesAggRow[]> {
     const rows = await this.sql`
-      select ruc, fecha::text as fecha, vendedor, max(razon_social) as razon_social, sum(cantidad)::float8 as cantidad,
+      select coalesce(cliente_final_ruc, ruc) as ruc, sales.fecha::text as fecha, vendedor, max(razon_social) as razon_social,
+        sum(case when cuenta_unidades then cantidad else 0 end)::float8 as cantidad,
         coalesce(sum(coalesce(total, precio_unitario * cantidad)), 0)::float8 as monto,
         (count(*) filter (where total is null and precio_unitario is null))::int as sin_monto, bool_or(is_demo) as demo, count(*)::int as filas
-      from sales where fecha >= ${toIsoDate(since)}::date and fecha <= ${toIsoDate(until)}::date
-      group by ruc, fecha, vendedor`;
+      from sales where not excluida and sales.fecha >= ${toIsoDate(since)}::date and sales.fecha <= ${toIsoDate(until)}::date
+      group by 1, sales.fecha, vendedor`;
     return rows.map((r) => ({
       ruc: String(r.ruc),
       fecha: String(r.fecha),

@@ -16,6 +16,7 @@ import "./prepropuesta";
 import "./avance";
 import "./estado";
 import "./mejores";
+import "./ventas";
 
 export const COMMAND_LABEL: Record<string, string> = {
   cita: "cita",

@@ -220,3 +220,14 @@ cancelar
 sin ub
 @espera-texto UB 1812 x4
 cancelar
+
+# ventas-odoo: "última venta" dictada es el comando (no una cotización ni un reporte). Ventas de Odoo inventadas
+# (scripts/fixtures/ventas-odoo-prueba.json) cargadas en la copia como "Subir ventas".
+@empresa-prueba 20999000077 TRANSPORTES QUIMERA PRUEBA S.A.C.
+@ventas-odoo scripts/fixtures/ventas-odoo-prueba.json
+@voz Última venta a Quimera Prueba de doscientos noventa y cinco ochenta veintidós punto cinco.
+@espera-texto Últimas ventas a TRANSPORTES QUIMERA PRUEBA
+@espera-texto costo US$ 199.15 · margen 21.90%
+@no-texto Reporte de
+@no-texto Cotización nueva
+@espera modelo=0

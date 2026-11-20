@@ -194,3 +194,41 @@ export function ttlCache<T>(load: () => Promise<T>, ttlMs: number, now: () => nu
     return value;
   };
 }
+
+// ── ventas-odoo: a quién y cuánto cuenta una línea de venta (misma regla en Postgres: pg-portal-store.ts, SALE_RUC / SALE_UNITS) ──
+
+type SaleLike = { ruc: string; cantidad: number; detalle?: { cuentaUnidades: boolean; excluida: boolean; clienteFinalRuc?: string | null } | null };
+
+/** RUC al que cuenta la línea: el del cliente final (leasing) si se asignó; si no, el del documento. */
+export function saleCountRuc(s: SaleLike): string {
+  return s.detalle?.clienteFinalRuc || s.ruc;
+}
+
+/** true si la línea suma neumáticos (las ventas del formato simple y las demo siempre suman). */
+export function saleCountsUnits(s: SaleLike): boolean {
+  return !s.detalle || s.detalle.cuentaUnidades;
+}
+
+/** Neumáticos que suma la línea (negativo en una nota de crédito; 0 si no cuenta). */
+export function saleUnits(s: SaleLike): number {
+  return saleCountsUnits(s) ? s.cantidad : 0;
+}
+
+/** false si la línea está excluida (STATUS Cancelado / Borrador): no cuenta en nada. */
+export function saleActive(s: SaleLike): boolean {
+  return !s.detalle?.excluida;
+}
+
+/** N° de documento comparable: "F003-4050", "f003 4050" y "F003-04050" son el mismo (mayúsculas, sin espacios, sin ceros a la izquierda del correlativo). */
+export function normDocumento(s: string | null | undefined): string {
+  return (s ?? "")
+    .toUpperCase()
+    .replace(/\s+/g, "")
+    .replace(/-0+(?=\d)/, "-");
+}
+
+/** Tipo de documento del cliente por su número: 11 dígitos RUC, 8 DNI, otro largo "otro". */
+export function docClienteOf(doc: string): "ruc" | "dni" | "otro" {
+  const n = digits(doc).length;
+  return n === 11 ? "ruc" : n === 8 ? "dni" : "otro";
+}

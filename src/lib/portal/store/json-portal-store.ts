@@ -7,7 +7,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { CLOSED_STAGES, isClosedStage, stageProbability } from "../stages";
-import { companyNameKey, dedupeBy, defaultSince, digits, groupFleet, nameMatches, normMarca, pageOf, searchRucPrefix, searchTerms, toIsoDate, topMedidas, type FleetAggRow } from "./shared";
+import { companyNameKey, dedupeBy, defaultSince, digits, docClienteOf, groupFleet, nameMatches, normDocumento, normMarca, pageOf, saleActive, saleCountRuc, saleCountsUnits, saleUnits, searchRucPrefix, searchTerms, toIsoDate, topMedidas, type FleetAggRow } from "./shared";
 import type {
   Activity,
   ActivityFilter,
@@ -51,6 +51,12 @@ import type {
   PurchaseOrderPatch,
   PurchaseOrderSummary,
   Sale,
+  SaleDetail,
+  SaleDetailInput,
+  SalesClientRow,
+  SalesQuery,
+  SalesUpload,
+  SalesUploadInput,
   SalesAggRow,
   SaleInput,
   StageHistoryEntry,
@@ -106,6 +112,8 @@ interface FileData {
   scoreRuns?: ScoreRun[];
   rankingValidations?: RankingValidation[];
   userNotices?: { userId: number; aviso: string; createdAt: Date }[];
+  /** ventas-odoo: historial de cargas de "Subir ventas". */
+  salesUploads?: SalesUpload[];
 }
 
 /** Campos Date por colección (JSON los guarda como texto ISO). */
@@ -132,6 +140,7 @@ const DATE_FIELDS: Record<string, string[]> = {
   scoreRuns: ["runAt"],
   rankingValidations: ["createdAt"],
   userNotices: ["createdAt"],
+  salesUploads: ["createdAt"],
 };
 
 const DEBOUNCE_MS = 300;
@@ -141,6 +150,53 @@ const MAX_VOICE_TRANSCRIPTS = 2000;
 const fleetKey = (placa: string, origen: string) => `${origen}|${placa}`;
 const normPlaca = (p: string) => p.trim().toUpperCase().replace(/\s+/g, "");
 const copy = <T extends object>(o: T): T => ({ ...o });
+const copySale = (s: Sale): Sale => ({ ...s, detalle: s.detalle ? { ...s.detalle } : null });
+
+/** Detalle guardado a partir del de entrada (sin cliente final). */
+function toDetail(d: SaleDetailInput): SaleDetail {
+  return {
+    lineKey: d.lineKey,
+    tipoDoc: d.tipoDoc,
+    documento: d.documento,
+    vencimiento: d.vencimiento ?? null,
+    moneda: d.moneda ?? null,
+    tipoCambio: d.tipoCambio ?? null,
+    estadoSunat: d.estadoSunat ?? null,
+    status: d.status ?? null,
+    ocOdoo: d.ocOdoo ?? null,
+    ocProveedor: d.ocProveedor ?? null,
+    guia: d.guia ?? null,
+    condVenta: d.condVenta ?? null,
+    descripcion: d.descripcion,
+    codigoProducto: d.codigoProducto ?? null,
+    tipoLinea: d.tipoLinea,
+    tipoServicio: d.tipoServicio ?? null,
+    docCliente: d.docCliente,
+    vendedorUserId: d.vendedorUserId ?? null,
+    totalSinServ: d.totalSinServ ?? null,
+    precioUnitarioUsd: d.precioUnitarioUsd ?? null,
+    totalUsd: d.totalUsd ?? null,
+    costoUnitario: d.costoUnitario ?? null,
+    costoTotal: d.costoTotal ?? null,
+    costoUnitarioUsd: d.costoUnitarioUsd ?? null,
+    costoTotalUsd: d.costoTotalUsd ?? null,
+    facturaProveedor: d.facturaProveedor ?? null,
+    proveedor: d.proveedor ?? null,
+    monedaProveedor: d.monedaProveedor ?? null,
+    tipoCambioProveedor: d.tipoCambioProveedor ?? null,
+    margen: d.margen ?? null,
+    margenPct: d.margenPct ?? null,
+    cuentaUnidades: d.cuentaUnidades,
+    excluida: d.excluida,
+    advertencia: d.advertencia ?? null,
+    uploadId: d.uploadId ?? null,
+    clienteFinalCompanyId: null,
+    clienteFinalRuc: null,
+    clienteFinalAt: null,
+    clienteFinalBy: null,
+    updatedAt: null,
+  };
+}
 const time = (d: Date | null | undefined) => (d ? d.getTime() : 0);
 
 export class JsonPortalStore implements PortalStore {
@@ -151,6 +207,8 @@ export class JsonPortalStore implements PortalStore {
   private fleetByCompany = new Map<number, Set<string>>();
   private sales: Sale[] = [];
   private salesByRucIdx = new Map<string, Sale[]>();
+  private saleByLineKey = new Map<string, Sale>();
+  private salesUploads: SalesUpload[] = [];
   private users = new Map<number, PortalUser>();
   private userByWa = new Map<string, number>();
   private loginTokens = new Map<string, StoredLoginToken>();
@@ -238,7 +296,12 @@ export class JsonPortalStore implements PortalStore {
     Object.assign(this.seq, raw.seq ?? {});
     for (const c of revive("companies", raw.companies)) this.putCompany(c);
     for (const v of raw.fleet ?? []) this.putVehicle(v);
-    for (const s of revive("sales", raw.sales)) this.pushSale({ ...s, sourceRef: s.sourceRef ?? null }); // archivos previos a source_ref
+    for (const s of revive("sales", raw.sales)) {
+      const d = s.detalle;
+      if (d) for (const f of ["clienteFinalAt", "updatedAt"] as const) if (typeof d[f] === "string") d[f] = new Date(d[f] as unknown as string);
+      this.pushSale({ ...s, sourceRef: s.sourceRef ?? null, detalle: d ?? null }); // archivos previos a source_ref / detalle
+    }
+    this.salesUploads = revive("salesUploads", raw.salesUploads);
     for (const u of revive("users", raw.users)) this.putUser(u);
     for (const t of revive("loginTokens", raw.loginTokens)) this.loginTokens.set(t.tokenHash, t);
     for (const s of revive("sessions", raw.sessions)) this.sessions.set(s.id, s);
@@ -291,6 +354,7 @@ export class JsonPortalStore implements PortalStore {
       scoreRuns: this.scoreRuns,
       rankingValidations: this.rankingValidations,
       userNotices: this.userNotices,
+      salesUploads: this.salesUploads,
     };
   }
 
@@ -347,11 +411,22 @@ export class JsonPortalStore implements PortalStore {
     this.marcasCache = null;
   }
 
+  /** Índice por el RUC al que cuenta la línea (saleCountRuc: el cliente final si lo tiene) y por clave de línea. */
   private pushSale(s: Sale): void {
     this.sales.push(s);
-    const list = this.salesByRucIdx.get(s.ruc);
+    const ruc = saleCountRuc(s);
+    const list = this.salesByRucIdx.get(ruc);
     if (list) list.push(s);
-    else this.salesByRucIdx.set(s.ruc, [s]);
+    else this.salesByRucIdx.set(ruc, [s]);
+    if (s.detalle) this.saleByLineKey.set(s.detalle.lineKey, s);
+  }
+
+  private reindexSales(): void {
+    this.salesByRucIdx.clear();
+    this.saleByLineKey.clear();
+    const all = this.sales;
+    this.sales = [];
+    for (const s of all) this.pushSale(s);
   }
 
   private putUser(u: PortalUser): void {
@@ -639,6 +714,7 @@ export class JsonPortalStore implements PortalStore {
         isDemo: r.isDemo ?? false,
         sourceRef: r.sourceRef ?? null,
         createdAt: now,
+        detalle: r.detalle ? toDetail(r.detalle) : null,
       });
     }
     this.changed();
@@ -648,11 +724,7 @@ export class JsonPortalStore implements PortalStore {
   async deleteDemoSales(): Promise<number> {
     const before = this.sales.length;
     this.sales = this.sales.filter((s) => !s.isDemo);
-    for (const [ruc, list] of this.salesByRucIdx) {
-      const kept = list.filter((s) => !s.isDemo);
-      if (kept.length) this.salesByRucIdx.set(ruc, kept);
-      else this.salesByRucIdx.delete(ruc);
-    }
+    this.reindexSales();
     const removed = before - this.sales.length;
     if (removed) this.changed();
     return removed;
@@ -678,8 +750,8 @@ export class JsonPortalStore implements PortalStore {
   async salesByRuc(ruc: string, since?: Date | IsoDate): Promise<Sale[]> {
     const from = since === undefined ? "" : toIsoDate(since);
     return (this.salesByRucIdx.get(digits(ruc)) ?? [])
-      .filter((s) => s.fecha >= from)
-      .map(copy)
+      .filter((s) => s.fecha >= from && saleActive(s))
+      .map(copySale)
       .sort((a, b) => b.fecha.localeCompare(a.fecha) || b.id - a.id);
   }
 
@@ -687,7 +759,7 @@ export class JsonPortalStore implements PortalStore {
     const out: Record<string, Participation> = {};
     for (const ruc of rucs) {
       for (const s of this.salesByRucIdx.get(ruc) ?? []) {
-        if (s.fecha < since) continue;
+        if (s.fecha < since || !saleCountsUnits(s)) continue;
         const p = (out[ruc] ??= { cantidad: 0, demo: false });
         p.cantidad += s.cantidad;
         if (s.isDemo) p.demo = true;
@@ -705,12 +777,13 @@ export class JsonPortalStore implements PortalStore {
     const to = toIsoDate(until);
     const groups = new Map<string, SalesAggRow>();
     for (const s of this.sales) {
-      if (s.fecha < from || s.fecha > to) continue;
-      const key = `${s.ruc}|${s.fecha}|${s.vendedor ?? "\u0000"}`;
+      if (s.fecha < from || s.fecha > to || !saleActive(s)) continue;
+      const ruc = saleCountRuc(s);
+      const key = `${ruc}|${s.fecha}|${s.vendedor ?? "\u0000"}`;
       let g = groups.get(key);
-      if (!g) groups.set(key, (g = { ruc: s.ruc, fecha: s.fecha, vendedor: s.vendedor, razonSocial: null, cantidad: 0, monto: 0, sinMonto: 0, demo: false, filas: 0 }));
+      if (!g) groups.set(key, (g = { ruc, fecha: s.fecha, vendedor: s.vendedor, razonSocial: null, cantidad: 0, monto: 0, sinMonto: 0, demo: false, filas: 0 }));
       const monto = s.total ?? (s.precioUnitario !== null ? s.precioUnitario * s.cantidad : null);
-      g.cantidad += s.cantidad;
+      g.cantidad += saleUnits(s);
       if (monto === null) g.sinMonto++;
       else g.monto += monto;
       if (s.razonSocial && (!g.razonSocial || s.razonSocial > g.razonSocial)) g.razonSocial = s.razonSocial;
@@ -718,6 +791,127 @@ export class JsonPortalStore implements PortalStore {
       g.filas++;
     }
     return [...groups.values()];
+  }
+
+  async upsertSaleLines(rows: SaleInput[]): Promise<{ inserted: number; updated: number }> {
+    const now = new Date();
+    let inserted = 0;
+    let updated = 0;
+    let moved = false;
+    for (const r of rows) {
+      if (!r.detalle) throw new Error("upsertSaleLines: falta detalle.lineKey (usa insertSales para el formato simple)");
+      const base = {
+        fecha: toIsoDate(r.fecha),
+        ruc: digits(r.ruc),
+        razonSocial: r.razonSocial ?? null,
+        medida: r.medida ?? null,
+        marca: r.marca ?? null,
+        diseno: r.diseno ?? null,
+        cantidad: r.cantidad,
+        precioUnitario: r.precioUnitario ?? null,
+        total: r.total ?? null,
+        vendedor: r.vendedor ?? null,
+        origen: r.origen ?? null,
+        isDemo: r.isDemo ?? false,
+        sourceRef: r.sourceRef ?? null,
+      };
+      const prev = this.saleByLineKey.get(r.detalle.lineKey);
+      if (prev) {
+        const keep = prev.detalle!;
+        if (base.ruc !== prev.ruc) moved = true;
+        Object.assign(prev, base, {
+          detalle: {
+            ...toDetail(r.detalle),
+            clienteFinalCompanyId: keep.clienteFinalCompanyId,
+            clienteFinalRuc: keep.clienteFinalRuc,
+            clienteFinalAt: keep.clienteFinalAt,
+            clienteFinalBy: keep.clienteFinalBy,
+            updatedAt: now,
+          },
+        });
+        updated++;
+      } else {
+        this.pushSale({ id: this.nextId("sales"), ...base, createdAt: now, detalle: toDetail(r.detalle) });
+        inserted++;
+      }
+    }
+    if (moved) this.reindexSales();
+    if (rows.length) this.changed();
+    return { inserted, updated };
+  }
+
+  async existingSaleLineKeys(keys: string[]): Promise<Set<string>> {
+    return new Set(keys.filter((k) => this.saleByLineKey.has(k)));
+  }
+
+  async querySales(f: SalesQuery): Promise<Sale[]> {
+    const company = f.companyRucs ? new Set(f.companyRucs.map(digits)) : null;
+    const doc = f.docRucs ? new Set(f.docRucs.map(digits)) : null;
+    const docs = f.documentos ? new Set(f.documentos.map(normDocumento)) : null;
+    const tipos = f.tipoLinea ? new Set(f.tipoLinea) : null;
+    const out = this.sales.filter((s) => {
+      const d = s.detalle;
+      if (!f.includeDemo && s.isDemo) return false;
+      if (!f.includeExcluded && d?.excluida) return false;
+      if (f.onlyDetailed && !d) return false;
+      if (company && !company.has(s.ruc) && !(d?.clienteFinalRuc && company.has(d.clienteFinalRuc))) return false;
+      if (doc && !doc.has(s.ruc)) return false;
+      if (docs && !(d && docs.has(normDocumento(d.documento)))) return false;
+      if (f.medida && s.medida !== f.medida) return false;
+      if (tipos && !tipos.has(d?.tipoLinea ?? "neumatico")) return false;
+      if (f.sinClienteFinal && d?.clienteFinalRuc) return false;
+      return true;
+    });
+    out.sort((a, b) => b.fecha.localeCompare(a.fecha) || b.id - a.id);
+    return (f.limit ? out.slice(0, f.limit) : out).map(copySale);
+  }
+
+  async setClienteFinal(input: { bankRuc: string; documentos: string[]; company: { id: number; ruc: string } | null; userId: number | null }): Promise<number> {
+    const bank = digits(input.bankRuc);
+    const docs = new Set(input.documentos.map(normDocumento));
+    const now = new Date();
+    let n = 0;
+    for (const s of this.sales) {
+      const d = s.detalle;
+      if (!d || s.ruc !== bank || !docs.has(normDocumento(d.documento))) continue;
+      d.clienteFinalCompanyId = input.company?.id ?? null;
+      d.clienteFinalRuc = input.company ? digits(input.company.ruc) : null;
+      d.clienteFinalAt = input.company ? now : null;
+      d.clienteFinalBy = input.company ? input.userId : null;
+      n++;
+    }
+    if (n) {
+      this.reindexSales();
+      this.changed();
+    }
+    return n;
+  }
+
+  async salesByClient(): Promise<SalesClientRow[]> {
+    const by = new Map<string, SalesClientRow>();
+    for (const s of this.sales) {
+      if (s.isDemo || !saleActive(s)) continue;
+      const ruc = saleCountRuc(s);
+      let r = by.get(ruc);
+      if (!r) by.set(ruc, (r = { ruc, razonSocial: null, docCliente: docClienteOf(ruc), neumaticos: 0, lineas: 0, ultimaFecha: s.fecha }));
+      r.neumaticos += saleUnits(s);
+      r.lineas++;
+      if (s.fecha > r.ultimaFecha) r.ultimaFecha = s.fecha;
+      // la razón social de la línea es la del documento: con cliente final se toma la del documento solo si es suya
+      if (s.razonSocial && ruc === s.ruc && (!r.razonSocial || s.razonSocial > r.razonSocial)) r.razonSocial = s.razonSocial;
+    }
+    return [...by.values()];
+  }
+
+  async recordSalesUpload(input: SalesUploadInput): Promise<SalesUpload> {
+    const u: SalesUpload = { ...input, id: (this.salesUploads.at(-1)?.id ?? 0) + 1, createdAt: new Date() };
+    this.salesUploads.push(u);
+    this.changed();
+    return { ...u };
+  }
+
+  async listSalesUploads(limit = 20): Promise<SalesUpload[]> {
+    return this.salesUploads.slice(-limit).reverse().map((u) => ({ ...u }));
   }
 
   // ── usuarios y sesiones ──
@@ -1372,6 +1566,7 @@ export class JsonPortalStore implements PortalStore {
       let ventasReales = false;
       let ventasDemo = false;
       for (const s of this.salesByRucIdx.get(c.ruc) ?? []) {
+        if (!saleCountsUnits(s)) continue; // ventas-odoo: solo los neumáticos hacen cliente y suman consumo
         if (s.isDemo) {
           ventasDemo = true;
           continue;

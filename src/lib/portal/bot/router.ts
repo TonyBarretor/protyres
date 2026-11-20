@@ -4,7 +4,8 @@
  * Reglas (conservadoras: ante la duda, el cotizador sigue como siempre):
  *  1. Mensaje reenviado -> passthrough (pedido o lista de un tercero: lo maneja el cotizador).
  *  2. Comando explícito del portal al inicio (`portal`, `empresa …`, `asignarme …`, `contacto …`, `hoy`, `ayuda portal`,
- *     `cita …`, `oc …`, `avance`, `prepropuesta …`, `aprende X = Y`, `mejores`) -> portal_command, en cualquier paso del cotizador.
+ *     `cita …`, `oc …`, `avance`, `prepropuesta …`, `aprende X = Y`, `mejores`, `ultima venta …`, `cliente final …`) -> portal_command, en
+ *     cualquier paso del cotizador.
  *     Un número que no está en `users` solo entra con `portal` (que le dice que no está registrado).
  *  3. `cancelar` (y sinónimos) -> passthrough: el cotizador cancela; quien llama limpia además el paso del portal.
  *  4. Cotizador a mitad de un flujo (step distinto de idle) -> passthrough (sí/ok/1b/enviar... siguen yendo al cotizador).
@@ -34,7 +35,8 @@
  *     los textos con medida de llanta (un pedido nuevo). Con `acceptsMedia: true`, un adjunto (ver regla 6).
  *
  * Un comando del portal es de UNA sola línea, sin medida de llanta y sin forma de campo del cotizador (`empresa: X`,
- * `contacto de: Juan`): "Empresa Transportes ABC\n295/80R22.5 x4" es un pedido.
+ * `contacto de: Juan`): "Empresa Transportes ABC\n295/80R22.5 x4" es un pedido. Excepción: `ultima venta <empresa> [medida]`
+ * lleva la medida como argumento (ventas-odoo: "ultima venta ancro 295/80R22.5" no es un pedido).
  *
  * Precedencia con un proceso en curso (corrida D, punto 7; usuario del portal, cotizador en idle, paso pendiente vigente).
  * Lo que no es respuesta NO descarta el proceso: pasa a pausa (bot/pause.ts) y se recuerda al final de la respuesta.
@@ -116,7 +118,7 @@ export interface ClassifyInput {
 
 // ── comandos explícitos del portal ──
 
-export type PortalCommandName = "portal" | "cerrar_portal" | "ayuda_portal" | "hoy" | "empresa" | "asignarme" | "contacto" | "cita" | "oc" | "avance" | "prepropuesta" | "aprende" | "enlazar" | "reenviada" | "estado" | "mejores" | "anular" | "descuentos";
+export type PortalCommandName = "portal" | "cerrar_portal" | "ayuda_portal" | "hoy" | "empresa" | "asignarme" | "contacto" | "cita" | "oc" | "avance" | "prepropuesta" | "aprende" | "enlazar" | "reenviada" | "estado" | "mejores" | "anular" | "descuentos" | "ultima_venta" | "cliente_final";
 
 interface CommandSpec {
   name: PortalCommandName;
@@ -124,6 +126,8 @@ interface CommandSpec {
   re: RegExp;
   /** Con adjunto (leyenda del documento / imagen). */
   acceptsMedia?: boolean;
+  /** La medida de llanta es parte de los argumentos (`ultima venta ancro 295/80R22.5`): no lo vuelve un pedido. */
+  allowsSize?: boolean;
 }
 
 /**
@@ -156,6 +160,9 @@ const COMMANDS: CommandSpec[] = [
   // corrida H: anular un pedido generado (devuelve su stock) y ver los descuentos de stock activos (supervisor / admin)
   { name: "anular", re: /^anular\s+(?:la\s+)?(?:oc|o\/c|pedido|orden(?:\s+de\s+compra)?)\s+\S/ },
   { name: "descuentos", re: /^descuentos(?:\s+(?:de\s+)?stock)?$|^stock\s+(?:descontado|comprometido)$/ },
+  // ventas-odoo: últimas ventas a un cliente (con medida o sin ella) y cliente final de una factura de leasing
+  { name: "ultima_venta", re: /^ultimas?\s+ventas?(?:\s+\S.*)?$/, allowsSize: true },
+  { name: "cliente_final", re: /^cliente\s+final(?:\s+\S.*)?$/ },
 ];
 
 /** La palabra del comando en el texto original ("Empresa", "asignarme", "pre-propuesta"...). */
@@ -180,6 +187,8 @@ const RAW_HEAD: Record<PortalCommandName, RegExp> = {
   mejores: /^[\s\S]*$/,
   anular: /^anular\b/i,
   descuentos: /^[\s\S]*$/,
+  ultima_venta: /^[úu]ltimas?\s+ventas?(?![\p{L}\d])/iu,
+  cliente_final: /^cliente\s+final(?![\p{L}\d])/iu,
 };
 
 /** Lo que sigue a la palabra del comando cuando la línea es un campo del cotizador: ": …" o " de: …" (a/al/de/del). */
@@ -199,9 +208,12 @@ export function parsePortalCommand(text: string, opts: { withMedia?: boolean } =
   const raw = (text ?? "").trim();
   if (!raw) return null;
   // una sola línea y sin medida de llanta: "Empresa Transportes ABC\n295/80R22.5 x4" u "OC 4500123 ABC 295/80R22.5 x8" son pedidos
-  if (/[\r\n]/.test(raw) || findTyreSizes(raw).length > 0) return null;
+  // (salvo los comandos que llevan la medida como argumento: `ultima venta ancro 295/80R22.5`)
+  if (/[\r\n]/.test(raw)) return null;
+  const hasSize = findTyreSizes(raw).length > 0;
   const folded = fold(raw);
   for (const c of COMMANDS) {
+    if (hasSize && !c.allowsSize) continue;
     if (!c.re.test(folded)) continue;
     if (opts.withMedia && !c.acceptsMedia) return null;
     const head = RAW_HEAD[c.name].exec(raw);

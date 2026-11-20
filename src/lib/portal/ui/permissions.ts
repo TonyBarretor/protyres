@@ -2,6 +2,7 @@
  * Reglas de las acciones del portal que no cubre auth/permissions.ts. Las server actions las vuelven a comprobar.
  */
 import { canEditCompany, canSeeAll, canSeeUsage } from "../auth/permissions";
+import { roleCanUploadSales, type SalesSettings } from "../sales/config";
 import type { Company, Opportunity, PortalUser } from "../store/types";
 
 type UserLike = Pick<PortalUser, "id" | "rol" | "activo">;
@@ -30,11 +31,24 @@ export function canEditOpportunity(user: UserLike | null | undefined, opp: Pick<
 }
 
 /**
- * Subir ventas reales: solo supervisor/admin. Las ventas alimentan la participación que ven todos; un archivo mal subido
- * no se puede deshacer desde el portal (no hay borrado de ventas reales), así que el vendedor no lo hace.
+ * Subir ventas reales. ventas-odoo, punto 14: los roles salen de config/portal.json → sales.uploadRoles (por defecto admin,
+ * supervisor y vendedor). Una carga del reporte de Odoo actualiza sin duplicar (clave estable por línea), cada carga
+ * queda en el historial con quién la subió, y si sube un vendedor se avisa al administrador.
  */
-export function canUploadSales(user: UserLike | null | undefined): boolean {
-  return canSeeAll(user);
+export function canUploadSales(user: UserLike | null | undefined, settings?: SalesSettings): boolean {
+  return !!user && user.activo && roleCanUploadSales(user.rol, settings);
+}
+
+/**
+ * ventas-odoo, puntos 8 y 9: el historial de ventas de la ficha (precio, costo, proveedor y margen son internos) y asignar
+ * el cliente final de una factura de leasing: vendedor, supervisor y admin activos. El técnico ve la ficha sin este bloque.
+ */
+export function canSeeSalesHistory(user: UserLike | null | undefined): boolean {
+  return !!user && user.activo && (user.rol === "vendedor" || user.rol === "supervisor" || user.rol === "admin");
+}
+
+export function canAssignClienteFinal(user: UserLike | null | undefined): boolean {
+  return canSeeSalesHistory(user);
 }
 
 /**

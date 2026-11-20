@@ -20,6 +20,8 @@ export const PORTAL_HELP = [
   "• *avance* — cómo vas en el mes",
   "• *prepropuesta ZBUSS* — PDF de pre-propuesta",
   "• *aprende flama = Flama 77* — enséñame un término",
+  "• *ultima venta ZBUSS 295/80R22.5* (la medida es opcional; también por voz) — las 3 últimas ventas con precio, costo y margen",
+  "• *cliente final F003-4050 ZBUSS* (o el RUC) — la factura de un banco (leasing) cuenta para esa empresa",
   "• Reporte: escribe o manda una *nota de voz* (p. ej. _visité ZBUSS, hablé con el jefe de flota, quiere cotización de 295/80R22.5_)",
   "",
   "Para cotizar, escribe el pedido como siempre. *cancelar* borra lo pendiente.",

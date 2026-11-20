@@ -18,7 +18,10 @@ import ExcelJS from "exceljs";
 import { z } from "zod";
 import { loadPortalConfig, type PortalPublicInputsConfig } from "../config";
 import { digits } from "../store/shared";
-import type { IsoDate, SaleInput } from "../store/types";
+import type { IsoDate, PortalUser, SaleInput } from "../store/types";
+import { loadSalesSettings, type SalesSettings } from "./config";
+// odoo.ts usa normalizeHeader / parseSaleDate / parseSaleNumber de este módulo (se llaman en tiempo de ejecución)
+import { detectOdooHeader, parseOdooRows, type OdooParseResult } from "./odoo";
 
 export const SALE_FIELDS = ["fecha", "ruc", "razonSocial", "medida", "marca", "diseno", "cantidad", "precioUnitario", "total", "vendedor"] as const;
 export type SaleField = (typeof SALE_FIELDS)[number];
@@ -78,6 +81,10 @@ export interface SaleRowError {
 }
 
 export interface SalesXlsxResult {
+  /** ventas-odoo: "odoo" si la hoja es el reporte de ventas de Odoo (odoo.ts); "simple" el formato de columnMap. */
+  formato: "odoo" | "simple";
+  /** Solo en el formato de Odoo: detalle por línea y resumen para la vista previa. */
+  odoo?: OdooParseResult;
   sheet: string | null;
   /** Fila de encabezados (Excel, 1 en adelante); null si no se encontró. */
   headerRow: number | null;
@@ -153,11 +160,14 @@ export function salesUploadLimits(): SalesUploadLimits {
   return loadPortalConfig().publicInputs.salesUpload;
 }
 
+/** ventas-odoo, punto 14: un PDF u otro formato (el mensaje que pidió el cliente). */
+export const NOT_XLSX_NAME = "Sube el reporte en Excel (.xlsx). Expórtalo desde Odoo a Excel.";
+
 const NOT_XLSX = "El archivo no es un Excel .xlsx válido. Ábrelo en Excel y guárdalo como «Libro de Excel (.xlsx)».";
 
 /** Nombre .xlsx y tamaño (antes de leer el archivo). Mensaje para el usuario, o null. */
 export function checkUploadMeta(file: { name: string; size: number }, maxBytes: number): string | null {
-  if (!/\.xlsx$/i.test(file.name)) return "El archivo debe ser .xlsx (Excel). Si es .xls o .csv, ábrelo en Excel y guárdalo como .xlsx.";
+  if (!/\.xlsx$/i.test(file.name)) return NOT_XLSX_NAME;
   if (file.size > maxBytes) return `El archivo pesa más de ${Math.round(maxBytes / 1_000_000)} MB. Divídelo en partes (por ejemplo, por mes).`;
   return null;
 }
@@ -184,6 +194,9 @@ export interface ReadSalesOptions {
   origen?: string;
   /** Por defecto config/portal.json → publicInputs.salesUpload. */
   limits?: SalesUploadLimits;
+  /** Formato de Odoo: usuarios para reconocer al vendedor y config de `sales` (por defecto la de config/portal.json). */
+  users?: readonly Pick<PortalUser, "id" | "nombre" | "whatsapp">[];
+  settings?: SalesSettings;
 }
 
 type Raw = ExcelJS.CellValue;
@@ -358,7 +371,7 @@ export async function readSalesXlsx(input: Buffer | ArrayBuffer | Uint8Array, op
   await wb.xlsx.load(input as unknown as ArrayBuffer);
   const sheets = wb.worksheets.filter((ws) => (opts.sheet ? ws.name === opts.sheet : ws.state !== "hidden" && ws.state !== "veryHidden"));
   if (!sheets.length) {
-    return { sheet: null, headerRow: null, mapping: {}, missing: [...REQUIRED_SALE_FIELDS], rows: [], errors: [{ row: 0, error: opts.sheet ? `No existe la hoja "${opts.sheet}"` : "El archivo no tiene hojas" }] };
+    return { formato: "simple", sheet: null, headerRow: null, mapping: {}, missing: [...REQUIRED_SALE_FIELDS], rows: [], errors: [{ row: 0, error: opts.sheet ? `No existe la hoja "${opts.sheet}"` : "El archivo no tiene hojas" }] };
   }
   let fallback: SalesXlsxResult | null = null;
   for (const ws of sheets) {
@@ -368,14 +381,20 @@ export async function readSalesXlsx(input: Buffer | ArrayBuffer | Uint8Array, op
       );
     }
     const matrix = sheetMatrix(ws, limits.maxColumns);
-    const det = detectColumns(
-      matrix.map((r) => Array.from(r, (c) => text(c ?? null))),
-      columnMap,
-    );
+    const asText = matrix.map((r) => Array.from(r, (c) => text(c ?? null)));
+    // ventas-odoo: el reporte de Odoo se reconoce por sus encabezados (TIPO DOC, N° FACTURA, DESCRIPCIÓN, ...)
+    const odooHeader = detectOdooHeader(asText);
+    if (odooHeader) {
+      const settings = opts.settings ?? loadSalesSettings();
+      const odoo = parseOdooRows(matrix, odooHeader.headerRow, odooHeader.mapping, { settings, users: opts.users ?? [], origen: opts.origen ?? "odoo" });
+      return { formato: "odoo", odoo, sheet: ws.name, headerRow: odooHeader.headerRow, mapping: {}, missing: [], rows: odoo.rows, errors: odoo.errors };
+    }
+    const det = detectColumns(asText, columnMap);
     const mapping = det?.mapping ?? {};
     const missing = REQUIRED_SALE_FIELDS.filter((f) => !mapping[f]);
     if (!det || missing.length) {
       fallback ??= {
+        formato: "simple",
         sheet: ws.name,
         headerRow: det?.headerRow ?? null,
         mapping,
@@ -386,7 +405,7 @@ export async function readSalesXlsx(input: Buffer | ArrayBuffer | Uint8Array, op
       continue;
     }
     const { rows, errors } = rowsToSales(matrix, det.headerRow, mapping, opts.origen ?? "excel");
-    return { sheet: ws.name, headerRow: det.headerRow, mapping, missing: [], rows, errors };
+    return { formato: "simple", sheet: ws.name, headerRow: det.headerRow, mapping, missing: [], rows, errors };
   }
   return fallback!;
 }

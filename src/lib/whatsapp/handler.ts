@@ -29,7 +29,7 @@ import { OFF_TOPIC_REPLY, isOffTopic } from "../guard/off-topic";
 import { runWithQuoteScope, type QuoteLlmScope } from "../quote/shadow";
 import { routePortal } from "../portal/bot";
 import { voiceCatalogFromStore } from "../portal/voice/catalog";
-import { linkQuoteToPortal, onQuoteSentToPortal, portalCreditTerm } from "../portal/quotes/link";
+import { linkQuoteToPortal, onQuoteSentToPortal, portalCreditTerm, portalSaleReference } from "../portal/quotes/link";
 import type { PortalStore } from "../portal/store/types";
 import type { IngestResult } from "../ingest/types";
 import { fold, findBrandInText } from "../tyre/brands";
@@ -895,6 +895,10 @@ export class BotHandler {
       req = { ...req, paymentTerm: credit.term };
       note = `${note ? note + "\n" : ""}${credit.note}`;
     }
+    // portal (ventas-odoo, punto 8): "Última venta a este cliente: …", solo informativa y solo en este mensaje al vendedor
+    // ([] fuera del portal: sin cambios); el precio y lo que ve el cliente no cambian
+    const saleRefs = await portalSaleReference({ from, text, req, store: this.deps.portalStore, log: (m) => this.log(m) });
+    if (saleRefs.length) note = `${note ? note + "\n" : ""}${saleRefs.join("\n")}`;
     return this.showOptions(from, text, req, profile, { note, newQuote: true, lead: opts.lead, ...(opts.voice ? { voice: true } : {}) });
   }
 
