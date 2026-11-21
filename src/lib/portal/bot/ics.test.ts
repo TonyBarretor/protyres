@@ -110,3 +110,82 @@ describe("inyección en el .ics", () => {
     expect(ics.split("\r\n").some((l) => l.startsWith("ATTENDEE"))).toBe(false);
   });
 });
+
+// corrida J, punto 4: invitación por correo (iTIP, RFC 5546) que Outlook clásico muestra con Aceptar y guarda en su
+// calendario local. Crear y reprogramar = METHOD:REQUEST con el mismo UID y SEQUENCE mayor; cancelar = METHOD:CANCEL.
+describe("invitación iTIP (REQUEST / CANCEL)", () => {
+  const ORGANIZER = { email: "citas@mail.example.pe", name: "360 Tyres · Citas" };
+  const FRANK = { email: "frank@example.pe", name: "Frank Rodríguez" };
+  const DANYER = { email: "danyer@example.pe", name: "Danyer Saavedra" };
+  const vevent = (ics: string) => {
+    const lines = parseIcsLines(ics);
+    return lines.slice(lines.findIndex((l) => l.name === "BEGIN" && l.value === "VEVENT"));
+  };
+  const calProp = (ics: string, n: string) => parseIcsLines(ics).find((l) => l.name === n);
+
+  it("crear: METHOD:REQUEST, ORGANIZER (el remitente del bot) y ATTENDEE por invitado interno", () => {
+    const ics = sample({ method: "REQUEST", organizer: ORGANIZER, attendees: [FRANK, DANYER] });
+    assertValid(ics);
+    expect(calProp(ics, "METHOD")!.value).toBe("REQUEST");
+    const ev = vevent(ics);
+    expect(ev.find((l) => l.name === "ORGANIZER")).toEqual({ name: "ORGANIZER", params: { CN: "360 Tyres · Citas" }, value: "mailto:citas@mail.example.pe" });
+    const att = ev.filter((l) => l.name === "ATTENDEE");
+    expect(att.map((a) => a.value)).toEqual(["mailto:frank@example.pe", "mailto:danyer@example.pe"]);
+    expect(att[0].params).toMatchObject({ CN: "Frank Rodríguez", ROLE: "REQ-PARTICIPANT", PARTSTAT: "NEEDS-ACTION", RSVP: "FALSE", CUTYPE: "INDIVIDUAL" });
+    expect(ev.find((l) => l.name === "STATUS")!.value).toBe("CONFIRMED");
+    expect(ev.find((l) => l.name === "SEQUENCE")!.value).toBe("0");
+    expect(ev.find((l) => l.name === "UID")!.value).toBe("cita-7-20999000011@portal.360tyres");
+    expect(ev.some((l) => l.name === "BEGIN" && l.value === "VALARM")).toBe(true);
+  });
+
+  it("reprogramar: mismo UID, SEQUENCE mayor, DTSTAMP nuevo, sigue siendo REQUEST", () => {
+    const first = sample({ method: "REQUEST", organizer: ORGANIZER, attendees: [FRANK] });
+    const later = new Date(START.getTime() + 2 * 86_400_000);
+    const upd = sample({ method: "REQUEST", organizer: ORGANIZER, attendees: [FRANK], start: later, sequence: 61, stamp: new Date(STAMP.getTime() + 61_000) });
+    assertValid(upd);
+    const v = (ics: string, n: string) => vevent(ics).find((l) => l.name === n)!.value;
+    expect(v(upd, "UID")).toBe(v(first, "UID"));
+    expect(Number(v(upd, "SEQUENCE"))).toBeGreaterThan(Number(v(first, "SEQUENCE")));
+    expect(v(upd, "DTSTAMP") > v(first, "DTSTAMP")).toBe(true);
+    expect(v(upd, "DTSTART")).toBe("20261119T100000");
+    expect(v(upd, "ORGANIZER")).toBe(v(first, "ORGANIZER")); // mismo organizador: Outlook actualiza, no duplica
+    expect(calProp(upd, "METHOD")!.value).toBe("REQUEST");
+  });
+
+  it("cancelar: METHOD:CANCEL, STATUS:CANCELLED, mismo UID, ORGANIZER y ATTENDEE, sin alarma", () => {
+    const ics = sample({ method: "CANCEL", organizer: ORGANIZER, attendees: [FRANK], sequence: 120 });
+    assertValid(ics);
+    expect(calProp(ics, "METHOD")!.value).toBe("CANCEL");
+    const ev = vevent(ics);
+    expect(ev.find((l) => l.name === "STATUS")!.value).toBe("CANCELLED");
+    expect(ev.find((l) => l.name === "SEQUENCE")!.value).toBe("120");
+    expect(ev.find((l) => l.name === "UID")!.value).toBe("cita-7-20999000011@portal.360tyres");
+    expect(ev.find((l) => l.name === "ORGANIZER")!.value).toBe("mailto:citas@mail.example.pe");
+    expect(ev.filter((l) => l.name === "ATTENDEE").map((a) => a.value)).toEqual(["mailto:frank@example.pe"]);
+    expect(ev.some((l) => l.value === "VALARM")).toBe(false);
+  });
+
+  it("REQUEST/CANCEL sin organizador o sin invitados: error (Outlook no la trataría como reunión)", () => {
+    expect(() => sample({ method: "REQUEST", attendees: [FRANK] })).toThrow(/ORGANIZER/);
+    expect(() => sample({ method: "CANCEL", organizer: ORGANIZER, attendees: [] })).toThrow(/ATTENDEE/);
+  });
+
+  it("nombres y correos no inyectan parámetros ni líneas", () => {
+    const ics = sample({
+      method: "REQUEST",
+      organizer: { email: "citas@mail.example.pe", name: 'Citas "360"; ROLE=CHAIR:x' },
+      attendees: [{ email: "frank@example.pe", name: "Frank\r\nATTENDEE:mailto:x@hacker.example" }],
+    });
+    assertValid(ics);
+    const ev = vevent(ics);
+    expect(ev.filter((l) => l.name === "ATTENDEE")).toHaveLength(1);
+    expect(ev.find((l) => l.name === "ORGANIZER")!.params).toEqual({ CN: "Citas 360 ROLE CHAIR x" });
+    expect(() => sample({ method: "REQUEST", organizer: ORGANIZER, attendees: [{ email: "x@y.pe\r\nATTENDEE:mailto:z@h.example" }] })).toThrow(/correo/);
+  });
+
+  it("sin method sigue siendo el archivo de siempre (PUBLISH, sin ORGANIZER ni ATTENDEE)", () => {
+    const ics = sample();
+    expect(calProp(ics, "METHOD")!.value).toBe("PUBLISH");
+    expect(parseIcsLines(ics).some((l) => l.name === "ORGANIZER" || l.name === "ATTENDEE")).toBe(false);
+  });
+});

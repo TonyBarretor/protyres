@@ -1,5 +1,6 @@
 /**
- * Archivo .ics (RFC 5545) de una cita, para que el vendedor la agregue a Outlook abriéndolo desde WhatsApp.
+ * Archivo .ics (RFC 5545) de una cita: el respaldo que se abre desde WhatsApp (METHOD:PUBLISH) y la invitación por correo
+ * (iTIP, RFC 5546: METHOD:REQUEST / CANCEL con ORGANIZER y ATTENDEE) que Outlook muestra con Aceptar.
  * Hora con TZID America/Lima + VTIMEZONE (UTC−5 fijo, sin horario de verano); DTSTAMP en UTC. Líneas plegadas a 75
  * octetos (UTF-8, sin partir caracteres), CRLF, y escape de \ ; , y saltos de línea en los textos.
  */
@@ -20,6 +21,22 @@ export interface IcsEvent {
   alarmMinutes?: number | null;
   /** SEQUENCE: mayor que la anterior cuando la misma cita (mismo UID) cambia, para que Outlook la actualice. Por defecto 0. */
   sequence?: number;
+  /**
+   * PUBLISH (por defecto): el archivo que se abre a mano. REQUEST / CANCEL (iTIP, RFC 5546): la invitación por correo
+   * que Outlook muestra con Aceptar (o "Quitar del calendario"); exigen ORGANIZER y al menos un ATTENDEE.
+   */
+  method?: IcsMethod;
+  /** Quien organiza (el remitente del bot, nunca el invitado: si fuera el mismo, Outlook la trata como reunión propia). */
+  organizer?: IcsPerson | null;
+  /** Invitados (solo usuarios internos). */
+  attendees?: IcsPerson[];
+}
+
+export type IcsMethod = "PUBLISH" | "REQUEST" | "CANCEL";
+
+export interface IcsPerson {
+  email: string;
+  name?: string | null;
 }
 
 export const ICS_MIME = "text/calendar";
@@ -70,14 +87,38 @@ export function icsLima(d: Date): string {
   return icsUtc(new Date(d.getTime() - 5 * 60 * 60 * 1000)).slice(0, -1);
 }
 
+/** Correo simple para un mailto: (sin espacios, controles, comillas ni separadores de propiedad). */
+const ICS_EMAIL_RE = /^[^\s@"<>:;,\\]+@[^\s@"<>:;,\\]+\.[^\s@"<>:;,\\]+$/;
+
+/** CN como param-text sin comillas: fuera ", ;, :, ,, = y controles (no puede abrir otro parámetro ni otra línea). */
+function paramText(s: string): string {
+  return s
+    .replace(/[\u0000-\u001F\u007F\u2028\u2029";:,=]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 100);
+}
+
+function personLine(prop: "ORGANIZER" | "ATTENDEE", p: IcsPerson): string {
+  const email = p.email.trim();
+  if (!ICS_EMAIL_RE.test(email)) throw new Error(`ics: correo no válido en ${prop}`);
+  const cn = p.name ? paramText(p.name) : "";
+  const params = [cn ? `CN=${cn}` : null, ...(prop === "ATTENDEE" ? ["CUTYPE=INDIVIDUAL", "ROLE=REQ-PARTICIPANT", "PARTSTAT=NEEDS-ACTION", "RSVP=FALSE"] : [])].filter(Boolean);
+  return `${prop}${params.map((x) => `;${x}`).join("")}:mailto:${email}`;
+}
+
 export function buildIcs(ev: IcsEvent): string {
   const end = new Date(ev.start.getTime() + ev.durationMinutes * 60_000);
+  const method = ev.method ?? "PUBLISH";
+  const itip = method !== "PUBLISH";
+  if (itip && !ev.organizer) throw new Error(`ics: METHOD:${method} necesita ORGANIZER`);
+  if (itip && !ev.attendees?.length) throw new Error(`ics: METHOD:${method} necesita al menos un ATTENDEE`);
   const lines = [
     "BEGIN:VCALENDAR",
     "VERSION:2.0",
     "PRODID:-//360 Tyres//Portal comercial//ES",
     "CALSCALE:GREGORIAN",
-    "METHOD:PUBLISH",
+    `METHOD:${method}`,
     "BEGIN:VTIMEZONE",
     `TZID:${LIMA_TZ}`,
     "BEGIN:STANDARD",
@@ -97,8 +138,13 @@ export function buildIcs(ev: IcsEvent): string {
   if (ev.location) lines.push(`LOCATION:${escapeText(ev.location)}`);
   if (ev.description) lines.push(`DESCRIPTION:${escapeText(ev.description)}`);
   if (ev.url) lines.push(`URL:${ev.url}`);
-  lines.push("STATUS:CONFIRMED", `SEQUENCE:${Math.max(0, Math.floor(ev.sequence ?? 0))}`, "TRANSP:OPAQUE");
-  if (ev.alarmMinutes && ev.alarmMinutes > 0) {
+  if (itip) {
+    lines.push(personLine("ORGANIZER", ev.organizer!));
+    for (const a of ev.attendees!) lines.push(personLine("ATTENDEE", a));
+  }
+  const cancel = method === "CANCEL";
+  lines.push(cancel ? "STATUS:CANCELLED" : "STATUS:CONFIRMED", `SEQUENCE:${Math.max(0, Math.floor(ev.sequence ?? 0))}`, "TRANSP:OPAQUE");
+  if (!cancel && ev.alarmMinutes && ev.alarmMinutes > 0) {
     lines.push("BEGIN:VALARM", "ACTION:DISPLAY", `DESCRIPTION:${escapeText(ev.summary)}`, `TRIGGER:-PT${Math.round(ev.alarmMinutes)}M`, "END:VALARM");
   }
   lines.push("END:VEVENT", "END:VCALENDAR");

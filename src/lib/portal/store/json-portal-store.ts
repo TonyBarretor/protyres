@@ -7,7 +7,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { CLOSED_STAGES, isClosedStage, stageProbability } from "../stages";
-import { companyNameKey, dedupeBy, defaultSince, digits, docClienteOf, groupFleet, nameMatches, normDocumento, normMarca, pageOf, saleActive, saleCountRuc, saleCountsUnits, saleUnits, searchRucPrefix, searchTerms, toIsoDate, topMedidas, type FleetAggRow } from "./shared";
+import { companyNameKey, dedupeBy, defaultSince, digits, docClienteOf, groupFleet, nameMatches, normDocumento, normEmail, normMarca, pageOf, saleActive, saleCountRuc, saleCountsUnits, saleUnits, searchRucPrefix, searchTerms, toIsoDate, topMedidas, type FleetAggRow } from "./shared";
 import type {
   Activity,
   ActivityFilter,
@@ -434,6 +434,9 @@ export class JsonPortalStore implements PortalStore {
   }
 
   private putUser(u: PortalUser): void {
+    // archivos previos a la corrida J: sin correo ni enlaces de calendario
+    u.email ??= null;
+    u.calendarLinks ??= false;
     this.users.set(u.id, u);
     if (u.whatsapp) this.userByWa.set(u.whatsapp, u.id);
   }
@@ -930,9 +933,12 @@ export class JsonPortalStore implements PortalStore {
       prev.nombre = input.nombre;
       prev.rol = input.rol;
       if (input.activo !== undefined) prev.activo = input.activo;
+      if (input.email !== undefined) prev.email = normEmail(input.email);
+      if (input.calendarLinks !== undefined) prev.calendarLinks = input.calendarLinks;
       u = prev;
     } else {
-      u = { id: this.nextId("users"), nombre: input.nombre, whatsapp: wa, rol: input.rol, activo: input.activo ?? true, createdAt: new Date() };
+      const extra = { email: normEmail(input.email), calendarLinks: input.calendarLinks ?? false };
+      u = { id: this.nextId("users"), nombre: input.nombre, whatsapp: wa, rol: input.rol, activo: input.activo ?? true, createdAt: new Date(), ...extra };
       this.putUser(u);
     }
     this.changed();

@@ -42,6 +42,11 @@ async function scenario(s: PortalStore, trace: (label: string, v: unknown) => vo
   trace("user.inactivo", await s.upsertUser({ nombre: "Ex Vendedor", whatsapp: "51900000003", rol: "vendedor", activo: false }));
   trace("user.update", await s.upsertUser({ nombre: "Frank P.", whatsapp: "51900000001", rol: "vendedor" }));
   trace("user.keepsActivo", await s.upsertUser({ nombre: "Ex Vendedor", whatsapp: "51900000003", rol: "vendedor" }));
+  // corrida J: correo y enlaces de calendario; un upsert sin ellos los conserva, null borra el correo, uno mal escrito no se guarda
+  trace("user.email", await s.upsertUser({ nombre: "Frank P.", whatsapp: "51900000001", rol: "vendedor", email: " Frank.P@Example.PE ", calendarLinks: true }));
+  trace("user.keepsEmail", await s.upsertUser({ nombre: "Frank P.", whatsapp: "51900000001", rol: "vendedor" }));
+  trace("user.badEmail", await s.upsertUser({ nombre: "Juan Prueba", whatsapp: "51900000002", rol: "supervisor", email: "no es correo" }));
+  trace("user.clearEmail", await s.upsertUser({ nombre: "Ex Vendedor", whatsapp: "51900000003", rol: "vendedor", email: null, calendarLinks: false }));
   trace("user.byWhatsapp", await s.getUserByWhatsapp("51 900 000 002"));
   trace("user.list", await s.listUsers());
 

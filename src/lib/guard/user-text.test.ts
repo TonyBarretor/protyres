@@ -51,6 +51,11 @@ const ERROR_ALLOWED: { file: string; starts: string; why: string }[] = [
   { file: "src/lib/portal/auth/tokens.ts", starts: "PORTAL_SESSION_SECRET es demasiado corto", why: "PortalAuthConfigError: la pantalla y el chat dicen 'contacta al administrador' (configErrorPage, noConfigReply)" },
   { file: "src/lib/store/pg-store.ts", starts: "falta la tabla", why: "error de la base: el handler lo muestra con userErrorText" },
   { file: "src/lib/drive/sync.ts", starts: "Google Drive not configured", why: "API interna /api/ingest/refresh (JSON para el cron), no es una pantalla" },
+  // corrida J: por qué no sale la invitación de calendario; va al registro y a la actividad, al vendedor le llega
+  // "el correo del bot no está configurado" (inviteLines en commands/cita.ts)
+  { file: "src/lib/portal/calendar/mail.ts", starts: "falta RESEND_API_KEY", why: "motivo de calendarEmailStatus: registro y actividad, no el chat" },
+  { file: "src/lib/portal/calendar/mail.ts", starts: "falta EMAIL_FROM", why: "motivo de calendarEmailStatus: registro y actividad, no el chat" },
+  { file: "src/lib/portal/calendar/mail.ts", starts: "EMAIL_FROM", why: "motivo de calendarEmailStatus: registro y actividad, no el chat" },
 ];
 /** Archivos que no son de cara al usuario (CLI, rutas internas que devuelven JSON a tareas programadas). */
 const NOT_VISIBLE = [/^src\/cli\//, /^src\/app\/api\/cron\//, /^src\/lib\/portal\/store\/migrate-guard\.ts$/, /^src\/lib\/whatsapp\/webhook\.ts$/, /^src\/lib\/portal\/survey\/invite\.ts$/];

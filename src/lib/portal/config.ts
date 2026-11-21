@@ -23,6 +23,18 @@ const AppointmentsSchema = z.object({
   durationMinutes: z.number().int().min(5).max(24 * 60).default(60),
   /** Aviso del calendario antes de la cita (minutos; 0 = sin aviso). */
   alarmMinutes: z.number().int().min(0).max(24 * 60).default(30),
+  /**
+   * Corrida J: invitación de calendario por correo al vendedor (y al técnico si va). Sale solo con RESEND_API_KEY y un
+   * EMAIL_FROM verificado (src/lib/portal/calendar/mail.ts); si no, el bot lo dice en una línea y queda el archivo.
+   * transport: "smtp" (parte text/calendar inline por smtp.resend.com, la que Outlook muestra con Aceptar) o "api"
+   * (API JSON de Resend con el .ics adjunto).
+   */
+  invite: z
+    .object({
+      enabled: z.boolean().default(true),
+      transport: z.enum(["smtp", "api"]).default("smtp"),
+    })
+    .prefault({}),
 });
 
 /** Jefe del Dpto. Técnico ("cita … con danyer"): número fijo o variable de entorno; sin número, el bot lo dice. */

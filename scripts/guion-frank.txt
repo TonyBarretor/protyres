@@ -17,8 +17,12 @@ empresa zbuss
 @btn Asignarme || asignarme zbuss
 # 4. Primer contacto
 contacto zbuss: Carlos Quispe, jefe de flota, 987 654 321
-# 5. Cita con el jefe del Dpto. Técnico: .ics sin leyenda + resumen + aviso a Danyer (sin PORTAL_TECH_LEAD_NUMBER, el bot lo dice)
+# 5. Cita con el jefe del Dpto. Técnico: resumen + aviso a Danyer (sin PORTAL_TECH_LEAD_NUMBER, el bot lo dice) + .ics sin
+#    leyenda de respaldo. Corrida J: la invitación de calendario (METHOD:REQUEST, Outlook: Aceptar) va al correo de Frank
+#    (config/pilot.json); en el simulador queda como out/simulacion/correo-NN-…-request.eml, no se envía
 cita zbuss martes 10am en su base de Ate con danyer
+@espera-texto Te envié la invitación a tu correo; ábrela en Outlook y pulsa Aceptar
+@no-texto Agrégala a tu calendario de Outlook abriendo el archivo
 # 6. Reporte de visita en texto y confirmación (B3)
 #    (sin ANTHROPIC_API_KEY lo interpreta por reglas; con la clave, el modelo. Una nota de voz: @audio <archivo.ogg>)
 Visité ZBUSS, hablé con Carlos Quispe, jefe de flota. Tienen 82 ómnibus y quieren probar Fenixway en direccional. Quedamos en mandarle la cotización el jueves.
@@ -111,6 +115,17 @@ cliente final F003-96005 quimera prueba
 Fenixway Valor 89 295/80R22.5 x4 para Transportes Quimera Prueba RUC 20999000077
 @espera-texto Última venta a este cliente: Valor 89 a US$ 258 el 04/10/2026
 cancelar
+# 10b. Corrida J: otra cita que se reprograma (misma invitación, SEQUENCE mayor: Outlook la mueve) y se cancela
+#    (METHOD:CANCEL: Outlook la quita). Los tres correos quedan como .eml en out/simulacion/
+cita zbuss jueves 4pm en su base de Ate
+@espera-texto Te envié la invitación a tu correo
+cita zbuss jueves 4pm
+@btn Reprogramar || reprogramar
+viernes 9am
+@espera-texto Te envié la actualización a tu correo
+cita cancelar zbuss viernes 9am
+@espera-texto Cancelé la cita con *ZBUSS S.A.C.*
+@espera-texto Te envié la cancelación a tu correo
 # 11. Pendientes del día y ayuda
 hoy
 ayuda portal

@@ -16,7 +16,12 @@
   "appointments": {
     "_comment": "Comando cita: duración de la cita en el .ics y aviso del calendario antes (minutos; 0 = sin aviso).",
     "durationMinutes": 60,
-    "alarmMinutes": 30
+    "alarmMinutes": 30,
+    "invite": {
+      "_comment": "Invitación de calendario por correo (Outlook: Aceptar) al vendedor y, con 'con danyer', al técnico. Sale solo con RESEND_API_KEY y un EMAIL_FROM de dominio verificado (nunca @360tyres.pe); si no, el bot lo dice y queda el archivo .ics. transport: smtp (parte text/calendar inline, recomendado) o api (adjunto). Correo de cada usuario: 'email' en users (el de Frank sale de salespeople en config/pilot.json); 'calendarLinks': true añade los enlaces de Outlook web y Google Calendar.",
+      "enabled": true,
+      "transport": "smtp"
+    }
   },
   "techLead": {
     "_comment": "Jefe del Dpto. Técnico ('cita ... con danyer'). Número: 'whatsapp' fijo (solo dígitos) o la variable de 'whatsappEnv'. Sin número, el bot avisa al vendedor.",

@@ -2,7 +2,9 @@
  * Simulador de punta a punta del bot (portal + cotizador): inyecta mensajes en el MISMO BotHandler.handle() que usa el
  * webhook (src/lib/bot.ts), como si llegaran del número de un usuario, con WhatsApp reemplazado por la consola.
  * No envía nada real: los textos se imprimen, los documentos/imágenes se guardan en out/simulacion/ (con prefijo de
- * secuencia) y los correos de cotización quedan como borrador en la misma carpeta.
+ * secuencia) y los correos de cotización quedan como borrador en la misma carpeta. Las invitaciones de calendario de las
+ * citas (corrida J) quedan como .eml (el MIME completo, que se puede abrir en Outlook) en la misma carpeta; en la copia
+ * de datos, los usuarios sin correo toman el de la configuración (como `npm run portal:seed-users`).
  *
  *   npm run portal:simulate -- --as frank                         (interactivo)
  *   npm run portal:simulate -- --as frank --script scripts/guion-frank.txt
@@ -377,6 +379,16 @@ async function main() {
     await portal.flush();
     notes.push(`Puntajes calculados en la copia: ${r.empresas} empresas (A ${r.conteo.A} · B ${r.conteo.B} · C ${r.conteo.C}) en ${r.durationMs} ms.`);
   }
+  // corrida J: correo de los usuarios en la copia (el de config: Frank en salespeople de config/pilot.json), para que la
+  // invitación de la cita se arme como en producción tras `npm run portal:seed-users`
+  if (onCopy) {
+    const { planUsers } = await import("../lib/portal/users");
+    for (const p of planUsers().users) {
+      const u = p.email ? await portal.getUserByWhatsapp(p.whatsapp) : null;
+      if (u && !u.email) await portal.upsertUser({ nombre: u.nombre, whatsapp: p.whatsapp, rol: u.rol, email: p.email });
+    }
+    await portal.flush();
+  }
   let me = await resolvePhone(args.as, () => portal.listUsers());
   currentPhone = me.phone;
   const client = new ConsoleWhatsAppClient();
@@ -418,6 +430,15 @@ async function main() {
       console.log(`   ✉️  correo simulado (no enviado): ${path.relative(process.cwd(), p)}`);
       return { sent: true, id: "simulacion" };
     },
+  });
+
+  // invitaciones de calendario de las citas: el MIME completo como .eml (nunca sale un correo real)
+  const { buildInviteMime, configureCalendarMailer } = await import("../lib/portal/calendar/mail");
+  configureCalendarMailer(async (mail) => {
+    const p = path.join(outDir, `correo-${String(++emailSeq).padStart(2, "0")}-${safe(mail.fileName.replace(/\.ics$/i, ""))}-${mail.method.toLowerCase()}.eml`);
+    fs.writeFileSync(p, buildInviteMime(mail));
+    console.log(`   ✉️  invitación de calendario simulada (no enviada, ${mail.method}) a ${mail.to.join(", ")}: ${path.relative(process.cwd(), p)}`);
+    return { sent: true, id: "simulacion" };
   });
 
   for (const n of notes) console.log(`ℹ️  ${n}`);

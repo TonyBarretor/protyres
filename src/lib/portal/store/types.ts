@@ -482,6 +482,10 @@ export interface PortalUser {
   rol: UserRole;
   activo: boolean;
   createdAt: Date;
+  /** Corrida J: correo para la invitación de calendario de las citas (null = sin correo; no se le envía). */
+  email?: string | null;
+  /** Corrida J: añadir a la cita los enlaces "Agregar a Outlook web" / "Agregar a Google Calendar" (apagado por defecto). */
+  calendarLinks?: boolean;
 }
 
 export interface UserInput {
@@ -490,6 +494,10 @@ export interface UserInput {
   whatsapp: string;
   rol: UserRole;
   activo?: boolean;
+  /** Sin la clave (undefined) se conserva el que tenía; null lo borra. */
+  email?: string | null;
+  /** Sin la clave se conserva (por defecto false al crear). */
+  calendarLinks?: boolean;
 }
 
 export interface LoginToken {

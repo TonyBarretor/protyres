@@ -5,7 +5,7 @@
 import postgres from "postgres";
 import { serverlessPostgres } from "../../store/pg-options";
 import { isClosedStage, stageProbability, type StageId } from "../stages";
-import { dedupeBy, defaultSince, digits, docClienteOf, groupFleet, normDocumento, normMarca, pageOf, searchRucPrefix, searchTerms, toIsoDate, topMedidas, ttlCache, type FleetAggRow } from "./shared";
+import { dedupeBy, defaultSince, digits, docClienteOf, groupFleet, normDocumento, normEmail, normMarca, pageOf, searchRucPrefix, searchTerms, toIsoDate, topMedidas, ttlCache, type FleetAggRow } from "./shared";
 import type { SaleClientDoc, SaleDetail, SaleDocType, SaleLineType, SalesClientRow, SalesQuery, SalesUpload, SalesUploadInput, ServiceType } from "./types";
 import type { BestCompaniesQuery, BestCompany, Nivel, RankingValidation, RankingValidationInput, ScoreDetail, ScoreInput, ScoreInputQuery, ScoreRun, ScoreRunInput, ScoreUpdate, ValidationAnswer } from "./types";
 import type {
@@ -321,7 +321,16 @@ const DOC_NORM_SQL = "regexp_replace(upper(regexp_replace(coalesce(documento, ''
 const SALE_UPDATE_COLS = Object.keys(saleRow({ fecha: "2000-01-01", ruc: "", cantidad: 0 })).filter((c) => c !== "line_key");
 
 function toUser(r: Row): PortalUser {
-  return { id: Number(r.id), nombre: String(r.nombre), whatsapp: str(r.whatsapp), rol: r.rol as UserRole, activo: Boolean(r.activo), createdAt: date(r.created_at)! };
+  return {
+    id: Number(r.id),
+    nombre: String(r.nombre),
+    whatsapp: str(r.whatsapp),
+    rol: r.rol as UserRole,
+    activo: Boolean(r.activo),
+    createdAt: date(r.created_at)!,
+    email: str(r.email),
+    calendarLinks: Boolean(r.calendar_links),
+  };
 }
 
 function toSession(r: Row): PortalSession {
@@ -1077,9 +1086,12 @@ export class PgPortalStore implements PortalStore {
     const wa = digits(input.whatsapp);
     if (!wa) throw new Error("upsertUser: falta el número de WhatsApp");
     const [r] = await this.sql`
-      insert into users (nombre, whatsapp, rol, activo) values (${input.nombre}, ${wa}, ${input.rol}, ${input.activo ?? true})
+      insert into users (nombre, whatsapp, rol, activo, email, calendar_links)
+      values (${input.nombre}, ${wa}, ${input.rol}, ${input.activo ?? true}, ${normEmail(input.email)}, ${input.calendarLinks ?? false})
       on conflict (whatsapp) do update set nombre = excluded.nombre, rol = excluded.rol,
-        activo = ${input.activo === undefined ? this.sql`users.activo` : this.sql`excluded.activo`}
+        activo = ${input.activo === undefined ? this.sql`users.activo` : this.sql`excluded.activo`},
+        email = ${input.email === undefined ? this.sql`users.email` : this.sql`excluded.email`},
+        calendar_links = ${input.calendarLinks === undefined ? this.sql`users.calendar_links` : this.sql`excluded.calendar_links`}
       returning *`;
     return toUser(r);
   }
