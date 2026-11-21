@@ -213,7 +213,8 @@ Visité Labocer, hablé con Ana Torres, jefa de logística; les interesa Fenixwa
 @btn Asignar y guardar || asignármela
 @espera-texto Empresa asignada a ti
 @espera-texto Contacto nuevo: Ana Torres
-Llamé a Jevaro, no contestaron
+#      (con la fecha de la próxima llamada en el mismo mensaje: el modelo a veces entiende "reintentar" y pregunta cuándo)
+Llamé a Jevaro, no contestaron; vuelvo a llamar el lunes 10am
 @btn Sí, guardar || sí
 @btn Guardar solo la nota || solo la nota
 @espera-texto guardé la actividad sin mover su oportunidad
