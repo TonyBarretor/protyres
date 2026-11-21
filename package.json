@@ -21,6 +21,7 @@
     "photos": "tsx --tsconfig tsconfig.cli.json src/cli/photos.ts",
     "db:studio": "drizzle-kit studio",
     "portal:import-mtc": "tsx --tsconfig tsconfig.cli.json src/cli/portal-import-mtc.ts",
+    "portal:import-ruc": "tsx --tsconfig tsconfig.cli.json src/cli/portal-import-ruc.ts",
     "portal:recalc-sector": "tsx --tsconfig tsconfig.cli.json src/cli/portal-recalc-sector.ts",
     "portal:recalc-score": "tsx --tsconfig tsconfig.cli.json src/cli/portal-recalc-score.ts",
     "score:validation-report": "tsx --tsconfig tsconfig.cli.json src/cli/score-validation-report.ts",

@@ -76,6 +76,25 @@ export interface ReportDraftStep extends PendingStep {
   audio?: { id: string; mimeType: string } | null;
   draft?: ReportDraft;
   field?: DraftField | null;
+  /** Corrida J: la empresa que se buscó y no está en el padrón (se ofrecen *Crear empresa nueva* / *Buscar otra vez*). */
+  notFound?: string | null;
+  /**
+   * Corrida J: la empresa no tiene dueño y se espera *Asignármela y guardar todo* (`guardar todo`) o *Guardar solo la
+   * nota* (`solo la nota`).
+   */
+  ownerChoice?: boolean;
+}
+
+/**
+ * Corrida J: la empresa buscada no está en el padrón (resolveCompany con `offerCreate`): se ofrecieron *Crear empresa
+ * nueva* (`nueva empresa`, con lo buscado) y *Buscar otra vez*. Al crearla o encontrarla sigue `action` con `args`.
+ */
+export interface CompanyNotFoundStep extends PendingStep {
+  kind: "company_not_found" | "company_search";
+  action: string;
+  args: Record<string, unknown>;
+  /** Lo que se buscó (company_not_found). */
+  query?: string;
 }
 
 export function isExpired(step: PendingStep, now: Date): boolean {

@@ -2,6 +2,8 @@
  * Ficha de empresa: indicadores, flota por marca (dato MTC + medida inferida), dueño (Asignarme), temperatura,
  * oportunidad abierta, contactos, actividad y bloque de crédito. Corrida G: bloque "Por qué este nivel" (WhyLevel).
  * ventas-odoo: "Historial de ventas", servicios, otros productos y cliente final del banco (SalesHistory).
+ * Corrida J: empresa creada a mano (no está en el padrón): lo dice, sus cifras no llevan la etiqueta MTC y tiene el bloque
+ * "Vehículos cargados a mano" (marca, clase, ejes, llantas, medida y placa) para el dueño, supervisor o admin.
  */
 import Link from "next/link";
 import { notFound } from "next/navigation";
@@ -14,13 +16,15 @@ import type { Contact } from "@/lib/portal/store/types";
 import { groupByBrand, yearRange } from "@/lib/portal/ui/fleet";
 import { TEMPERATURAS, confianzaLabel, fmtInt, fmtMoney, rolLabel, sectorLabel } from "@/lib/portal/ui/labels";
 import { canAssignSelf, canEditOpportunity, canReassign } from "@/lib/portal/ui/permissions";
+import { canEditManualFleet } from "@/lib/portal/ui/empresa-nueva";
 import { formatLimaDateTime, toLimaLocalInput } from "@/lib/portal/ui/time";
 import { addContact, assignCompany, deleteContact, moveOpportunityStage, releaseCompany, setNextAction, setTemperatura, updateContact } from "../../actions";
-import { DemoTag, Flash, InferidaTag, MTC_LEGEND, MtcTag, TempChip } from "../../_components/bits";
+import { DemoTag, Flash, InferidaTag, MANUAL_LEGEND, ManualTag, MTC_LEGEND, MtcTag, TempChip } from "../../_components/bits";
 import { CreditBlock } from "../../_components/CreditBlock";
 import { loadSalesHistory, SalesHistory } from "./SalesHistory";
 import { SurveyBlock } from "./SurveyBlock";
 import { WhyLevel } from "./WhyLevel";
+import { addManualVehicleAction, removeManualVehicleAction } from "./vehicle-actions";
 
 type Props = { params: Promise<{ id: string }>; searchParams: Promise<Record<string, string | string[] | undefined>> };
 
@@ -68,8 +72,9 @@ export default async function EmpresaPage({ params, searchParams }: Props) {
   if (!company) notFound();
   const sp = await searchParams;
 
-  const [fleet, contacts, activities, opp, users, part] = await Promise.all([
+  const [fleet, manualFleet, contacts, activities, opp, users, part] = await Promise.all([
     store.fleetByBrand(id),
+    store.listManualVehicles(id),
     store.listContacts(id),
     store.listActivities({ companyId: id, limit: 30 }),
     store.getOpenOpportunity(id),
@@ -87,6 +92,10 @@ export default async function EmpresaPage({ params, searchParams }: Props) {
   const canOpp = opp ? canEditOpportunity(user, opp, company) : false;
   const back = `/portal/empresas/${id}`;
   const totalLlantasConDato = brands.reduce((n, b) => n + b.unidadesConLlantas, 0);
+  // corrida J: creada a mano (no está en el padrón del MTC)
+  const manual = company.origen === "manual";
+  const canFleet = canEditManualFleet(user, company);
+  const sourceTag = manual ? <ManualTag /> : <MtcTag />;
 
   return (
     <div className="pt-stack">
@@ -98,7 +107,7 @@ export default async function EmpresaPage({ params, searchParams }: Props) {
           <div>
             <h1>{company.razonSocial}</h1>
             <div className="pt-muted pt-small pt-mono">
-              RUC {company.ruc} · {sectorLabel(company.sector)} · {company.departamento ?? "—"} {company.esCliente && <span className="pt-tag pt-tag-client">cliente</span>}
+              RUC {company.ruc} · {sectorLabel(company.sector)} · {company.departamento ?? "—"} {company.esCliente && <span className="pt-tag pt-tag-client">cliente</span>} {manual && <ManualTag />}
             </div>
           </div>
           <div className="pt-row">
@@ -117,18 +126,16 @@ export default async function EmpresaPage({ params, searchParams }: Props) {
 
       <div className="pt-kpis">
         <div className="pt-kpi">
-          <div className="pt-kpi-label">
-            Unidades <MtcTag />
-          </div>
+          <div className="pt-kpi-label">Unidades {sourceTag}</div>
           <div className="pt-kpi-value">{fmtInt(company.unidades)}</div>
         </div>
         <div className="pt-kpi">
-          <div className="pt-kpi-label">
-            Llantas en piso <MtcTag />
-          </div>
+          <div className="pt-kpi-label">Llantas en piso {sourceTag}</div>
           <div className="pt-kpi-value">{fmtInt(company.llantasPiso)}</div>
           <div className="pt-kpi-sub">
-            {fmtInt(totalLlantasConDato)} de {fmtInt(company.unidades)} unidades con dato
+            {manual
+              ? `${fmtInt(manualFleet.length)} vehículo${manualFleet.length === 1 ? "" : "s"} cargado${manualFleet.length === 1 ? "" : "s"} a mano`
+              : `${fmtInt(totalLlantasConDato)} de ${fmtInt(company.unidades)} unidades con dato`}
           </div>
         </div>
         <div className="pt-kpi">
@@ -142,7 +149,7 @@ export default async function EmpresaPage({ params, searchParams }: Props) {
         </div>
       </div>
 
-      <p className="pt-legend">{MTC_LEGEND}</p>
+      <p className="pt-legend">{manual ? MANUAL_LEGEND : MTC_LEGEND}</p>
 
       <div className="pt-ficha">
         <div className="pt-stack">
@@ -154,7 +161,7 @@ export default async function EmpresaPage({ params, searchParams }: Props) {
               <span className="pt-muted pt-small">{brands.length} marca{brands.length === 1 ? "" : "s"}</span>
             </div>
             {brands.length === 0 ? (
-              <p className="pt-muted">Sin vehículos en el padrón.</p>
+              <p className="pt-muted">{manual ? "Sin vehículos del padrón: la flota de esta empresa no viene del MTC." : "Sin vehículos en el padrón."}</p>
             ) : (
               <div className="pt-table-wrap">
                 <table className="pt-table">
@@ -201,6 +208,88 @@ export default async function EmpresaPage({ params, searchParams }: Props) {
               </div>
             )}
           </section>
+
+          {(manual || manualFleet.length > 0) && (
+            <section className="pt-card" id="vehiculos" aria-labelledby="vehiculos-title">
+              <div className="pt-section-head">
+                <h2 id="vehiculos-title">Vehículos cargados a mano</h2>
+                <span className="pt-muted pt-small">
+                  {fmtInt(manualFleet.length)} vehículo{manualFleet.length === 1 ? "" : "s"}
+                </span>
+              </div>
+              {manualFleet.length === 0 ? (
+                <p className="pt-muted">Aún no hay vehículos cargados.{canFleet ? " Agrega los que conozcas: suman a las llantas en piso y la medida cuenta para el nivel." : ""}</p>
+              ) : (
+                <ul className="pt-list">
+                  {manualFleet.map((v) => (
+                    <li key={v.id} className="pt-row" style={{ justifyContent: "space-between", alignItems: "flex-start", flexWrap: "nowrap" }}>
+                      <div style={{ minWidth: 0 }}>
+                        <strong className="pt-mono">{v.placa}</strong>
+                        <span className="pt-muted"> · {[v.marca, v.clase].filter(Boolean).join(" ") || "sin marca ni clase"}</span>
+                        <div className="pt-small">
+                          {[v.ejes !== null ? `${v.ejes} ejes` : null, v.llantas !== null ? `${v.llantas} llantas` : null, v.anio !== null ? String(v.anio) : null].filter(Boolean).join(" · ") || "—"}
+                          {v.medidaProbable && <span className="pt-mono"> · {v.medidaProbable}</span>}
+                        </div>
+                      </div>
+                      {canFleet && (
+                        <form action={removeManualVehicleAction}>
+                          <input type="hidden" name="companyId" value={company.id} />
+                          <input type="hidden" name="vehicleId" value={v.id} />
+                          <button className="pt-btn pt-btn-sm pt-btn-danger" type="submit" aria-label={`Quitar ${v.placa}`}>
+                            Quitar
+                          </button>
+                        </form>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              )}
+              {canFleet && (
+                <details style={{ marginTop: "0.8rem" }} open={manualFleet.length === 0}>
+                  <summary>
+                    <strong>Agregar vehículo</strong>
+                  </summary>
+                  <form action={addManualVehicleAction} className="pt-stack" style={{ marginTop: "0.5rem", gap: "0.5rem" }}>
+                    <input type="hidden" name="companyId" value={company.id} />
+                    <div className="pt-form-grid">
+                      <label className="pt-field">
+                        Placa *
+                        <input type="text" name="placa" required maxLength={12} placeholder="ABC-123" autoComplete="off" />
+                      </label>
+                      <label className="pt-field">
+                        Marca
+                        <input type="text" name="marca" maxLength={40} placeholder="Volvo" />
+                      </label>
+                      <label className="pt-field">
+                        Clase
+                        <input type="text" name="clase" maxLength={40} placeholder="Tracto, ómnibus…" />
+                      </label>
+                      <label className="pt-field">
+                        Ejes
+                        <input type="number" name="ejes" min={1} max={10} inputMode="numeric" />
+                      </label>
+                      <label className="pt-field">
+                        Llantas
+                        <input type="number" name="llantas" min={2} max={40} inputMode="numeric" />
+                      </label>
+                      <label className="pt-field">
+                        Medida
+                        <input type="text" name="medida" maxLength={30} placeholder="295/80R22.5" />
+                      </label>
+                    </div>
+                    <p className="pt-small pt-muted" style={{ margin: 0 }}>
+                      La misma placa otra vez corrige sus datos.
+                    </p>
+                    <div className="pt-row">
+                      <button className="pt-btn pt-btn-primary" type="submit">
+                        Agregar
+                      </button>
+                    </div>
+                  </form>
+                </details>
+              )}
+            </section>
+          )}
 
           <SalesHistory company={company} data={sales} />
 

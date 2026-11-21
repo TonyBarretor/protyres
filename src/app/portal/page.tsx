@@ -26,7 +26,8 @@ import {
 } from "@/lib/portal/ui/filters";
 import { loadProspectos, type ProspectosData } from "@/lib/portal/ui/prospectos";
 import { fmtInt, sectorLabel } from "@/lib/portal/ui/labels";
-import { DemoTag, ExplainLine, InferidaTag, MTC_LEGEND, MtcTag, NivelBadge, TempChip } from "./_components/bits";
+import { DemoTag, ExplainLine, InferidaTag, ManualTag, MTC_LEGEND, MtcTag, NivelBadge, TempChip } from "./_components/bits";
+import { canCreateCompany } from "@/lib/portal/ui/empresa-nueva";
 
 export const metadata = { title: "Prospectos · Portal 360 Tyres" };
 
@@ -102,6 +103,12 @@ export default async function ProspectosPage({ searchParams }: { searchParams: P
           {fmtInt(result.total)} empresa{result.total === 1 ? "" : "s"}
           {hasActiveFilters(filters) ? " con estos filtros" : " en el padrón (≥10 unidades)"}
         </span>
+        {/* corrida J: empresas que no están en el padrón */}
+        {canCreateCompany(user) && (
+          <Link className="pt-btn pt-btn-primary pt-btn-sm" href="/portal/empresas/nueva">
+            Agregar empresa
+          </Link>
+        )}
       </div>
 
       <form className="pt-card pt-filters" method="get" action="/portal">
@@ -249,7 +256,7 @@ export default async function ProspectosPage({ searchParams }: { searchParams: P
                       <Link className="pt-company-link" href={`/portal/empresas/${r.id}`}>
                         {r.razonSocial}
                       </Link>{" "}
-                      <ClienteTag row={r} />
+                      <ClienteTag row={r} /> {r.origen === "manual" && <ManualTag />}
                       <div className="pt-muted pt-small pt-mono">RUC {r.ruc}</div>
                       <div className="pt-nivel-line">
                         <NivelBadge nivel={r.nivel} />
@@ -288,7 +295,7 @@ export default async function ProspectosPage({ searchParams }: { searchParams: P
                   <TempChip t={r.temperatura} />
                 </div>
                 <div className="pt-muted pt-small pt-mono">
-                  RUC {r.ruc} · {sectorLabel(r.sector)} · {r.departamento ?? "—"} <ClienteTag row={r} />
+                  RUC {r.ruc} · {sectorLabel(r.sector)} · {r.departamento ?? "—"} <ClienteTag row={r} /> {r.origen === "manual" && <ManualTag />}
                 </div>
                 <div>
                   <NivelBadge nivel={r.nivel} />
@@ -301,7 +308,7 @@ export default async function ProspectosPage({ searchParams }: { searchParams: P
                   </div>
                   <div>
                     <dt>
-                      Llantas en piso <MtcTag />
+                      Llantas en piso {r.origen === "manual" ? <ManualTag /> : <MtcTag />}
                     </dt>
                     <dd>{fmtInt(r.llantasPiso)}</dd>
                   </div>

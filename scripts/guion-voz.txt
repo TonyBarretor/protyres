@@ -246,3 +246,11 @@ cancelar
 @voz Cotízame cuatro Valor 99 en 295 80 22.5 para la placa be ce uno dos, para Transportes Sur.
 @espera-texto no tiene la forma de una placa
 cancelar
+# Corrida J: empresa que no está en el padrón, dictada (RUC con espacios, sector con sus palabras, departamento) y
+# confirmada por voz (RUC inventado con dígito verificador válido)
+cancelar
+@voz Nueva empresa, RUC 20 999 000 038, Transportes Ayni, son de carga, en Puno.
+@espera-texto *Empresa nueva* (no está en el padrón del MTC)
+@espera-texto RUC 20999000038 · Carga · Puno
+@voz Sí, créala.
+@espera-texto Empresa creada y asignada a ti: *TRANSPORTES AYNI*

@@ -590,6 +590,10 @@ export const STATEMENTS = [
   // le cotizó a un vehículo (listQuotes({ plate })) y para contrastar la placa con la flota del padrón (findFleetByPlacas)
   `create index if not exists quotes_items_gin_idx on quotes using gin ((data->'items') jsonb_path_ops)`,
   `create index if not exists fleet_vehicles_placa_key_idx on fleet_vehicles ((upper(replace(replace(placa, '-', ''), ' ', ''))))`,
+  // Corrida J: empresas fuera del padrón. origen 'manual' = creada a mano (pasa a 'mtc' si su RUC llega en el padrón) y
+  // quién la creó. Los vehículos cargados a mano van en fleet_vehicles con origen 'manual' (sin cambio de esquema).
+  `alter table companies add column if not exists origen text not null default 'mtc'`,
+  `alter table companies add column if not exists created_by integer`,
 ];
 
 /** Desde aquí empiezan las sentencias del portal: antes de ejecutarlas se pasa la guardia (migrate-guard.ts). */

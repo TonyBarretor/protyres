@@ -36,8 +36,9 @@ const PLAZO_NOTE = `📒 plazo 45 días (condiciones de *${RAZON}* en el portal)
 /**
  * Mensaje del portal tras enlazar (no es del cotizador). Desde C4 lleva en una segunda línea el aviso de crédito: la
  * empresa no tiene fila de crédito, así que cuenta como "sin evaluar". Los mensajes del cotizador no cambian.
+ * Corrida J: la empresa no tenía dueño, así que enlazar se la asigna al vendedor ("Quedó asignada a ti.").
  */
-const LINK_MSG = `🔗 Cotización *0001* enlazada a *${RAZON}* en el portal (Prospecto).\n⚠️ Crédito de *TRANSPORTES ANDES DEL PERU*: sin evaluar. Antes de dar plazo, evalúalo en la ficha del portal.`;
+const LINK_MSG = `🔗 Cotización *0001* enlazada a *${RAZON}* en el portal (Prospecto). Quedó asignada a ti.\n⚠️ Crédito de *TRANSPORTES ANDES DEL PERU*: sin evaluar. Antes de dar plazo, evalúalo en la ficha del portal.`;
 
 interface Recorded {
   kind: string;

@@ -17,6 +17,12 @@
  * Empresas que bajan del umbral (o dejan de figurar en el padrón): NO se borran ni se tocan, porque pueden tener trabajo
  * comercial (dueño, contactos, oportunidades, actividades). Quedan con sus cifras y su flota de la última importación en
  * que pasaron el umbral; limpiarlas es una decisión manual.
+ *
+ * Corrida J: las empresas creadas a mano (origen "manual") que no están en el padrón no se tocan; si su RUC llega en el
+ * padrón se fusionan (upsertCompanies: pasan a origen "mtc" con los datos del padrón; dueño, contactos, actividad,
+ * oportunidades y vehículos cargados a mano se conservan: la poda nunca borra los de origen "manual") y queda una
+ * actividad que lo dice. Con `onlyRucs` (`npm run portal:import-ruc`) se importan solo esas empresas, aunque tengan
+ * menos de `minUnits` unidades.
  */
 import path from "node:path";
 import type { PortalImportConfig } from "../config";
@@ -40,6 +46,8 @@ export interface ImportMtcOptions {
   batchSize?: number;
   /** RUC cuya ficha se devuelve en `verificacion` (por defecto ZBUSS 20602221505). */
   verifyRuc?: string;
+  /** Corrida J: solo estas empresas (por RUC), aunque tengan menos de `minUnits` unidades. */
+  onlyRucs?: string[];
   log?: (msg: string) => void;
 }
 
@@ -82,6 +90,12 @@ export interface ImportMtcSummary {
   cargaConLlantas: number;
   written: { companiesInserted: number; companiesUpdated: number; fleetInserted: number; fleetUpdated: number; fleetRemoved: number } | null;
   verificacion: VerifySummary | null;
+  /** Corrida J: RUC pedidos con `onlyRucs` (null si es el import completo). */
+  pedidas: string[] | null;
+  /** Corrida J: de los pedidos, los que no están en el padrón vigente. */
+  faltantes: string[];
+  /** Corrida J: RUC de empresas creadas a mano que llegaron en el padrón y se fusionaron. */
+  fusionadas: string[];
 }
 
 type Current = MtcVehicle & { llantasFuente: string | null; medidaProbable: string | null; confianza: Confianza | null };
@@ -94,7 +108,8 @@ export async function importMtc(opts: ImportMtcOptions): Promise<ImportMtcSummar
   const batchSize = opts.batchSize ?? 2000;
   const tyreCuts = config.tyreCuts;
   const currentCut = config.currentCut;
-  const verifyRuc = opts.verifyRuc ?? VERIFY_RUC;
+  const only = opts.onlyRucs ? new Set(opts.onlyRucs.map((r) => r.replace(/\D/g, "")).filter(Boolean)) : null;
+  const verifyRuc = opts.verifyRuc ?? (only ? [...only][0] : VERIFY_RUC);
 
   // 1. Lectura en streaming.
   const index: TyreIndex = new Map();
@@ -142,7 +157,8 @@ export async function importMtc(opts: ImportMtcOptions): Promise<ImportMtcSummar
 
   // 4. Agregado por empresa y umbral.
   const all = aggregateCompanies(fleet, { sectorMajority: config.sectorMajority });
-  const companies = all.filter((c) => c.unidades >= config.minUnits);
+  // corrida J: con `onlyRucs`, solo esas (sin umbral de unidades)
+  const companies = all.filter((c) => (only ? only.has(c.ruc) : c.unidades >= config.minUnits));
   const passing = new Set(companies.map((c) => c.ruc));
   const imported = fleet.filter((v) => passing.has(v.ruc));
 
@@ -183,6 +199,9 @@ export async function importMtc(opts: ImportMtcOptions): Promise<ImportMtcSummar
     cargaConLlantas,
     written: null,
     verificacion,
+    pedidas: only ? [...only] : null,
+    faltantes: only ? [...only].filter((r) => !passing.has(r)) : [],
+    fusionadas: [],
   };
   if (dryRun) return summary;
 
@@ -204,6 +223,18 @@ export async function importMtc(opts: ImportMtcOptions): Promise<ImportMtcSummar
     written.companiesInserted += r.inserted;
     written.companiesUpdated += r.updated;
     Object.assign(ids, r.ids);
+    // corrida J: creadas a mano que llegaron en el padrón: queda dicho en su actividad
+    for (const ruc of r.merged ?? []) {
+      summary.fusionadas.push(ruc);
+      await store.addActivity({
+        companyId: r.ids[ruc],
+        userId: null,
+        tipo: "nota",
+        texto: "La empresa apareció en el padrón del MTC: se completó con sus datos y su flota; se conservó lo cargado a mano (vehículos, contactos, oportunidades y dueño).",
+        canal: "portal",
+        data: { evento: "fusion_padron" },
+      });
+    }
   }
   log(`Empresas escritas: ${companies.length}`);
   for (let i = 0; i < imported.length; i += batchSize) {
@@ -289,7 +320,7 @@ export function formatImportSummary(s: ImportMtcSummary): string {
   out.push("");
   out.push(`Flota vigente: carga ${fmt(s.vigente.carga)}, pasajeros ${fmt(s.vigente.pasajeros)} (placas duplicadas descartadas: ${fmt(s.duplicadas)})`);
   out.push(`Índice de llantas: ${fmt(s.indiceLlantas)} placas; carga vigente con llantas: ${pct(s.cargaConLlantas, s.vigente.carga)}`);
-  out.push(`Empresas con flota vigente: ${fmt(s.empresasTotal)}; con ${s.minUnits} o más unidades: ${fmt(s.empresas)} (${fmt(s.vehiculos)} vehículos)`);
+  out.push(`Empresas con flota vigente: ${fmt(s.empresasTotal)}; ${s.pedidas ? "importadas por RUC" : `con ${s.minUnits} o más unidades`}: ${fmt(s.empresas)} (${fmt(s.vehiculos)} vehículos)`);
   out.push(`Vehículos importados con llantas (dato MTC): ${fmt(s.conLlantas)} (${pct(s.conLlantas, s.vehiculos)})`);
   out.push(
     `Con medida inferida: ${fmt(s.conMedida)} (${pct(s.conMedida, s.vehiculos)}) — alta ${fmt(s.porConfianza.alta)} (${pct(s.porConfianza.alta, s.vehiculos)}), media ${fmt(s.porConfianza.media)} (${pct(s.porConfianza.media, s.vehiculos)}), baja ${fmt(s.porConfianza.baja)} (${pct(s.porConfianza.baja, s.vehiculos)})`,
@@ -298,6 +329,9 @@ export function formatImportSummary(s: ImportMtcSummary): string {
     const w = s.written;
     out.push(`Escrito: empresas ${fmt(w.companiesInserted)} nuevas / ${fmt(w.companiesUpdated)} actualizadas; vehículos ${fmt(w.fleetInserted)} nuevos / ${fmt(w.fleetUpdated)} actualizados / ${fmt(w.fleetRemoved)} borrados (ya no figuran)`);
   }
+  if (s.pedidas) out.push(`Empresas pedidas por RUC: ${s.pedidas.join(", ")} (sin umbral de unidades)`);
+  if (s.faltantes.length) out.push(`No están en el padrón vigente: ${s.faltantes.join(", ")}`);
+  if (s.fusionadas.length) out.push(`Empresas creadas a mano que llegaron en el padrón (fusionadas): ${s.fusionadas.join(", ")}`);
   out.push("");
   const v = s.verificacion;
   out.push(

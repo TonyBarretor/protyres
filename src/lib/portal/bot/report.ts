@@ -13,6 +13,11 @@
  *     avanza, con historial), próxima acción y contacto nuevo. `no` descarta. Otro texto corrige el borrador.
  *     La oportunidad solo se toca si el vendedor puede editar la empresa (canEditCompany, como `cita`/`contacto`); si no,
  *     se guarda solo la actividad (sin oportunidad ni contacto) y se le dice de quién es la empresa.
+ *  4. Corrida J: empresa SIN dueño (vendedor): antes de guardar se ofrece *Asignármela y guardar todo* (`guardar todo`:
+ *     la asigna de forma atómica —si otro vendedor la tomó un instante antes, se le dice y se guarda solo la nota— y guarda
+ *     el reporte completo: oportunidad, contacto, etapa y próxima acción) o *Guardar solo la nota* (`solo la nota`).
+ *  5. Corrida J: si la empresa no está en el padrón, "No encontré «X»" con *Crear empresa nueva* (`nueva empresa`: el alta
+ *     sigue con este reporte, bot/commands/nueva-empresa.ts) y *Buscar otra vez*.
  *
  * Dependencias inyectables (tests y simulador) con configureReportBot: cliente de Anthropic, fetch de Deepgram, descarga
  * de medios y registro de mensajes. La descarga inyectada con configureReportBot manda sobre ctx.downloadMedia (el simulador no tiene Graph API).
@@ -26,6 +31,7 @@ import { applyCorrection, draftToRecords, formatDraftSummary, isConfirmation, is
 import { extractReport, type ExtractContext, type LlmClient } from "../report/extract";
 import { displayName, matchCompanies, type CompanyRef } from "../report/match";
 import { canEditCompany } from "../auth/permissions";
+import { canAssignSelf } from "../ui/permissions";
 import { stageIndex, stageLabel, type StageId } from "../stages";
 import type { Company, PortalStore } from "../store/types";
 import { formatLimaDateTime } from "../ui/time";
@@ -33,10 +39,11 @@ import { DEEPGRAM_MODEL, deepgramKeyFromEnv, transcribe, TranscriptionError, Voi
 import { audioDurationSec } from "../voice/duration";
 import { audioBudget, limitsConfig, recordAudio, voiceDisabled } from "../../guard/usage";
 import { buildKeyterms, parseLearnCommand } from "../voice/vocabulary";
-import { findCompanies, mentionedCompanies, shortName } from "./companies";
+import { findCompanies, mentionedCompanies, replyNotFound, SEARCH_AGAIN_RE, shortName } from "./companies";
 import { askAgain } from "./pause";
 import { companyProgressLine } from "./progress";
 import { getPortalCommand, registerPausable, registerPendingHandler, registerPortalCommand, replyButtons, setDefaultReportHandler, type PortalContext, type ReportOptions } from "./registry";
+import { fold } from "../../tyre/brands";
 import { parsePortalCommand } from "./router";
 import { clearPending, setPending, type ReportDraftStep } from "./state";
 
@@ -57,6 +64,14 @@ export const REPORT_CONFIRM_BUTTONS = [
   { id: "corregir", title: "Corregir" },
 ];
 const CORRECT_WORD = /^(?:corregir|corrige|corrijo|corregirlo|quiero corregir)[.!]*$/i;
+/**
+ * Corrida J: empresa sin dueño. Botones (título ≤ 20 caracteres de WhatsApp; el texto del mensaje los nombra completos).
+ * El id no empieza con "guardar": `guardar …` es el verbo de los procesos en pausa (routePortal lo atiende antes).
+ */
+export const OWNER_CHOICE_BUTTONS = [
+  { id: "asignármela", title: "Asignar y guardar" },
+  { id: "solo la nota", title: "Guardar solo la nota" },
+];
 
 type Download = (mediaId: string) => Promise<{ data: Buffer; mimeType: string; fileName?: string }>;
 
@@ -241,19 +256,53 @@ export async function transcribeVoice(ctx: PortalContext, audio: { id: string; m
 
 // ── borrador ──
 
+/** Corrida J: lo que acompaña al borrador en el paso (empresa no encontrada; elección con empresa sin dueño). */
+interface DraftExtra {
+  notFound?: string | null;
+  ownerChoice?: boolean;
+}
+
 /** Guarda el borrador como paso pendiente y responde la siguiente pregunta o el resumen. */
-async function showDraft(ctx: PortalContext, draft: ReportDraft, base: { text: string; occurredAt: string }, prefix = ""): Promise<void> {
-  const q = nextQuestion(draft);
-  const step: Omit<ReportDraftStep, "createdAt"> = { kind: "report_draft", text: base.text, occurredAt: base.occurredAt, audio: null, draft, field: q?.field ?? null };
+async function showDraft(ctx: PortalContext, draft: ReportDraft, base: { text: string; occurredAt: string }, prefix = "", extra: DraftExtra = {}): Promise<void> {
+  const q = extra.ownerChoice ? null : nextQuestion(draft);
+  // la empresa que se buscó y no está en el padrón: se ofrece crearla (solo mientras se pregunta la empresa)
+  const notFound = q?.field === "empresa" && draft.candidates.length <= 1 && extra.notFound?.trim() ? extra.notFound.trim() : null;
+  const step: Omit<ReportDraftStep, "createdAt"> = {
+    kind: "report_draft",
+    text: base.text,
+    occurredAt: base.occurredAt,
+    audio: null,
+    draft,
+    field: q?.field ?? null,
+    ...(notFound ? { notFound } : {}),
+    ...(extra.ownerChoice ? { ownerChoice: true } : {}),
+  };
   await setPending(ctx.store, ctx.from, step, ctx.now);
   const head = prefix ? `${prefix}\n\n` : "";
   if (q) {
-    await ctx.reply(`${head}${q.text}`);
+    if (notFound) await replyNotFound(ctx, `${head}No encontré «${clip(notFound, 80)}» en el padrón. ${q.text}`);
+    else await ctx.reply(`${head}${q.text}`);
     return;
   }
   const company = draft.companyId !== null ? await ctx.store.getCompany(draft.companyId) : null;
+  if (extra.ownerChoice && company) {
+    const body = `${head}*${displayName(company.razonSocial)}* no tiene dueño. ¿Qué guardo?\n• *Asignármela y guardar todo*: queda a tu nombre y guardo oportunidad, contacto, etapa y próxima acción.\n• *Guardar solo la nota*: solo la actividad; la empresa sigue libre.`;
+    await replyButtons(ctx, body, OWNER_CHOICE_BUTTONS, { fallback: `${body}\n\nResponde *asignármela* o *solo la nota*.` });
+    return;
+  }
   const summary = `${head}${formatDraftSummary(draft, company)}`;
   await replyButtons(ctx, summary, REPORT_CONFIRM_BUTTONS, { fallback: summary });
+}
+
+/**
+ * Corrida J: la empresa del reporte ya está (creada con `nueva empresa` o encontrada después de "Buscar otra vez"): el
+ * borrador sigue con ella, sin perder lo dictado (resumen, o la siguiente pregunta).
+ */
+export async function continueReportWithCompany(ctx: PortalContext, step: ReportDraftStep, company: Company, prefix = ""): Promise<void> {
+  if (!step.draft) return;
+  const c = ref(company);
+  const draft: ReportDraft = { ...pick(step.draft, c), answered: [...step.draft.answered.filter((f) => f !== "empresa"), "empresa"] };
+  await showDraft(ctx, draft, { text: step.text, occurredAt: step.occurredAt }, prefix);
 }
 
 /** Reporte nuevo (texto o voz). */
@@ -290,7 +339,9 @@ export async function interpretReport(ctx: PortalContext, rawText: string, opts:
   // con reglas la confianza siempre es baja: si el tipo se reconoció ("visité", "llamé") no se pregunta
   if ((res.via === "rules" && !res.report.faltantes.includes("tipo")) || res.tipoSeguro) draft.answered = draft.answered.includes("tipo") ? draft.answered : [...draft.answered, "tipo"];
   draft = await resolveFromPadron(ctx.store, draft, res.text, ectx.companies);
-  await showDraft(ctx, draft, { text, occurredAt: opts.occurredAt.toISOString() });
+  // corrida J: nombró una empresa que no está en el padrón: se ofrece crearla
+  const notFound = draft.companyId === null && draft.candidates.length === 0 ? (draft.empresa?.ruc || draft.empresa?.nombre || null) : null;
+  await showDraft(ctx, draft, { text, occurredAt: opts.occurredAt.toISOString() }, "", { notFound });
 }
 
 /** Etapa a la que lleva el reporte: la sugerida; una visita hecha, al menos Visita realizada. */
@@ -301,27 +352,68 @@ export function targetStage(draft: Pick<ReportDraft, "tipo" | "etapaSugerida">):
 }
 
 /** Guarda el borrador confirmado y responde qué se hizo. */
-async function saveDraft(ctx: PortalContext, draft: ReportDraft): Promise<void> {
-  const { store, user, now } = ctx;
+async function saveDraft(ctx: PortalContext, draft: ReportDraft, base: { text: string; occurredAt: string }): Promise<void> {
+  const { store, user } = ctx;
   const company = draft.companyId !== null ? await store.getCompany(draft.companyId) : null;
   if (!company) {
     const again: ReportDraft = { ...draft, companyId: null, answered: draft.answered.filter((f) => f !== "empresa") };
     await showDraft(ctx, again, { text: draft.texto, occurredAt: draft.messageAt });
     return;
   }
-  const contacts = await store.listContacts(company.id);
   if (!canEditCompany(user, company)) {
-    await saveActivityOnly(ctx, draft, company, contacts);
+    // corrida J: sin dueño, el vendedor elige entre asignársela y guardar todo, o solo la nota
+    if (company.ownerUserId === null && canAssignSelf(user, company)) {
+      await showDraft(ctx, draft, base, "", { ownerChoice: true });
+      return;
+    }
+    await saveActivityOnly(ctx, draft, company, await store.listContacts(company.id));
+    return;
+  }
+  await saveFull(ctx, draft, company);
+}
+
+/**
+ * Corrida J: *Asignármela y guardar todo*. La asignación es atómica (setOwner solo si sigue sin dueño): si otro vendedor
+ * la tomó un instante antes, se le dice y se guarda solo la nota; si no, la actividad de asignación y el reporte completo.
+ */
+async function claimAndSave(ctx: PortalContext, draft: ReportDraft, company: Company): Promise<void> {
+  const { store, user, now } = ctx;
+  const claimed = await store.setOwner(company.id, user.id, { onlyIfOwner: null });
+  if (!claimed) {
+    const fresh = (await store.getCompany(company.id)) ?? company;
+    if (fresh.ownerUserId === user.id) {
+      await saveFull(ctx, draft, fresh); // ya era suya (doble toque)
+      return;
+    }
+    await saveActivityOnly(ctx, draft, fresh, await store.listContacts(fresh.id), await takenLead(ctx, fresh));
     return;
   }
   const opp = await store.getOpenOpportunity(company.id);
+  if (opp && opp.ownerUserId !== user.id) await store.updateOpportunity(opp.id, { ownerUserId: user.id });
+  // data.evento = "asignacion": hito de inicio para las métricas de tiempos (metrics/timeline.ts), como `asignarme`
+  await store.addActivity({ companyId: company.id, opportunityId: opp?.id ?? null, userId: user.id, tipo: "nota", texto: `${user.nombre} se asignó la empresa (al reportar).`, canal: draft.canal === "voz" ? "voz" : "whatsapp", occurredAt: now, data: { evento: "asignacion", ownerUserId: user.id, previousOwnerUserId: null } });
+  await saveFull(ctx, draft, claimed, ["• Empresa asignada a ti"]);
+}
+
+/** "⚠️ *X* acaba de quedar asignada a Juan: no pude asignártela." (otro vendedor la tomó mientras se elegía). */
+async function takenLead(ctx: PortalContext, company: Company): Promise<string> {
+  const owner = company.ownerUserId !== null ? await ctx.store.getUser(company.ownerUserId).catch(() => null) : null;
+  return `⚠️ *${displayName(company.razonSocial)}* acaba de quedar asignada a ${owner?.nombre ?? "otro vendedor"}: no pude asignártela.`;
+}
+
+/** El reporte completo: actividad, oportunidad (nueva o la abierta, la etapa solo avanza), próxima acción y contacto. */
+async function saveFull(ctx: PortalContext, draft: ReportDraft, company: Company, lead: string[] = []): Promise<void> {
+  const { store, user, now } = ctx;
+  const contacts = await store.listContacts(company.id);
+  const opp = await store.getOpenOpportunity(company.id);
   const rec = draftToRecords({ ...draft, etapaSugerida: targetStage(draft) }, { userId: user.id, now, opportunity: opp, contacts });
-  const lines: string[] = [];
+  const lines: string[] = [...lead];
   let oppId = opp?.id ?? null;
   if (rec.newOpportunity) {
-    const created = await store.createOpportunity({ ...rec.newOpportunity, ownerUserId: company.ownerUserId ?? user.id });
+    // la abierta o una nueva en una sola operación: dos confirmaciones a la vez no dejan dos oportunidades
+    const { opportunity: created, created: isNew } = await store.openOrCreateOpportunity({ ...rec.newOpportunity, ownerUserId: company.ownerUserId ?? user.id });
     oppId = created.id;
-    lines.push(`• Oportunidad nueva en *${stageLabel(created.etapa)}*`);
+    if (isNew) lines.push(`• Oportunidad nueva en *${stageLabel(created.etapa)}*`);
   }
   if (rec.stageChange) {
     // el historial no puede entrar a la etapa antes de la entrada a la actual (reporte atrasado): entonces, ahora
@@ -360,7 +452,7 @@ async function ownerPhrase(store: PortalStore, company: Company): Promise<string
 }
 
 /** Empresa que el vendedor no puede editar: solo la actividad (sin oportunidad); la oportunidad y los contactos no se tocan. */
-async function saveActivityOnly(ctx: PortalContext, draft: ReportDraft, company: Company, contacts: Awaited<ReturnType<PortalStore["listContacts"]>>): Promise<void> {
+async function saveActivityOnly(ctx: PortalContext, draft: ReportDraft, company: Company, contacts: Awaited<ReturnType<PortalStore["listContacts"]>>, lead = ""): Promise<void> {
   const { store, user, now } = ctx;
   const rec = draftToRecords({ ...draft, etapaSugerida: null }, { userId: user.id, now, opportunity: null, contacts });
   const { createdAt: _createdAt, ...activity } = rec.activity;
@@ -368,7 +460,8 @@ async function saveActivityOnly(ctx: PortalContext, draft: ReportDraft, company:
   await clearPending(store, ctx.from);
   const tipo = draft.tipo === "visita" ? "visita" : draft.tipo === "llamada" ? "llamada" : "nota";
   const extra = rec.newContact ? `\n_El contacto ${rec.newContact.nombre} queda en el texto del reporte; agregarlo es del dueño._` : "";
-  await ctx.reply(`✔ Guardado: ${tipo} — *${displayName(company.razonSocial)}* (${formatLimaDateTime(activity.occurredAt)}).\n${await ownerPhrase(store, company)}: guardé la actividad sin mover su oportunidad.${extra}`);
+  const why = lead ? `${lead} Guardé solo la actividad, sin oportunidad ni contacto.` : `${await ownerPhrase(store, company)}: guardé la actividad sin mover su oportunidad.`;
+  await ctx.reply(`✔ Guardado: ${tipo} — *${displayName(company.razonSocial)}* (${formatLimaDateTime(activity.occurredAt)}).\n${why}${extra}`);
 }
 
 /** Respuesta al borrador: sí / no / respuesta a la pregunta / corrección (también por voz). */
@@ -389,10 +482,26 @@ registerPendingHandler("report_draft", async (ctx, step, rawText) => {
   if (!text) return false;
   const draft = s.draft;
   const field = s.field ?? null;
+  const base = { text: s.text, occurredAt: s.occurredAt };
   if (isRejection(text)) {
     await clearPending(ctx.store, ctx.from);
     await ctx.reply(REPORT_DISCARDED);
     return true;
+  }
+  // corrida J: empresa sin dueño, *Asignármela y guardar todo* o *Guardar solo la nota*
+  if (s.ownerChoice) return answerOwnerChoice(ctx, s, text);
+  if (field === "empresa") {
+    // corrida J: *Crear empresa nueva* dictado o escrito dentro de la respuesta (el comando sigue con este reporte)
+    const cmd = parsePortalCommand(text.replace(/^[\s¿¡]+|[\s.!?¡¿]+$/g, ""));
+    const create = cmd?.name === "nueva_empresa" ? getPortalCommand("nueva_empresa") : undefined;
+    if (cmd && create) {
+      await create(ctx, cmd.args);
+      return true;
+    }
+    if (SEARCH_AGAIN_RE.test(text.trim())) {
+      await showDraft(ctx, draft, base);
+      return true;
+    }
   }
   if (CORRECT_WORD.test(text.trim())) {
     await ctx.reply(field ? `${nextQuestion(draft)?.text ?? REPORT_CORRECT_PROMPT}` : REPORT_CORRECT_PROMPT);
@@ -403,7 +512,7 @@ registerPendingHandler("report_draft", async (ctx, step, rawText) => {
       await ctx.reply(`${nextQuestion(draft)?.text ?? "Falta un dato."}\n_(o *cancelar* para descartar el reporte)_`);
       return true;
     }
-    await saveDraft(ctx, draft);
+    await saveDraft(ctx, draft, base);
     return true;
   }
   const ectx = await extractContext(ctx, draft.candidates);
@@ -414,9 +523,47 @@ registerPendingHandler("report_draft", async (ctx, step, rawText) => {
     if (rows.length === 1 && total === 1) next = { ...pick(next, ref(rows[0])), answered: [...next.answered.filter((f) => f !== "empresa"), "empresa"] };
     else if (rows.length > 1) next = { ...next, candidates: rows.slice(0, 5).map(ref) };
   }
-  await showDraft(ctx, next, { text: s.text, occurredAt: s.occurredAt });
+  // corrida J: tampoco está en el padrón: se ofrece crearla (o buscar otra vez)
+  const notFound = field === "empresa" && next.companyId === null && next.candidates.length <= 1 ? text : null;
+  await showDraft(ctx, next, base, "", { notFound });
   return true;
 });
+
+const OWNER_ALL = /\b(?:asign\w*|todo|tomarla|tomo|completo)\b/;
+const OWNER_NOTE = /\bnota\b|\bsolo\s+(?:la\s+)?actividad\b/;
+
+/** Respuesta a la elección con empresa sin dueño (botón, escrito o dictado). */
+async function answerOwnerChoice(ctx: PortalContext, s: ReportDraftStep, text: string): Promise<boolean> {
+  const draft = s.draft!;
+  const company = draft.companyId !== null ? await ctx.store.getCompany(draft.companyId) : null;
+  const base = { text: s.text, occurredAt: s.occurredAt };
+  if (!company) {
+    await showDraft(ctx, { ...draft, companyId: null, answered: draft.answered.filter((f) => f !== "empresa") }, base);
+    return true;
+  }
+  const t = fold(text);
+  const note = OWNER_NOTE.test(t);
+  const all = !note && OWNER_ALL.test(t);
+  if (!note && !all) {
+    if (CORRECT_WORD.test(text.trim())) {
+      await showDraft(ctx, draft, base);
+      return true;
+    }
+    // otra cosa (un reporte nuevo, una cotización): no es la respuesta; routePortal la clasifica y esto queda en pausa
+    if (!isConfirmation(text) && t.split(" ").filter(Boolean).length > 3) return false;
+    await showDraft(ctx, draft, base, isConfirmation(text) ? "" : `No entendí «${clip(text, 60)}».`, { ownerChoice: true });
+    return true;
+  }
+  if (company.ownerUserId !== null || !canAssignSelf(ctx.user, company)) {
+    // cambió mientras elegía (se ofreció porque no tenía dueño): si ya puede editarla, todo; si otro la tomó, se dice y la nota
+    if (canEditCompany(ctx.user, company)) await saveFull(ctx, draft, company);
+    else await saveActivityOnly(ctx, draft, company, await ctx.store.listContacts(company.id), await takenLead(ctx, company));
+    return true;
+  }
+  if (note) await saveActivityOnly(ctx, draft, company, await ctx.store.listContacts(company.id));
+  else await claimAndSave(ctx, draft, company);
+  return true;
+}
 
 /** Qué le falta al borrador, para el recordatorio de la pausa. */
 const FIELD_MISSING: Record<DraftField, string> = { empresa: "falta la empresa", tipo: "falta si fue visita, llamada o nota", "proximaAccion.fecha": "falta la fecha de la próxima acción" };
@@ -431,6 +578,7 @@ registerPausable("report_draft", {
     const tipo = d.tipo === "visita" ? "de visita" : d.tipo === "llamada" ? "de llamada" : d.tipo === "nota" ? "(nota)" : "";
     const label = `reporte ${tipo}${company ? ` de ${shortName(company.razonSocial)}` : ""}`.replace(/\s+/g, " ").trim();
     const field = s.field ?? null;
+    if (s.ownerChoice) return { companyId: company?.id ?? null, label, missing: "falta elegir: asignártela y guardar todo, o solo la nota" };
     return { companyId: company?.id ?? null, label, missing: field ? FIELD_MISSING[field] : "falta confirmar", ...(field ? {} : { confirm: true }) };
   },
   async resume(ctx, step, prefix) {
@@ -439,7 +587,7 @@ registerPausable("report_draft", {
       await askAgain(ctx, step, prefix, "Respóndeme *sí* para interpretarlo, o *cancelar*.");
       return;
     }
-    await showDraft(ctx, s.draft, { text: s.text, occurredAt: s.occurredAt }, prefix);
+    await showDraft(ctx, s.draft, { text: s.text, occurredAt: s.occurredAt }, prefix, { notFound: s.notFound ?? null, ownerChoice: !!s.ownerChoice });
   },
 });
 

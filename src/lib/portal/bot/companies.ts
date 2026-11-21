@@ -10,8 +10,8 @@ import { groupByBrand } from "../ui/fleet";
 import { fold } from "../../tyre/brands";
 import { fmtInt, sectorLabel } from "../ui/labels";
 import { LIST_ROWS_MAX } from "../../whatsapp/interactive";
-import { getCompanyAction, registerPausable, registerPendingHandler, replyList, type PortalContext } from "./registry";
-import { clearPending, setPending, type ChooseCompanyStep } from "./state";
+import { freeQuoter, getCompanyAction, registerPausable, registerPendingHandler, replyButtons, replyList, type PortalContext } from "./registry";
+import { clearPending, setPending, type ChooseCompanyStep, type CompanyNotFoundStep, type PendingStep } from "./state";
 
 export const MAX_OPTIONS = 5;
 
@@ -80,17 +80,21 @@ const STOP = new Set(["para", "que", "con", "los", "las", "del", "una", "uno", "
  */
 export async function mentionedCompanies(store: PortalStore, text: string, maxQueries = 12, stopAtFirst = false): Promise<Company[]> {
   const words = fold(text).split(" ").filter(Boolean);
-  const grams: string[] = [];
+  // corrida J: las palabras con mayúscula en el texto (nombres propios: "Visité Labocer, hablé con…") van primero; en un
+  // reporte largo los primeros `maxQueries` n-gramas eran todos de 3 palabras y una razón social de una palabra no se buscaba
+  const proper = new Set(fold(((text ?? "").match(/(?<![\p{L}\d])\p{Lu}[\p{L}\d'’&.-]*/gu) ?? []).join(" ")).split(" ").filter(Boolean));
+  const grams: { g: string; proper: boolean }[] = [];
   for (let n = 3; n >= 1; n--) {
     for (let i = 0; i + n <= words.length; i++) {
       const g = words.slice(i, i + n);
       if (STOP.has(g[0]) || STOP.has(g[g.length - 1])) continue;
       if (n === 1 && (g[0].length < 4 || /^\d+$/.test(g[0]))) continue;
-      grams.push(g.join(" "));
+      grams.push({ g: g.join(" "), proper: proper.has(g[0]) });
     }
   }
+  const ordered = [...grams.filter((x) => x.proper), ...grams.filter((x) => !x.proper)].map((x) => x.g);
   const out: Company[] = [];
-  for (const g of [...new Set(grams)].slice(0, maxQueries)) {
+  for (const g of [...new Set(ordered)].slice(0, maxQueries)) {
     const { rows } = await findCompanies(store, g, 5);
     for (const c of rows) if (companyKey(c.razonSocial) === g && !out.some((o) => o.id === c.id)) out.push(c);
     if (stopAtFirst && out.length) break;
@@ -171,6 +175,41 @@ export async function splitCompany(store: PortalStore, text: string, opts: { str
 export interface ResolveOptions {
   /** Línea para el usuario antes de la lista / del "no encontré" (p. ej. "No usé: «…»."). */
   note?: string;
+  /**
+   * Corrida J: si no está en el padrón, ofrece *Crear empresa nueva* y *Buscar otra vez* (paso company_not_found); al
+   * crearla o encontrarla sigue `action` con `args` sin perder lo que ya se dio.
+   */
+  offerCreate?: boolean;
+}
+
+/** Corrida J: botones cuando la empresa no está en el padrón (id = el texto equivalente). */
+export const NOT_FOUND_BUTTONS = [
+  { id: "nueva empresa", title: "Crear empresa nueva" },
+  { id: "buscar otra vez", title: "Buscar otra vez" },
+];
+
+/** "buscar otra vez", "buscar", "otra vez", "buscar de nuevo" (botón o escrito). */
+export const SEARCH_AGAIN_RE = /^(?:buscar(?:la|lo)?(?:\s+(?:otra\s+vez|de\s+nuevo|otra))?|otra\s+vez|de\s+nuevo)[.!]*$/i;
+
+/** Pasos en los que `nueva empresa` sigue el flujo en curso (la empresa no se encontró) en vez de dejarlo en pausa. */
+export function offersNewCompany(step: PendingStep | null | undefined): boolean {
+  if (!step) return false;
+  if (step.kind === "company_not_found" || step.kind === "company_search") return true;
+  return step.kind === "report_draft" && !!step.draft && step.field === "empresa";
+}
+
+/**
+ * Corrida J: comandos que, con este paso en curso, son su respuesta: en el resumen del alta de una empresa,
+ * `contacto Juan Pérez, …` es el contacto de la empresa nueva (no el comando `contacto`, que pediría la empresa).
+ */
+export function capturesCommand(step: PendingStep | null | undefined, command: string): boolean {
+  return !!step && step.kind === "new_company" && step.field === null && command === "contacto";
+}
+
+/** "No encontré «X» en el padrón." con los dos botones (y su equivalente escrito). */
+export async function replyNotFound(ctx: PortalContext, head: string): Promise<void> {
+  const body = `${head}\nSi es una empresa nueva, *créala*; si no, búscala con otra parte del nombre o el RUC.`;
+  await replyButtons(ctx, body, NOT_FOUND_BUTTONS, { fallback: `${head}\nEscribe otra parte del nombre o el RUC, o *nueva empresa* para crearla.` });
 }
 
 /**
@@ -188,6 +227,12 @@ export async function resolveCompany(ctx: PortalContext, query: string, action: 
   }
   const { rows, total } = await findCompanies(ctx.store, q, LIST_ROWS_MAX);
   if (rows.length === 0) {
+    if (opts.offerCreate) {
+      const step: Omit<CompanyNotFoundStep, "createdAt"> = { kind: "company_not_found", action, args, query: q };
+      await setPending(ctx.store, ctx.from, step, ctx.now);
+      await replyNotFound(ctx, `${note}No encontré «${q}» en el padrón.`);
+      return null;
+    }
     await ctx.reply(`${note}No encontré «${q}» en el padrón. Prueba con el RUC o con otra parte del nombre.`);
     return null;
   }
@@ -236,6 +281,41 @@ registerPendingHandler("choose_company", async (ctx, step, text) => {
   await handler(ctx, company, s.args ?? {});
   return true;
 });
+
+/**
+ * Corrida J: después de "No encontré «X» en el padrón" (*Crear empresa nueva* la atiende el comando `nueva empresa`).
+ * *Buscar otra vez* pide el nombre; un nombre o RUC escrito (corto) se busca de nuevo con la misma acción.
+ */
+async function searchAgainStep(ctx: PortalContext, step: PendingStep, text: string): Promise<boolean> {
+  const s = step as CompanyNotFoundStep;
+  const t = text.trim();
+  if (SEARCH_AGAIN_RE.test(t)) {
+    // la respuesta irá escrita: con el cotizador revisando una cotización ya guardada (p. ej. tras *Enlazar*), se cierra
+    const busy = await freeQuoter(ctx, "buscar otra vez");
+    if (busy) {
+      await ctx.reply(busy);
+      return true;
+    }
+    const next: Omit<CompanyNotFoundStep, "createdAt"> = { kind: "company_search", action: s.action, args: s.args ?? {} };
+    await setPending(ctx.store, ctx.from, next, ctx.now);
+    await ctx.reply("¿Qué empresa? Escribe el nombre o el RUC.");
+    return true;
+  }
+  // un nombre o un RUC, no un mensaje largo (un reporte o un pedido se clasifican aparte)
+  if (!t || fold(t).split(" ").filter(Boolean).length > 8) return false;
+  const company = await resolveCompany(ctx, t, s.action, s.args ?? {}, { offerCreate: true });
+  if (!company) return true;
+  const handler = getCompanyAction(s.action);
+  if (!handler) {
+    await ctx.reply(`*${s.action}* estará disponible pronto.`);
+    return true;
+  }
+  await handler(ctx, company, s.args ?? {});
+  return true;
+}
+
+registerPendingHandler("company_not_found", searchAgainStep);
+registerPendingHandler("company_search", searchAgainStep);
 
 /** Para qué se elegía la empresa (recordatorio de la pausa). */
 const ACTION_LABEL: Record<string, string> = { empresa: "ver su ficha", asignarme: "asignártela", contacto: "el contacto", contacto_sin_nombre: "el contacto", cita: "la cita", cita_sin_fecha: "la cita", oc: "la orden de compra", prepropuesta: "la pre-propuesta", estado: "ver su estado" };
@@ -298,7 +378,9 @@ export async function formatFicha(store: PortalStore, company: Company, opts: Fi
   const lines: string[] = [];
   lines.push(`🏢 *${company.razonSocial}*`);
   lines.push(`RUC ${company.ruc} · ${sectorLabel(company.sector)}${company.departamento ? ` · ${company.departamento}` : ""}${company.esCliente ? " · *cliente*" : ""}`);
-  lines.push(`Unidades: *${fmtInt(company.unidades)}* · Llantas en piso: *${fmtInt(company.llantasPiso)}* _(dato MTC)_`);
+  // corrida J: una empresa creada a mano no viene del padrón
+  const fuente = company.origen === "manual" ? "_(cargado a mano: no viene del MTC)_" : "_(dato MTC)_";
+  lines.push(`Unidades: *${fmtInt(company.unidades)}* · Llantas en piso: *${fmtInt(company.llantasPiso)}* ${fuente}`);
   lines.push(`Dueño: ${owner ? owner.nombre : "sin asignar"}`);
   if (opts.full) {
     const groups = await store.fleetByBrand(company.id);

@@ -13,7 +13,10 @@ import type { StageId } from "../stages";
 
 export type Sector = "carga" | "pasajeros" | "mixto";
 export type Temperatura = "caliente" | "tibio" | "frio";
-export type FleetOrigen = "carga" | "pasajeros";
+/** carga / pasajeros: padrón MTC. manual (corrida J): vehículo cargado a mano en la ficha; el import del MTC no lo toca. */
+export type FleetOrigen = "carga" | "pasajeros" | "manual";
+/** De dónde salió la empresa: padrón MTC (import) o creada a mano (corrida J, `nueva empresa` / "Agregar empresa"). */
+export type CompanyOrigen = "mtc" | "manual";
 export type Confianza = "alta" | "media" | "baja";
 export type UserRole = "vendedor" | "supervisor" | "tecnico" | "admin";
 
@@ -44,9 +47,40 @@ export interface Company {
   scoreAt?: Date | null;
   /** Plazo de crédito habitual en días (fase B lo propone al cotizar). */
   creditTermsDays: number | null;
+  /**
+   * Corrida J: "manual" = creada a mano (no está en el padrón: su flota no viene del MTC); al aparecer su RUC en el padrón
+   * se fusiona y pasa a "mtc". Opcional en objetos armados a mano; los stores siempre lo traen.
+   */
+  origen?: CompanyOrigen;
+  /** Corrida J: quién la creó a mano (null en las del padrón). */
+  createdBy?: number | null;
   createdAt: Date;
   updatedAt: Date;
 }
+
+/** Corrida J: empresa creada a mano (fuera del padrón). Queda asignada a `createdBy`. */
+export interface ManualCompanyInput {
+  ruc: string;
+  razonSocial: string;
+  sector: Sector | null;
+  departamento: string | null;
+  unidades?: number | null;
+  createdBy: number;
+}
+
+/** Corrida J: vehículo cargado a mano en la ficha (marca, clase, ejes, llantas, medida y placa). */
+export interface ManualVehicleInput {
+  placa: string;
+  marca: string | null;
+  clase: string | null;
+  ejes: number | null;
+  llantas: number | null;
+  /** Medida declarada (canónica, "295/80R22.5"); se guarda como medida_probable con confianza alta. */
+  medida: string | null;
+  anio?: number | null;
+}
+
+export type ManualVehicleResult = { ok: true; vehicle: FleetVehicle; updated: boolean } | { ok: false; reason: "otra_empresa"; companyId: number };
 
 /**
  * Lo que trae el import del padrón. Al reimportar (mismo RUC) se actualizan solo estos campos: es_cliente, dueño,
@@ -69,6 +103,11 @@ export interface UpsertCompaniesResult {
   updated: number;
   /** RUC -> id, para enlazar la flota en el mismo import. */
   ids: Record<string, number>;
+  /**
+   * Corrida J: RUC de empresas creadas a mano que llegaron en este lote (se fusionaron con el padrón: pasan a origen "mtc";
+   * dueño, contactos, actividad, oportunidades y vehículos cargados a mano se conservan). Solo si hubo alguna.
+   */
+  merged?: string[];
 }
 
 export interface FleetVehicle {
@@ -177,7 +216,16 @@ export interface FleetGroup {
 }
 
 export interface CompanyRepo {
+  /**
+   * Import del padrón. Corrida J: una empresa creada a mano con ese RUC se fusiona (origen pasa a "mtc"); los datos del
+   * padrón mandan, salvo sector y departamento que, si el padrón no los trae, conservan lo cargado a mano.
+   */
   upsertCompanies(batch: CompanyInput[]): Promise<UpsertCompaniesResult>;
+  /**
+   * Corrida J: crea la empresa a mano (origen "manual", dueño = quien la crea) en una sola operación; si el RUC ya existe
+   * no toca nada y devuelve esa (`created` false).
+   */
+  createManualCompany(input: ManualCompanyInput): Promise<{ company: Company; created: boolean }>;
   getCompany(id: number): Promise<Company | null>;
   getCompanyByRuc(ruc: string): Promise<Company | null>;
   /** Las empresas de esos RUC que existen (una consulta; sin orden garantizado). */
@@ -213,14 +261,25 @@ export interface FleetRepo {
   /**
    * Poda por lotes (import del padrón): borra los vehículos de `companyIds` cuyo (placa, origen) no está en `keep`.
    * Llamar después de upsertFleet, que ya movió a su empresa actual las placas que cambiaron de dueño. Devuelve cuántos borró.
+   * Corrida J: nunca borra los vehículos cargados a mano (origen "manual"); replaceFleet tampoco.
    */
   pruneFleet(companyIds: number[], keep: FleetKey[]): Promise<number>;
+  /**
+   * Corrida J: agrega (o actualiza, si la placa ya estaba cargada a mano en esa empresa) un vehículo cargado a mano. Si la
+   * placa ya está cargada a mano en OTRA empresa no la mueve: { ok: false, reason: "otra_empresa" }.
+   */
+  addManualVehicle(companyId: number, vehicle: ManualVehicleInput): Promise<ManualVehicleResult>;
+  /** Corrida J: borra un vehículo cargado a mano de esa empresa (los del padrón no). true si lo borró. */
+  deleteManualVehicle(companyId: number, vehicleId: number): Promise<boolean>;
   listFleet(companyId: number): Promise<FleetVehicle[]>;
   /**
    * Corrida J: los vehículos de esas placas en todo el padrón (cualquier empresa), comparando sin guion, espacios ni
    * mayúsculas ("ABC-123" = "abc123"). Una placa puede salir dos veces (carga y pasajeros). Orden: placa, id.
    */
   findFleetByPlacas(placas: string[]): Promise<FleetVehicle[]>;
+  /** Corrida J: los vehículos cargados a mano de la empresa (origen "manual"), por placa. */
+  listManualVehicles(companyId: number): Promise<FleetVehicle[]>;
+  /** Flota del padrón (corrida J: sin los vehículos cargados a mano, que la ficha muestra aparte). */
   fleetByBrand(companyId: number): Promise<FleetGroup[]>;
   countFleet(): Promise<number>;
   /** Todas las empresas (también las sin flota, con 0 y 0) con sus vehículos contados por origen; orden por id. */
