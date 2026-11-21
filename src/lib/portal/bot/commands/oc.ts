@@ -67,6 +67,7 @@ import {
   groupPedidoItems,
   pedidoDescription,
   pedidoFromQuote,
+  pedidoPlatesNote,
   pedidoTooManyItems,
   pedidoUnitPrice,
   plazoDiasFromTerm,
@@ -360,7 +361,7 @@ function itemLines(items: PedidoItem[], cur: string, avail?: Avail): string {
     .map((it) => {
       const a = it.stock?.rowId ? avail?.[it.stock.rowId] : undefined;
       const origin = it.terceros ? ` _(${it.terceros.proveedor})_` : a ? ` _(${availableText({ ...a, disponible: a.cargadas - a.enPedidos })})_` : "";
-      const ubs = it.ubs?.length ? ` · UB ${it.ubs.join(", ")}` : "";
+      const ubs = `${it.ubs?.length ? ` · UB ${it.ubs.join(", ")}` : ""}${it.placas?.some((p) => p.placa) ? ` · placa ${it.placas.map((p) => `${p.placa || "sin placa"} (${p.cantidad})`).join(", ")}` : ""}`;
       return `• ${it.cantidad} × ${pedidoDescription(it)} — ${money(pedidoUnitPrice(it), cur)} c/u${origin}${ubs}`;
     })
     .join("\n");
@@ -1294,7 +1295,7 @@ async function finishOrder(ctx: PortalContext, s: OcStep, company: Company, pref
     const a = part.a;
     const lines = groupPedidoItems(part.items);
     const ubs = [...new Set(part.items.flatMap((it) => it.ubs ?? []))];
-    const obs = [a.observaciones?.trim(), part.sucursal && ubs.length ? `UBs ${ubs.join("-")}` : ""].filter(Boolean).join(" — ");
+    const obs = [a.observaciones?.trim(), part.sucursal && ubs.length ? `UBs ${ubs.join("-")}` : "", pedidoPlatesNote(lines)].filter(Boolean).join(" — ");
     const data: PedidoData = {
       fecha: limaDateKey(now),
       atc: user.nombre,
@@ -1378,7 +1379,7 @@ async function finishOrder(ctx: PortalContext, s: OcStep, company: Company, pref
         total,
         totalSinIgv,
         unidades,
-        items: items.map((it) => ({ cantidad: it.cantidad, descripcion: pedidoDescription(it), precioUnitarioConIgv: pedidoUnitPrice(it), ...(it.terceros ? { proveedor: it.terceros.proveedor } : {}), ...(it.ubs?.length ? { ubs: it.ubs } : {}) })),
+        items: items.map((it) => ({ cantidad: it.cantidad, descripcion: pedidoDescription(it), precioUnitarioConIgv: pedidoUnitPrice(it), ...(it.terceros ? { proveedor: it.terceros.proveedor } : {}), ...(it.ubs?.length ? { ubs: it.ubs } : {}), ...(it.placas?.length ? { placas: it.placas } : {}) })),
       },
       entrega: files[0].data.entrega,
       plazoCreditoDias: files[0].data.plazoCreditoDias,

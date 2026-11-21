@@ -27,6 +27,7 @@
  *    El verbo se compara por parecido (fuzzy.ts): "Elemena" = "elimina". "ponle N" sin unidad: N < 100 es cantidad y
  *    N ≥ 100 es precio (las llantas que se cotizan valen más de US$ 100 y nadie pide 100 en una línea por voz).
  */
+import { normalizePlate } from "../../quote/line-refs";
 import { fold } from "../../tyre/brands";
 import { jaroWinkler } from "./fuzzy";
 
@@ -73,13 +74,114 @@ export function joinUbDigits(text: string): string {
   return (text ?? "").replace(/(?<![\p{L}\d])((?:para\s+(?:la|el)|u\.?\s?b\.?|u\s+be|ube|unidad(?:\s+blindada)?|v(?:\s+grande)?|u)\s+)((?:\d\s+){2,5}\d)(?![\d.,]?\d|\s+\d)/giu, (_, head: string, digits: string) => `${head}${digits.replace(/\s+/g, "")}`);
 }
 
+/**
+ * Una referencia de la línea dicha en la nota (¤n¤): la UB de Prosegur o, corrida J, la placa del vehículo. Las dos se
+ * apartan igual (una marca ¤n¤ por referencia, con su valor) y van con su llanta; `kind` dice cuál es.
+ */
 export interface UbMark {
-  /** Las cifras oídas, juntas ("1231"; "181" o "12201" si no son 4). */
+  /** Las cifras oídas, juntas ("1231"; "181" o "12201" si no son 4); para una placa, lo oído ("ABC-123", "BC12"). */
   value: string;
-  /** Lo que se dijo ("para la v grande 1231"). */
+  /** Lo que se dijo ("para la v grande 1231", "para la placa a be ce 1 2 3"). */
   from: string;
-  /** Tiene 4 cifras. */
+  /** Tiene 4 cifras (UB) o la forma de una placa peruana. */
   valid: boolean;
+  /** Corrida J: "plate" = placa; sin valor = UB. */
+  kind?: "plate";
+}
+export type LineRefMark = UbMark;
+
+// ── placa dictada (corrida J) ──
+
+/** Letras dichas por su nombre ("a be ce", "doble ve", "i griega") y cifras que spokenToDigits dejó en palabras ("uno"). */
+const LETTER_NAMES: Record<string, string> = {
+  a: "A", be: "B", b: "B", ce: "C", c: "C", se: "C", de: "D", d: "D", e: "E", efe: "F", f: "F", ge: "G", g: "G", hache: "H", h: "H", i: "I",
+  jota: "J", j: "J", ka: "K", k: "K", ele: "L", l: "L", eme: "M", m: "M", ene: "N", n: "N", o: "O", pe: "P", p: "P", cu: "Q", q: "Q", erre: "R",
+  ere: "R", r: "R", ese: "S", s: "S", te: "T", t: "T", u: "U", ve: "V", uve: "V", v: "V", w: "W", equis: "X", x: "X", ye: "Y", y: "Y", zeta: "Z", seta: "Z", z: "Z",
+};
+const DIGIT_WORDS: Record<string, string> = { cero: "0", uno: "1", un: "1", una: "1", dos: "2", tres: "3", cuatro: "4", cinco: "5", seis: "6", siete: "7", ocho: "8", nueve: "9" };
+
+/** "para la placa", "con placa", "placa número", "plc": lo que anuncia una placa dictada. */
+const PLATE_HEAD = /(?:(?<![\p{L}\d])(?:para|de|con|en)\s+(?:la\s+|el\s+)?)?(?<![\p{L}\d])(?:placa|plaka|plc)(?![\p{L}\d])\s*(?:n[uú]mero\s+)?[:,]?\s*/giu;
+
+/**
+ * Lee una placa dictada desde el inicio de `rest` ("a be ce 1 2 3", "ABC-123", "abc 123", "a 1 b 2 3 4", "doble ve a be
+ * 4 5 6"): tres caracteres (letra o cifra) y luego tres cifras. Devuelve lo leído (sin guion, "ABC123" o lo que se alcanzó a
+ * oír, "BC12") y cuánto de `rest` usó. Para en lo que no encaja: "… 1 2 3 a 254" deja "a 254" (el precio).
+ */
+export function readSpokenPlate(rest: string): { chars: string; used: number } {
+  const tok = /[\s,.;:-]*([\p{L}\d]+)/uy;
+  let chars = "";
+  let used = 0;
+  let at = 0;
+  for (let guard = 0; guard < 14 && chars.length < 6; guard++) {
+    tok.lastIndex = at;
+    const m = tok.exec(rest);
+    if (!m) break;
+    const raw = m[1];
+    const w = fold(raw);
+    const next = () => {
+      tok.lastIndex = at + m[0].length;
+      return tok.exec(rest);
+    };
+    let add = "";
+    let len = m[0].length;
+    if (w === "guion" || w === "raya") {
+      at += len;
+      continue;
+    }
+    if (w === "doble" || (w === "i" && /^griega$/i.test(next()?.[1] ?? ""))) {
+      const n2 = next();
+      if (w === "doble" && n2 && /^(?:ve|v|u|uve)$/i.test(fold(n2[1]))) add = "W";
+      else if (w === "i" && n2) add = "Y";
+      else break;
+      len += n2!.index! - (at + m[0].length) + n2![0].length;
+    } else if (LETTER_NAMES[w] && chars.length < 3) add = LETTER_NAMES[w];
+    else if (DIGIT_WORDS[w]) add = DIGIT_WORDS[w];
+    else if (/^[a-z0-9]+$/i.test(raw) && raw.length <= 6) add = raw.toUpperCase();
+    else break;
+    // cabe: los 3 primeros, letra o cifra (el primero, letra); los 3 últimos, cifras
+    const next6 = chars + add;
+    const ok = next6.length <= 6 && [...add].every((ch, k) => (chars.length + k < 3 ? (chars.length + k === 0 ? /[A-Z]/.test(ch) : /[A-Z0-9]/.test(ch)) : /\d/.test(ch)));
+    if (!ok) break;
+    chars = next6;
+    at += len;
+    used = at;
+  }
+  return { chars, used };
+}
+
+/**
+ * Las placas dictadas ("para la placa a be ce uno dos tres") -> marcas ¤p…¤ (letras: sobreviven a la lectura de números y
+ * medidas) y lo oído de cada una. Se llama con los números ya en cifras y antes de leer medidas y cliente: "para la placa"
+ * nunca es un cliente. Luego `placePlateMarks` las convierte en marcas ¤n¤ junto a las UBs.
+ */
+export function extractSpokenPlates(text: string): { text: string; plates: UbMark[] } {
+  const plates: UbMark[] = [];
+  let out = "";
+  let last = 0;
+  for (const m of text.matchAll(PLATE_HEAD)) {
+    const start = m.index ?? 0;
+    if (start < last) continue;
+    const after = start + m[0].length;
+    const { chars, used } = readSpokenPlate(text.slice(after));
+    const from = text.slice(start, after + used).trim();
+    const plate = chars.length === 6 ? normalizePlate(chars) : undefined;
+    out += `${text.slice(last, start)} ¤p${String.fromCharCode(97 + plates.length)}¤ `;
+    plates.push({ value: plate ?? (chars || from.replace(PLATE_HEAD, "").trim() || "?"), from, valid: !!plate, kind: "plate" });
+    last = after + used;
+    if (plates.length >= 20) break;
+  }
+  return { text: plates.length ? out + text.slice(last) : text, plates };
+}
+
+/** Las marcas ¤p…¤ de extractSpokenPlates -> ¤n¤, añadidas a `marks` (las de las UBs); sin `keep`, se quitan del texto. */
+export function placePlateMarks(text: string, plates: UbMark[], marks: UbMark[], keep = true): string {
+  return text.replace(/¤p([a-t])¤/g, (_, c: string) => {
+    const p = plates[c.charCodeAt(0) - 97];
+    if (!p || !keep) return " ";
+    marks.push(p);
+    return ` ¤${marks.length - 1}¤ `;
+  });
 }
 
 /** Las cifras de una UB: "1231", "1.231", "12 31", "1 2 3 1" (grupos de 1–2 cifras se juntan; uno de 3 o más va solo). */

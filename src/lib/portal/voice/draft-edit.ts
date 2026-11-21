@@ -72,6 +72,8 @@ interface ItemParts {
   qty: string;
   price: string;
   ub: string;
+  /** Corrida J: "placa ABC-123" de la línea (como la UB: un dato de la llanta, no parte del modelo). */
+  plate: string;
 }
 
 function parseLine(line: string, brands: string[]): ItemParts {
@@ -84,6 +86,7 @@ function parseLine(line: string, brands: string[]): ItemParts {
   };
   const price = take(/\sprecio\s+(\d+(?:\.\d+)?)(?=\s)/i);
   const ub = take(/\sub\s+(\d{3,5})(?=\s)/i);
+  const plate = take(/\splaca\s+([A-Z0-9]{3}-\d{3})(?=\s)/i);
   const qty = take(/\sx(\d{1,4})(?=\s)/i);
   const ply = take(/\s(\d{1,2})PR(?=\s)/i);
   // un solo espacio: las posiciones de findTyreSizes son las del texto normalizado
@@ -97,11 +100,11 @@ function parseLine(line: string, brands: string[]): ItemParts {
   const words = rest.replace(/\s+/g, " ").trim();
   const brand = brands.find((b) => ` ${fold(words)} `.includes(` ${fold(b)} `)) ?? "";
   const model = brand ? words.replace(new RegExp(`(?<![\\p{L}])${brand.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\p{L}])`, "iu"), " ").replace(/\s+/g, " ").trim() : words;
-  return { brand, model, size, ply, qty, price, ub };
+  return { brand, model, size, ply, qty, price, ub, plate };
 }
 
 function formatLine(p: ItemParts): string {
-  return [p.brand, p.model, p.size, p.ply ? `${p.ply}PR` : "", p.qty ? `x${p.qty}` : "", p.price ? `precio ${p.price}` : "", p.ub ? `ub ${p.ub}` : ""].filter(Boolean).join(" ");
+  return [p.brand, p.model, p.size, p.ply ? `${p.ply}PR` : "", p.qty ? `x${p.qty}` : "", p.price ? `precio ${p.price}` : "", p.ub ? `ub ${p.ub}` : "", p.plate ? `placa ${p.plate}` : ""].filter(Boolean).join(" ");
 }
 
 // ── validar lo que devolvió el modelo ──
@@ -240,15 +243,15 @@ export function applyOps(draft: Draft, ops: DraftOp[], brands: string[]): Applie
     if (o.op === "merge") {
       const idx = o.lines.map((n) => n - 1).filter((i) => parts[i] && !gone.has(i));
       if (idx.length < 2) continue;
-      const fields: (keyof ItemParts)[] = ["brand", "model", "size", "ply", "qty", "price", "ub"];
-      const merged: ItemParts = { brand: "", model: "", size: "", ply: "", qty: "", price: "", ub: "" };
+      const fields: (keyof ItemParts)[] = ["brand", "model", "size", "ply", "qty", "price", "ub", "plate"];
+      const merged: ItemParts = { brand: "", model: "", size: "", ply: "", qty: "", price: "", ub: "", plate: "" };
       const clash: string[] = [];
       for (const f of fields) {
         const vals = [...new Set(idx.map((i) => parts[i][f]).filter(Boolean))];
         if (f === "model") merged.model = vals.join(" ");
         else {
           merged[f] = vals[0] ?? "";
-          if (vals.length > 1) clash.push(f === "size" ? "medidas" : f === "qty" ? "cantidades" : f === "price" ? "precios" : f === "brand" ? "marcas" : f === "ub" ? "UB" : "lonas");
+          if (vals.length > 1) clash.push(f === "size" ? "medidas" : f === "qty" ? "cantidades" : f === "price" ? "precios" : f === "brand" ? "marcas" : f === "ub" ? "UB" : f === "plate" ? "placas" : "lonas");
         }
       }
       if (clash.length) {

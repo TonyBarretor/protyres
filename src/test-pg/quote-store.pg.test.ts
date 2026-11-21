@@ -74,13 +74,13 @@ async function scenario(s: PriceStore, trace: (label: string, v: unknown) => voi
   const make = async (number: string, text: string, by: string, createdAt: string) => {
     const req = parseRequestRegex(text);
     const cands = rankLine(found, req.lines[0], req, settings.pricing, { today: "2026-10-06" });
-    const q = buildQuote({ number, request: req, items: [itemFromCandidate(cands[0], 2, settings)], settings, today: "2026-10-06", requestedBy: by });
+    const q = buildQuote({ number, request: req, items: [itemFromCandidate(cands[0], 2, settings, undefined, req.lines[0])], settings, today: "2026-10-06", requestedBy: by });
     q.createdAt = createdAt;
     await s.saveQuote(q);
     return q;
   };
   const q1 = await make("L-1", "11R22.5 x2 para PROSEGUR SA, a@prosegur.pe\nunidad: Ayacucho", "51900000001", "2026-10-10T10:00:00Z");
-  await make("L-2", "11R22.5 x1 para Transportes ABC SAC, b@abc.pe", "51900000001", "2026-10-11T10:00:00Z");
+  await make("L-2", "11R22.5 x1 placa ABC-123 para Transportes ABC SAC, b@abc.pe", "51900000001", "2026-10-11T10:00:00Z");
   await make("L-3", "11R22.5 x1 para Prosegur S.A., c@prosegur.pe\nunidad: Cusco", "51900000002", "2026-10-12T10:00:00Z");
   q1.status = "sent";
   q1.sentAt = "2026-10-10T11:00:00.000Z";
@@ -89,6 +89,8 @@ async function scenario(s: PriceStore, trace: (label: string, v: unknown) => voi
   trace("quote.list", (await s.listQuotes()).map((q) => q.number));
   trace("quote.listCompany", (await s.listQuotes({ company: "PROSEGUR S.A." })).map((q) => q.number));
   trace("quote.listBy", (await s.listQuotes({ requestedBy: "+51 900 000 001", limit: 1 })).map((q) => q.number));
+  // corrida J: qué se le cotizó a un vehículo (placa escrita de cualquier forma)
+  trace("quote.listPlate", [(await s.listQuotes({ plate: "abc123" })).map((q) => q.number), (await s.listQuotes({ plate: "ZZZ-999" })).map((q) => q.number)]);
   trace("quote.last", (await s.findLastQuoteForCustomer({ company: "prosegur" }))?.number);
   trace("quote.lastUnit", (await s.findLastQuoteForCustomer({ company: "Prosegur", unit: "ayacucho" }))?.number);
   trace("quote.lastEmail", (await s.findLastQuoteForCustomer({ email: "b@abc.pe" }))?.number);

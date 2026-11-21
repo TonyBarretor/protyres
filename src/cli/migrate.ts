@@ -583,6 +583,10 @@ export const STATEMENTS = [
   `alter table sales add column if not exists monto_calculado boolean not null default false`,
   `alter table sales add column if not exists total_original numeric(14,2)`,
   `alter table sales add column if not exists precio_unitario_original numeric(12,2)`,
+  // corrida J (placa por línea): la placa de cada ítem va en quotes.data (jsonb); estos índices sirven para consultar qué se
+  // le cotizó a un vehículo (listQuotes({ plate })) y para contrastar la placa con la flota del padrón (findFleetByPlacas)
+  `create index if not exists quotes_items_gin_idx on quotes using gin ((data->'items') jsonb_path_ops)`,
+  `create index if not exists fleet_vehicles_placa_key_idx on fleet_vehicles ((upper(replace(replace(placa, '-', ''), ' ', ''))))`,
 ];
 
 /** Desde aquí empiezan las sentencias del portal: antes de ejecutarlas se pasa la guardia (migrate-guard.ts). */

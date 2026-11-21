@@ -153,6 +153,16 @@ export function dictationNotes(d: DictatedQuote, settings = quoteSettings()): st
     notes.push(`💱 Dijiste *${CURRENCY_NAME[d.currency] ?? d.currency}*, pero la cotización va en *${CURRENCY_NAME[settings.currency.toUpperCase()] ?? settings.currency}*: dejé el número tal cual. Si no es así, corrígelo (p. ej. *precio 1 75*).`);
   }
   if (d.taxMention) notes.push(`🧾 Dijiste «${d.taxMention}» sin decir si el precio lo incluye: uso lo de siempre. Si no, escribe *con igv* o *sin igv*.`);
+  // corrida J: la placa dictada se muestra siempre como se entendió (las letras dictadas son poco fiables); si no tiene la
+  // forma de una placa, no va en la línea y se pide escribirla (sin bloquear la cotización)
+  for (const p of d.plates ?? []) {
+    const n = p.item + 1;
+    notes.push(
+      p.plate
+        ? `🚗 Línea ${n}: placa *${p.plate}* (entendí «${oneLine(p.from)}»). Si no es, escríbela: *placa ${n} ABC-123*.`
+        : `🚗 Línea ${n}: entendí «${p.heard}» como placa, pero no tiene la forma de una placa (*ABC-123*): escríbela, *placa ${n} ABC-123*.`,
+    );
+  }
   for (const p of d.plyIssues) {
     notes.push(`🛞 *${p.ply}PR* no está en el catálogo para ${displaySize(p.size)} (hay ${p.available.map((x) => `${x}PR`).join(", ")}): cotizo sin lonas en la línea ${p.item + 1}.`);
   }

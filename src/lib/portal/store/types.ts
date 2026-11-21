@@ -216,6 +216,11 @@ export interface FleetRepo {
    */
   pruneFleet(companyIds: number[], keep: FleetKey[]): Promise<number>;
   listFleet(companyId: number): Promise<FleetVehicle[]>;
+  /**
+   * Corrida J: los vehículos de esas placas en todo el padrón (cualquier empresa), comparando sin guion, espacios ni
+   * mayúsculas ("ABC-123" = "abc123"). Una placa puede salir dos veces (carga y pasajeros). Orden: placa, id.
+   */
+  findFleetByPlacas(placas: string[]): Promise<FleetVehicle[]>;
   fleetByBrand(companyId: number): Promise<FleetGroup[]>;
   countFleet(): Promise<number>;
   /** Todas las empresas (también las sin flota, con 0 y 0) con sus vehículos contados por origen; orden por id. */

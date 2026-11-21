@@ -93,6 +93,18 @@
           }
         ]
       }
+    },
+    {
+      "name": "ANCRO S.R.L.",
+      "aliases": [
+        "ancro",
+        "ancro srl",
+        "ancro s.r.l."
+      ],
+      "company": "ANCRO S.R.L.",
+      "required": [
+        "plate"
+      ]
     }
   ]
 }

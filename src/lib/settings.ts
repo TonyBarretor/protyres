@@ -134,8 +134,11 @@ export const CustomerProfileSchema = z.object({
       pricesIncludeTax: z.boolean().optional(),
     })
     .default({}),
-  /** Asked for before showing options when missing: unit ("unidad:"), ub ("ub:" / "UB 1830" per item), requester ("solicitante:"). */
-  required: z.array(z.enum(["unit", "ub", "requester"])).default([]),
+  /**
+   * Asked for before showing options when missing: unit ("unidad:"), ub ("ub:" / "UB 1830" per item), requester
+   * ("solicitante:"), plate ("pedir placa", corrida J: "placa 1 ABC-123" per item; asked once, "sin placa" goes on).
+   */
+  required: z.array(z.enum(["unit", "ub", "requester", "plate"])).default([]),
   /** The customer's Excel template, file name pattern ({DDMMYY} {UB} {UNIDAD} {PROVEEDOR} {N}) and supplier box. */
   excel: z
     .object({

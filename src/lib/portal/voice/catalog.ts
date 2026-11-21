@@ -4,7 +4,7 @@
  * Orden: primero lo propio (kind "own", el catálogo de 360 Tyres), luego por cantidad de filas.
  */
 import type { PriceRow } from "../../ingest/types";
-import { profileId, profileKey } from "../../quote/profiles";
+import { profileId, profileKey, usesUnits } from "../../quote/profiles";
 import type { CustomerProfile } from "../../settings";
 import type { PriceStore } from "../../store/types";
 import type { DictationProfile } from "./dictation";
@@ -66,7 +66,9 @@ export const VOICE_CATALOG_TTL_MS = 10 * 60 * 1000;
 
 /** Los clientes con perfil para la voz: nombres, sucursales de sus cotizaciones (`unit`) y si piden UB. */
 export function voiceProfiles(profiles: CustomerProfile[], quotes: { customerProfile?: string; unit?: string }[] = []): DictationProfile[] {
-  return profiles.map((p) => {
+  // solo los de contrato o con unidad / UB (Prosegur): un perfil que solo pide placa (ANCRO, corrida J) se dicta como
+  // cualquier cliente ("para Ancro") y el cotizador lo reconoce por el nombre
+  return profiles.filter((p) => usesUnits(p) || !!p.contract?.items.length).map((p) => {
     const id = profileId(p);
     const units = new Map<string, string>();
     for (const q of quotes) if (q.customerProfile === id && q.unit?.trim()) units.set(q.unit.trim().toLowerCase(), q.unit.trim());

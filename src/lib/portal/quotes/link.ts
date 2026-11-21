@@ -93,7 +93,7 @@ export function quoteNumberMatches(full: string, typed: string): boolean {
   return false;
 }
 
-function customerKeyOf(c: { company?: string; name?: string }): string | null {
+export function customerKeyOf(c: { company?: string; name?: string }): string | null {
   const name = c.company || c.name;
   const key = name ? companyKey(name) : "";
   return key || null;
@@ -123,7 +123,7 @@ export function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
 }
 
 /** Corre `fn` con el store y el usuario activo del portal; null si el número no es del portal o algo falla. */
-async function safely<T>(what: string, phone: string, opts: HookOptions, fn: (store: PortalStore, user: PortalUser) => Promise<T>): Promise<T | null> {
+export async function safely<T>(what: string, phone: string, opts: HookOptions, fn: (store: PortalStore, user: PortalUser) => Promise<T>): Promise<T | null> {
   const log = opts.log ?? (() => undefined);
   try {
     return await withTimeout(
@@ -168,7 +168,7 @@ export async function findQuoteLink(store: PortalStore, userId: number, typed: s
 }
 
 /** Empresa que el vendedor ya enlazó antes para este cliente (mismo correo o mismo nombre sin S.A.C.). */
-async function previouslyLinked(store: PortalStore, userId: number, customer: { key: string | null; email: string | null }): Promise<Company | null> {
+export async function previouslyLinked(store: PortalStore, userId: number, customer: { key: string | null; email: string | null }): Promise<Company | null> {
   if (!customer.key && !customer.email) return null;
   const email = customer.email?.toLowerCase() ?? null;
   const hit = (await quoteActivities(store, userId)).find(
@@ -178,7 +178,7 @@ async function previouslyLinked(store: PortalStore, userId: number, customer: { 
 }
 
 /** Empresa por RUC exacto escrito en el pedido (una sola). */
-async function companyByRuc(store: PortalStore, rucs: string[]): Promise<Company | null> {
+export async function companyByRuc(store: PortalStore, rucs: string[]): Promise<Company | null> {
   const found: Company[] = [];
   for (const r of rucs.slice(0, 3)) {
     const c = await store.getCompanyByRuc(r);
@@ -415,7 +415,7 @@ export async function portalCreditTerm(input: HookOptions & { from: string; text
 const SALE_REFERENCE_ROLES = new Set(["vendedor", "supervisor", "admin"]);
 
 /** Cliente por nombre sin dudas: una sola razón social igual al nombre (sin S.A.C. ni tildes). */
-async function companyByExactName(store: PortalStore, name: string | undefined): Promise<Company | null> {
+export async function companyByExactName(store: PortalStore, name: string | undefined): Promise<Company | null> {
   const key = name ? companyKey(name) : "";
   if (key.length < 3) return null;
   const { rows } = await findCompanies(store, name!, 5);

@@ -12,6 +12,7 @@ import path from "node:path";
 import { Document, Image, Page, StyleSheet, Text, View, renderToBuffer } from "@react-pdf/renderer";
 import type { Settings } from "../settings";
 import { displayTotal, displayUnit } from "./build";
+import { lineRefs, lineRefsLabel } from "./line-refs";
 import { loadImage } from "./photos";
 import { fmtMoney } from "./pricing";
 import type { Quote } from "./types";
@@ -213,9 +214,10 @@ export function QuoteDocument({ quote, settings, photos = {} }: { quote: Quote; 
           <Text style={[st.th, w(COLS.total), { borderRightWidth: 0 }]}>PRECIO TOTAL{"\n"}{curLabel}</Text>
         </View>
         {rows.map((it, i) => {
-          // the customer's references after the size: plate, then UB (the item's own, else the quote's: "215/75R17.5 18PR UB 1830")
-          const ub = it.ub ?? quote.ub;
-          const measure = `${it.size ? `${it.sizeDisplay}${it.ply ? ` ${it.ply}PR` : ""}${it.loadIndex && !it.ply ? ` ${it.loadIndex}${it.speedIndex ?? ""}` : ""}` : it.description}${it.plate ? ` ${it.plate}` : ""}${ub ? ` UB ${ub}` : ""}`;
+          // the customer's references after the size (line-refs.ts): plate with its label, then UB (the item's own, else the
+          // quote's): "11R22.5 18PR PLACA ABC-123", "215/75R17.5 18PR UB 1830"
+          const refs = lineRefsLabel(lineRefs(it, quote.ub, "effective"));
+          const measure = `${it.size ? `${it.sizeDisplay}${it.ply ? ` ${it.ply}PR` : ""}${it.loadIndex && !it.ply ? ` ${it.loadIndex}${it.speedIndex ?? ""}` : ""}` : it.description}${refs ? ` ${refs}` : ""}`;
           return (
             <View key={i} style={st.row} wrap={false}>
               <Text style={[st.td, w(COLS.item)]}>{i + 1}</Text>

@@ -23,7 +23,8 @@
  *     aro con ".5" que no se dijo, o ancho ±10 mm con el mismo perfil y aro). Nunca elige: quien llama pregunta.
  */
 import { fixCatalogTerms, jaroWinkler, matchSpokenName } from "./fuzzy";
-import { groupItems, joinUbDigits, markUbs, splitPly, unglueNumbers } from "./items";
+import { extractSpokenPlates, groupItems, joinUbDigits, markUbs, placePlateMarks, readSpokenPlate, splitPly, unglueNumbers } from "./items";
+import { normalizePlate } from "../../quote/line-refs";
 import { resolveSpokenSizes, type AmbiguousSize, type SizeResolution } from "./sizes";
 import { fold } from "../../tyre/brands";
 import { findTyreSizes, parseTyreSize, sizeLoose } from "../../tyre/spec";
@@ -335,6 +336,12 @@ export interface DictatedQuote {
   ubs: (string | undefined)[];
   /** Llantas con la UB mal oída (no son 4 cifras) o sin UB cuando el cliente la pide: se pregunta antes de cotizar. */
   ubIssues: { item: number; heard?: string }[];
+  /**
+   * Corrida J: la placa dicha de cada llanta que la trae (índice de `items`). `plate` solo si tiene la forma de una placa
+   * peruana (va en la línea: "placa ABC-123"); `heard`, lo que se entendió (se muestra siempre: las letras dictadas son
+   * poco fiables); `from`, lo dicho. Una llanta sin placa no hereda la de la anterior.
+   */
+  plates: { item: number; plate?: string; heard: string; from: string }[];
   /** Llantas sin medida que heredan la de la anterior (corrida H, punto 6): se dice. */
   inherited: { item: number; size: string }[];
   /** Lo que no se pudo separar con seguridad (corrida H, punto 5): se muestra lo entendido y se pregunta. */
@@ -500,7 +507,9 @@ export function normalizeDictation(transcript: string, catalog: DictationCatalog
   // marcas y diseños mal oídos, por parecido contra el catálogo (antes de normalizar: compara palabras como se dijeron)
   const fixed = catalog.designs?.length || catalog.brands?.length ? fixCatalogTerms(transcript, { brands: catalog.brands ?? [], designs: catalog.designs ?? [] }) : { text: transcript, changes: [] };
   // números que Deepgram pegó ("17.54 valor 89", "valor 99295, 80"): después de pasar las palabras a cifras
-  const spoken = normalizeSpokenDetailed(joinUbDigits(unglueNumbers(splitPly(spokenToDigits(fixed.text.replace(/[“”"']/g, ""))), catalog.designs)), catalog.sizes);
+  // corrida J: las placas dictadas ("para la placa a be ce uno dos tres") se apartan antes de leer medidas y cliente
+  const spokenPlates = extractSpokenPlates(spokenToDigits(fixed.text.replace(/[“”"']/g, "")));
+  const spoken = normalizeSpokenDetailed(joinUbDigits(unglueNumbers(splitPly(spokenPlates.text), catalog.designs)), catalog.sizes);
   // "Cotícame", "Contícame", "Cotita" (Deepgram, 2026-11-16): el verbo de cotizar al inicio, por parecido
   let t = spoken.text.replace(QUOTE_HEAD, "").replace(/^\s*(\p{L}+)[\s,:]+/u, (all, w: string) => (isQuoteVerb(w) ? "" : all));
   // un punto pegado a la cifra ("… 22.5. Otra, …"): findTyreSizes no lee la medida si le sigue un punto
@@ -571,6 +580,10 @@ export function normalizeDictation(transcript: string, catalog: DictationCatalog
   // UBs apartadas (¤n¤): con un cliente que la pide, también un número suelto de 4 cifras
   const ub = markUbs(t, prof?.ub ? 2 : (catalog.ubLevel ?? 1));
   t = clean(ub.text);
+  // corrida J: las placas, como marcas ¤n¤ junto a las UBs (cada una va con su llanta). Un cliente con UB (Prosegur) no
+  // lleva placa: lo dicho no se entiende y se pregunta
+  const refusedPlates = prof?.ub ? spokenPlates.plates.map((p) => p.from) : [];
+  t = clean(placePlateMarks(t, spokenPlates.plates, ub.ubs, !prof?.ub));
   // "cliente Fenixway": una marca del catálogo dicha como cliente va como marca (y se pregunta el cliente)
   let brandAsCustomer: string | undefined;
   t = t.replace(/(^|[\s,])(?:cliente|para)\s+(?:la\s+empresa\s+|el\s+cliente\s+)?(\p{L}[\p{L}\d-]*(?:\s+\p{L}[\p{L}\d-]*)?)/iu, (all, pre: string, name: string) => {
@@ -625,7 +638,8 @@ export function normalizeDictation(transcript: string, catalog: DictationCatalog
   const ubs: (string | undefined)[] = [];
   const ubIssues: { item: number; heard?: string }[] = [];
   const inherited: { item: number; size: string }[] = [];
-  const display = (g: string) => clean(g.replace(/§(\d+)§/g, (_, k: string) => displaySize(sizes[parseInt(k, 10)])).replace(/¤(\d+)¤/g, (_, k: string) => `UB ${ub.ubs[parseInt(k, 10)].value}`));
+  const plates: DictatedQuote["plates"] = [];
+  const display = (g: string) => clean(g.replace(/§(\d+)§/g, (_, k: string) => displaySize(sizes[parseInt(k, 10)])).replace(/¤(\d+)¤/g, (_, k: string) => `${ub.ubs[parseInt(k, 10)].kind === "plate" ? "placa" : "UB"} ${ub.ubs[parseInt(k, 10)].value}`));
   const doubts = grouping.doubts.map(display);
   let prevSize: string | null = null;
   const meta: { desc: string; qty: boolean; ownSize: boolean; other: boolean }[] = [];
@@ -637,10 +651,15 @@ export function normalizeDictation(transcript: string, catalog: DictationCatalog
       price = pm[1];
       rest = `${rest.slice(0, pm.index)} ${rest.slice((pm.index ?? 0) + pm[0].length)}`;
     }
-    // UB de la línea
-    const lineUbs = [...rest.matchAll(/¤(\d+)¤/g)].map((m) => ub.ubs[parseInt(m[1], 10)]);
+    // UB y placa de la línea (cada una la suya: una llanta sin placa no hereda la de la anterior)
+    const lineRefs = [...rest.matchAll(/¤(\d+)¤/g)].map((m) => ub.ubs[parseInt(m[1], 10)]);
+    const lineUbs = lineRefs.filter((r) => r.kind !== "plate");
+    const linePlates = lineRefs.filter((r) => r.kind === "plate");
     rest = rest.replace(/¤\d+¤/g, " ");
     if (lineUbs.length > 1) doubts.push(`la llanta ${i + 1} («${display(g)}») tiene dos UB`);
+    if (linePlates.length > 1) doubts.push(`la llanta ${i + 1} («${display(g)}») tiene dos placas`);
+    const pl = linePlates[0];
+    if (pl) plates.push({ item: i, plate: pl.valid ? pl.value : undefined, heard: pl.value, from: pl.from });
     const u = lineUbs[0];
     ubs.push(u?.valid ? u.value : undefined);
     if (u && !u.valid) ubIssues.push({ item: i, heard: u.value });
@@ -683,8 +702,8 @@ export function normalizeDictation(transcript: string, catalog: DictationCatalog
       ply = null;
     }
     const desc = withBrand(clean(rest), catalog);
-    meta.push({ desc: clean(rest), qty: !!qty, ownSize, other: !!(price || u) });
-    return clean([desc, marks.join(" "), ply ? `${ply}PR` : "", qty ? `x${qty}` : "", price ? `precio ${price}` : "", u?.valid ? `ub ${u.value}` : ""].filter(Boolean).join(" "));
+    meta.push({ desc: clean(rest), qty: !!qty, ownSize, other: !!(price || u || pl) });
+    return clean([desc, marks.join(" "), ply ? `${ply}PR` : "", qty ? `x${qty}` : "", price ? `precio ${price}` : "", u?.valid ? `ub ${u.value}` : "", pl?.valid ? `placa ${pl.value}` : ""].filter(Boolean).join(" "));
   });
   // varias llantas y alguna sin cantidad cuando las otras la dicen: Deepgram suele comerse el número ("…a 198, Westlake AZ670")
   if (meta.length > 1 && meta.some((m) => m.qty)) meta.forEach((m, i) => !m.qty && (m.ownSize || m.desc) && doubts.push(`la llanta ${i + 1} («${clean(items[i])}») no dice cantidad`));
@@ -700,6 +719,7 @@ export function normalizeDictation(transcript: string, catalog: DictationCatalog
     const first = items.findIndex((l) => !findTyreSizes(l).length);
     if (first >= 0) doubts.push(`la llanta ${first + 1} («${clean(items[first])}») no tiene medida`);
   }
+  for (const f of refusedPlates) doubts.push(`no entendí «${f}»: en ${prof!.name} cada llanta lleva UB, no placa`);
   const header = profile ? [`${profile.key}${profile.branch ? ` ${profile.branch}` : ""}`] : [];
   const lines = [...header, ...items.filter(Boolean), ...(customer ? [`para ${customer}`] : []), ...terms];
   const sizeFixes = spoken.sizes.resolved.filter((r) => !r.plain).map((r) => ({ from: r.from, to: displaySize(r.to) }));
@@ -720,6 +740,7 @@ export function normalizeDictation(transcript: string, catalog: DictationCatalog
     ...(profile ? { profile } : {}),
     ubs,
     ubIssues,
+    plates,
     inherited,
     doubts,
     ...(single ? { single } : {}),
@@ -738,6 +759,29 @@ export type VoiceCorrection = { kind: "confirm" } | { kind: "text"; text: string
 const CONFIRM_RE = /^(?:(?:ok|okey|si|dale|listo|confirmo|confirmar|correcto|esta bien|todo bien|armalo|arma|generalo|genera|enviar|envialo|envia|perfecto|ya|bueno)\s*)+$/;
 const CORRECTION_HEAD = /^(?:no|nop|perd[oó]n|disculpa|corrijo|correcci[oó]n|mejor|me equivoqu[eé])\b[,.\s]*/i;
 
+const ORDINALS: Record<string, number> = { primer: 1, primero: 1, primera: 1, segundo: 2, segunda: 2, tercer: 3, tercero: 3, tercera: 3, cuarto: 4, cuarta: 4, quinto: 5, quinta: 5, sexto: 6, sexta: 6 };
+const LINE_REF = String.raw`(?:(?:del?|al|a\s+la|para|en)\s+)?(?:(?:el|la)\s+)?(?:l[ií]nea\s+|[ií]tem\s+|llanta\s+)?(primer[oa]?|segund[oa]|tercer[oa]?|cuart[oa]|quint[oa]|sext[oa]|\d{1,2})`;
+const lineNumber = (s: string | undefined) => (!s ? null : /^\d+$/.test(s) ? parseInt(s, 10) : (ORDINALS[fold(s)] ?? null));
+
+/**
+ * Corrida J: la placa dictada con la cotización a la vista -> el comando escrito. "la placa del segundo es a be ce uno dos
+ * tres" -> "placa 2 ABC-123"; "placa a be ce 1 2 3" -> "placa ABC-123" (una sola llanta); "sin placa el segundo" -> "sin
+ * placa 2". Lo que no tiene forma de placa va tal cual ("placa 2 BC12"): el cotizador pide escribirla. Null si no es esto.
+ */
+export function plateCorrection(t: string): string | null {
+  const off = t.match(new RegExp(String.raw`^(?:qu[ií]ta(?:le)?\s+la\s+|sin\s+)placa(?:\s+${LINE_REF})?$`, "iu"));
+  if (off) {
+    const n = lineNumber(off[1]);
+    return n ? `sin placa ${n}` : "sin placa";
+  }
+  const m = t.match(new RegExp(String.raw`^(?:(?:p[oó]n(?:le|me)?|c[aá]mbia(?:le)?|la)\s+)*(?:la\s+)?placa(?:\s+${LINE_REF})?\s+(?:es\s+|ser[ií]a\s+|era\s+)?[:,]?\s*(\S.*)$`, "iu"));
+  if (!m) return null;
+  const n = lineNumber(m[1]);
+  const { chars, used } = readSpokenPlate(m[2]);
+  if (!chars || m[2].slice(used).trim()) return null;
+  return `placa ${n ? `${n} ` : ""}${normalizePlate(chars) ?? chars}`;
+}
+
 /** Una corrección dictada sobre la cotización a la vista -> el comando escrito equivalente (ver la cabecera). */
 export function normalizeVoiceCorrection(transcript: string): VoiceCorrection {
   const base = normalizeSpoken(transcript).replace(/[.!?¡¿]+/g, " ").trim();
@@ -747,6 +791,9 @@ export function normalizeVoiceCorrection(transcript: string): VoiceCorrection {
   for (let i = 0; i < 3 && CORRECTION_HEAD.test(t); i++) t = t.replace(CORRECTION_HEAD, "").trim();
   const f = fold(t);
   if (CONFIRM_RE.test(f)) return { kind: "confirm" };
+  // corrida J: "la placa del segundo es a be ce uno dos tres" -> "placa 2 ABC-123"; "sin placa el segundo" -> "sin placa 2"
+  const plate = plateCorrection(t);
+  if (plate) return { kind: "text", text: plate };
   let m: RegExpMatchArray | null;
   // cantidad: "eran doce", "son 12", "que sean 12", "cantidad 12", "12 llantas", "doce"
   if ((m = t.match(/^(?:eran|son|ser[ií]an|que\s+sean|sean|pon(?:le|me)?|cantidad(?:\s+de)?|cambia\s+la\s+cantidad\s+a)?\s*(\d{1,4})\s*(?:llantas?|unidades|unid|und)?$/i))) return { kind: "text", text: `cantidad ${m[1]}` };

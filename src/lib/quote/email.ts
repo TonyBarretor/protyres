@@ -4,6 +4,7 @@ import path from "node:path";
 import type { Settings } from "../settings";
 import { displayTotal, displayUnit } from "./build";
 import { PDF_MIME, withExtension } from "./files";
+import { lineRefs, lineRefsChat } from "./line-refs";
 import { fmtMoney } from "./pricing";
 import { findProfile, hasExcelFormat } from "./profiles";
 import type { EmailDraft, Quote } from "./types";
@@ -39,7 +40,8 @@ export function buildEmailDraft(quote: Quote, settings: Settings): EmailDraft {
     "",
     ...quote.items.map((i) => {
       const measure = i.size ? `${i.sizeDisplay}${i.ply ? ` ${i.ply}PR` : ""}` : "";
-      const name = [i.brand, i.model, measure].filter(Boolean).join(" ") || i.description;
+      // corrida J: la placa del vehículo, como en el PDF (dos líneas del mismo producto se distinguen por ella)
+      const name = `${[i.brand, i.model, measure].filter(Boolean).join(" ") || i.description}${i.plate ? ` placa ${i.plate}` : ""}`;
       return `• ${name} — ${i.quantity} x ${fmtMoney(displayUnit(i, quote), quote.currency)}${i.discountPct > 0 ? ` (dscto ${i.discountPct}%)` : ""} = ${fmtMoney(displayUnit(i, quote) * i.quantity, quote.currency)}`;
     }),
     "",
@@ -83,7 +85,7 @@ export function buildClientMessage(quote: Quote, settings: Settings): string {
   const items = quote.items.map((i) => {
     const measure = i.size ? `${i.sizeDisplay || i.size}${i.ply ? ` ${i.ply}PR` : ""}` : "";
     const name = i.size ? [i.brand, i.model, measure].filter(Boolean).join(" ") : i.description;
-    const refs = [quote.customerProfile ? i.application : "", i.plate ? `placa ${i.plate}` : "", i.ub && i.ub !== quote.ub ? `UB ${i.ub}` : ""].filter(Boolean).join(" ");
+    const refs = [quote.customerProfile ? i.application : "", lineRefsChat(lineRefs(i, quote.ub))].filter(Boolean).join(" ");
     return `• ${i.quantity} × ${name}${refs ? ` ${refs}` : ""} – ${fmtMoney(displayUnit(i, quote), quote.currency)} c/u`;
   });
   const tax = quote.pricesIncludeTax ? `inc. ${quote.taxLabel}` : `+ ${quote.taxLabel}`;

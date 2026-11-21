@@ -7,6 +7,7 @@ import os from "node:os";
 import path from "node:path";
 import { gunzipSync } from "node:zlib";
 import type { PriceRow } from "../ingest/types";
+import { normalizePlate } from "../quote/line-refs";
 import type { Quote } from "../quote/types";
 import type { QuoteShadowEntry, QuoteShadowRow } from "../quote/shadow";
 import { foldKey, photoKey, stockOriginKey, type BlockedInbound, type ConversationState, type ListQuotesOptions, type LoggedMessage, type MessageLogEntry, type PriceStore, type ProductPhoto, type ProviderSummary, type QuoteFile, type ReplaceScope, type StoredContractItem, type StockDeduction, type StockDeductionInput, type Supplier, type UsageEntry, type UsageSummaryRow } from "./types";
@@ -275,9 +276,10 @@ export class JsonStore implements PriceStore {
     const o: ListQuotesOptions = typeof opts === "number" ? { limit: opts } : opts;
     const company = o.company ? foldKey(o.company) : "";
     const by = o.requestedBy ? digits(o.requestedBy) : "";
+    const plate = o.plate ? (normalizePlate(o.plate) ?? o.plate.trim().toUpperCase()) : "";
     return this.run(() =>
       Object.values(this.data.quotes)
-        .filter((q) => (!company || foldKey(q.customer.company).includes(company)) && (!by || digits(q.requestedBy) === by))
+        .filter((q) => (!company || foldKey(q.customer.company).includes(company)) && (!by || digits(q.requestedBy) === by) && (!plate || q.items.some((it) => it.plate === plate)))
         .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1))
         .slice(0, o.limit ?? 50),
     );

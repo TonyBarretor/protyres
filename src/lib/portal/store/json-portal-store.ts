@@ -149,6 +149,8 @@ const MAX_VOICE_TRANSCRIPTS = 2000;
 
 const fleetKey = (placa: string, origen: string) => `${origen}|${placa}`;
 const normPlaca = (p: string) => p.trim().toUpperCase().replace(/\s+/g, "");
+/** Corrida J: la placa para comparar (sin guion ni espacios, mayúsculas), como en findFleetByPlacas del store de Postgres. */
+const placaKey = (p: string) => p.toUpperCase().replace(/[\s-]+/g, "");
 const copy = <T extends object>(o: T): T => ({ ...o });
 const copySale = (s: Sale): Sale => ({ ...s, detalle: s.detalle ? { ...s.detalle } : null });
 
@@ -681,6 +683,14 @@ export class JsonPortalStore implements PortalStore {
       }
     }
     return groupFleet([...agg.values()]);
+  }
+
+  async findFleetByPlacas(placas: string[]): Promise<FleetVehicle[]> {
+    const want = new Set(placas.map(placaKey).filter(Boolean));
+    if (!want.size) return [];
+    const out: FleetVehicle[] = [];
+    for (const v of this.fleet.values()) if (want.has(placaKey(v.placa))) out.push(copy(v));
+    return out.sort((a, b) => a.placa.localeCompare(b.placa) || a.id - b.id);
   }
 
   async countFleet(): Promise<number> {

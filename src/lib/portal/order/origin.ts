@@ -72,7 +72,7 @@ function costWithTax(row: PriceRow, pricing: PricingSettings): number | undefine
 /** Completa el origen de cada ítem (no cambia cantidades ni precios de venta). */
 export function resolveOrigins(items: PedidoItem[], deps: OriginDeps): PedidoItem[] {
   return items.map((src) => {
-    const it: PedidoItem = { ...src, ...(src.ubs ? { ubs: [...src.ubs] } : {}) };
+    const it: PedidoItem = { ...src, ...(src.ubs ? { ubs: [...src.ubs] } : {}), ...(src.placas ? { placas: src.placas.map((p) => ({ ...p })) } : {}) };
     if (it.terceros) {
       const sup = supplierData(it.terceros.proveedor, deps);
       it.terceros = { ...it.terceros, ...sup, contacto: it.terceros.contacto ?? sup.contacto, telefono: it.terceros.telefono ?? sup.telefono, email: it.terceros.email ?? sup.email };

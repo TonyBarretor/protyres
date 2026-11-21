@@ -231,3 +231,18 @@ cancelar
 @no-texto Reporte de
 @no-texto Cotización nueva
 @espera modelo=0
+
+# Corrida J: placa por voz. Se muestra siempre la placa entendida; la llanta que no la repite no la hereda; una placa mal
+# oída no va en la línea y se pide escribirla; con la cotización a la vista, "la placa del segundo es …" la pone.
+@voz Cotízame cuatro Valor 99 en 295 80 22.5 para la placa a be ce uno dos tres, y dos Flama 77 en 11 R 22.5, para Transportes Sur.
+@espera-texto Línea 1: placa *ABC-123*
+@espera-texto placa ABC-123 x4
+@no-texto Línea 2: placa
+@voz La placa del segundo es de e efe cuatro cinco seis.
+@espera-texto Ítem 2: placa *DEF-456*
+@voz Sin placa el primero.
+@espera-texto Ítem 1: sin placa
+cancelar
+@voz Cotízame cuatro Valor 99 en 295 80 22.5 para la placa be ce uno dos, para Transportes Sur.
+@espera-texto no tiene la forma de una placa
+cancelar

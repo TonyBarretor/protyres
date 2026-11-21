@@ -35,6 +35,9 @@
  *   @empresa-prueba <RUC> <razón social>
  *                                crea en la copia de datos una empresa inventada como lo hace el import del padrón MTC
  *                                (upsertCompanies; la razón social es dato de terceros: HTML, instrucciones…), sin dueño
+ *   @flota-prueba <RUC> <placa> <marca> <año> <llantas>
+ *                                corrida J: un vehículo inventado en la flota de esa empresa (copia de datos), para ver el
+ *                                contraste de la placa de una cotización con el padrón
  *   @ventas-odoo <archivo.json>  carga en la copia de datos un reporte de ventas de Odoo inventado (líneas con la forma de
  *                                OdooFixtureLine, p. ej. scripts/fixtures/ventas-odoo-prueba.json) por el mismo camino que
  *                                "Subir ventas" (.xlsx de Odoo, vista previa y guardado con recálculo del puntaje)
@@ -692,6 +695,22 @@ async function main() {
     } else thrown.push("@empresa-prueba solo sobre la copia de datos (sin --db ni --persist)");
   };
 
+  /** @flota-prueba <RUC> <placa> <marca> <año> <llantas>: un vehículo inventado en la flota de esa empresa (copia de datos). */
+  const testVehicle = async (ruc: string, placa: string, marca: string, anio: number, llantas: number) => {
+    if (!args.pgTest && (args.db || args.persist)) {
+      thrown.push("@flota-prueba solo sobre la copia de datos (sin --db ni --persist)");
+      return;
+    }
+    const company = await portal.getCompanyByRuc(ruc);
+    if (!company) {
+      thrown.push(`@flota-prueba: no existe la empresa ${ruc} (créala antes con @empresa-prueba)`);
+      return;
+    }
+    // como el import del padrón: la placa sin guion
+    await portal.upsertFleet([{ companyId: company.id, placa: placa.toUpperCase().replace(/[\s-]/g, ""), marca, clase: "REMOLCADOR", anio, ejes: 3, llantas, llantasFuente: null, pesoBruto: null, chasis: null, departamento: "LIMA", origen: "carga", medidaProbable: null, confianza: null }]);
+    console.log(`🚚 vehículo de prueba ${placa} en la flota de ${company.razonSocial}`);
+  };
+
   /** @ventas-odoo <archivo.json>: reporte de Odoo inventado cargado como "Subir ventas", en la copia de datos. */
   const odooSales = async (file: string) => {
     if (!args.pgTest && (args.db || args.persist)) {
@@ -773,6 +792,8 @@ async function main() {
     if (pausa) return pause(Number(pausa[1]));
     const empresa = line.match(/^@empresa-prueba\s+(\d{11})\s+(\S.*)$/);
     if (empresa) return testCompany(empresa[1], empresa[2].trim());
+    const flota = line.match(/^@flota-prueba\s+(\d{11})\s+(\S+)\s+(\S+)\s+(\d{4})\s+(\d{1,2})\s*$/);
+    if (flota) return testVehicle(flota[1], flota[2], flota[3], Number(flota[4]), Number(flota[5]));
     const ventas = line.match(/^@ventas-odoo\s+(\S+)\s*$/);
     if (ventas) return odooSales(ventas[1]);
     const encuesta = line.match(/^@encuesta\s+(\S.*)$/);

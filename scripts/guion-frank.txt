@@ -111,6 +111,34 @@ cliente final F003-96005 quimera prueba
 Fenixway Valor 89 295/80R22.5 x4 para Transportes Quimera Prueba RUC 20999000077
 @espera-texto Última venta a este cliente: Valor 89 a US$ 258 el 04/10/2026
 cancelar
+# 10c. Corrida J: placa por línea (cualquier cliente, sin configurarlo). La placa va junto a la llanta ("placa QPA-101",
+#      "plc qpz909"), el Entendí la lista y el padrón la contrasta sin bloquear: en la flota del cliente muestra el
+#      vehículo; si no está, avisa. La misma placa en dos líneas no las junta. Comandos *placa 3 …* y *sin placa 3*; con
+#      el PDF ya armado la placa nueva va al PDF (PLACA junto a la medida). Empresa y vehículo inventados.
+@empresa-prueba 20999000088 TRANSPORTES PLACA PRUEBA S.A.C.
+@flota-prueba 20999000088 QPA-101 VOLVO 2019 10
+Fenixway Valor 87 295/80R22.5 x8 placa QPA-101\nFenixway Valor 87 295/80R22.5 x2 direccional placa QPA-101\nFenixway Valor 89 295/80R22.5 x4 plc qpz909\npara Transportes Placa Prueba RUC 20999000088
+@espera-texto placa QPA-101 x8
+@espera-texto placa QPA-101 x2
+@espera-texto 🚗 *QPA-101*: VOLVO · 2019 · 10 llantas
+@espera-texto *QPZ-909* no está en la flota de TRANSPORTES PLACA PRUEBA
+placa 3 AB12
+@espera-texto no parece una placa
+sin placa 3
+@espera-texto Ítem 3: sin placa
+ok
+@espera-texto 8 × Fenixway Valor 87 295/80R22.5 18PR placa QPA-101
+placa 3 QPA-101
+@espera-texto Ítem 3: placa *QPA-101*
+cancelar
+# 10d. Cliente marcado para pedir placa (config/customers.json: ANCRO S.R.L.): si una línea llega sin placa pregunta una
+#      vez antes del resumen; *placa 1 …* la pone y sigue con las opciones (*sin placa* seguiría sin ella)
+ancro\nFenixway Valor 87 295/80R22.5 x4
+@espera-texto pide la placa de cada llanta
+placa 1 QPA-102
+@espera-texto placa QPA-102 x4
+@no-texto pide la placa
+cancelar
 # 11. Pendientes del día y ayuda
 hoy
 ayuda portal

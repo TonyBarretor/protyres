@@ -19,6 +19,8 @@ export interface RequestLine {
   plate?: string;
   /** The customer's UB code for this line ("UB 1830": Prosegur's cost-center / vehicle unit, 3–5 digits). */
   ub?: string;
+  /** "placa AB12": written as the line's plate but not a Peruvian plate (corrida J); the bot asks for it. */
+  badPlate?: string;
   /**
    * The customer's contract item this line is ("2 v99" on a Prosegur request): quoted at the contract price, never
    * from the price lists (no options). `price` is net of IGV, in `currency`.
