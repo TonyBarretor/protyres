@@ -44,7 +44,7 @@ export async function seedFromLocalData(url: string, opts: SeedOptions): Promise
   const prices = await PgStore.connect(url);
   try {
     const users = (p.users as PortalUser[] | undefined) ?? [];
-    for (const u of users) if (u.whatsapp) await portal.upsertUser({ nombre: u.nombre, whatsapp: u.whatsapp, rol: u.rol, activo: u.activo });
+    for (const u of users) if (u.whatsapp) await portal.upsertUser({ nombre: u.nombre, whatsapp: u.whatsapp, rol: u.rol, activo: u.activo, email: u.email ?? null, calendarLinks: u.calendarLinks ?? false });
 
     const companies = (p.companies as Company[] | undefined) ?? [];
     const up = await portal.upsertCompanies(

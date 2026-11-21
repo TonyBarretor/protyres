@@ -3,18 +3,21 @@
  * Los números no se inventan: salen de config/pilot.json (`salespeople`) o de variables de entorno. Si falta uno, ese
  * usuario se omite y se devuelve un aviso.
  *
- * Lista en config/portal.json, clave `users`: [{ nombre, rol, whatsapp | whatsappEnv | whatsappSalesperson }]
+ * Lista en config/portal.json, clave `users`: [{ nombre, rol, whatsapp | whatsappEnv | whatsappSalesperson, email?, calendarLinks? }]
  *   - whatsapp: número fijo (solo dígitos).
  *   - whatsappEnv: variable (o lista de variables, se usa la primera con valor); si trae varios números separados por
  *     coma (ADMIN_NUMBERS) se toma el primero.
  *   - whatsappSalesperson: prefijo del nombre en `salespeople` de config/pilot.json ("Frank").
+ *   - email (corrida J): correo para la invitación de calendario de las citas. Sin él, el de `salespeople` de
+ *     config/pilot.json si el usuario sale de ahí (el de Frank). Sin ninguno, el correo que tenga en el store se conserva.
+ *   - calendarLinks (corrida J): enlaces "Agregar a Outlook web / Google Calendar" en la cita; apagado si no se pone.
  * Sin la clave se usa DEFAULT_PORTAL_USERS. Si dos usuarios comparten número queda el de mayor rol (ROLE_RANK) y se
  * avisa. Lo usan `npm run portal:seed-users` (solo usuarios) y `npm run portal:import-mtc` (al final del import).
  */
 import fs from "node:fs";
 import path from "node:path";
 import { z } from "zod";
-import { digits } from "./store/shared";
+import { digits, normEmail } from "./store/shared";
 import type { PortalStore, PortalUser } from "./store/types";
 
 export const PortalUserSeedSchema = z.object({
@@ -23,6 +26,8 @@ export const PortalUserSeedSchema = z.object({
   whatsapp: z.string().optional(),
   whatsappEnv: z.union([z.string(), z.array(z.string())]).optional(),
   whatsappSalesperson: z.string().optional(),
+  email: z.string().optional(),
+  calendarLinks: z.boolean().optional(),
 });
 export type PortalUserSeed = z.infer<typeof PortalUserSeedSchema>;
 
@@ -61,6 +66,14 @@ export function loadSeedUsersConfig(cwd = process.cwd()): SeedUsersConfig {
   if (portal && Array.isArray(portal.users)) cfg.users = z.array(PortalUserSeedSchema).parse(portal.users);
   if (pilot && pilot.salespeople && typeof pilot.salespeople === "object") cfg.salespeople = pilot.salespeople as Record<string, unknown>;
   return cfg;
+}
+
+/** Correo configurado del usuario: `email` o el de su entrada en `salespeople` (config/pilot.json). */
+function emailFor(seed: PortalUserSeed, cfg: SeedUsersConfig, number: string): string | null {
+  if (seed.email !== undefined) return normEmail(seed.email);
+  if (!seed.whatsappSalesperson) return null;
+  const sp = (cfg.salespeople ?? {})[number];
+  return sp && typeof sp === "object" ? normEmail(String((sp as { email?: unknown }).email ?? "")) : null;
 }
 
 function numberFor(seed: PortalUserSeed, cfg: SeedUsersConfig, env: Record<string, string | undefined>): { number: string | null; from: string } {
@@ -103,6 +116,10 @@ export interface PlannedUser {
   whatsapp: string;
   /** De dónde salió el número (variable, salespeople, whatsapp). */
   from: string;
+  /** Correo configurado (null = no configurado: se conserva el del store). */
+  email: string | null;
+  /** Enlaces de calendario (undefined = no configurado: se conserva). */
+  calendarLinks?: boolean;
 }
 
 /**
@@ -121,7 +138,7 @@ export function planUsers(config: SeedUsersConfig = loadSeedUsersConfig()): { us
       warnings.push(`Falta el número de WhatsApp de ${seed.nombre} (${seed.rol}): no se crea (sin número en ${from}).`);
       continue;
     }
-    resolved.push({ nombre: seed.nombre, rol: seed.rol, whatsapp: number, from });
+    resolved.push({ nombre: seed.nombre, rol: seed.rol, whatsapp: number, from, email: emailFor(seed, config, number), ...(seed.calendarLinks !== undefined ? { calendarLinks: seed.calendarLinks } : {}) });
   }
   const winner = new Map<string, PlannedUser>();
   for (const u of resolved) {
@@ -140,7 +157,7 @@ export function planUsers(config: SeedUsersConfig = loadSeedUsersConfig()): { us
 export interface SeedEntry extends PlannedUser {
   /** crear: no hay nadie con ese número; actualizar: existe con otro nombre/rol; igual: nada que cambiar. */
   action: "crear" | "actualizar" | "igual";
-  before?: { id: number; nombre: string; rol: PortalUser["rol"]; activo: boolean };
+  before?: { id: number; nombre: string; rol: PortalUser["rol"]; activo: boolean; email?: string | null };
 }
 
 /**
@@ -153,15 +170,19 @@ export async function seedUsers(store: PortalStore, config: SeedUsersConfig = lo
   const result: SeedUsersResult = { users: [], warnings: [...plan.warnings], entries: [] };
   for (const p of plan.users) {
     const prev = await store.getUserByWhatsapp(p.whatsapp);
-    const before = prev ? { id: prev.id, nombre: prev.nombre, rol: prev.rol, activo: prev.activo } : undefined;
-    const action = !prev ? "crear" : prev.nombre === p.nombre && prev.rol === p.rol ? "igual" : "actualizar";
+    const before = prev ? { id: prev.id, nombre: prev.nombre, rol: prev.rol, activo: prev.activo, email: prev.email ?? null } : undefined;
+    const same =
+      !!prev && prev.nombre === p.nombre && prev.rol === p.rol && (!p.email || prev.email === p.email) && (p.calendarLinks === undefined || !!prev.calendarLinks === p.calendarLinks);
+    const action = !prev ? "crear" : same ? "igual" : "actualizar";
     result.entries.push({ ...p, action, before });
     if (prev && prev.nombre !== p.nombre) {
       result.warnings.push(
         `El registro #${prev.id} (${maskNumber(p.whatsapp)}) pasa de ${prev.nombre} · ${prev.rol} a ${p.nombre} · ${p.rol}: lo que tenga asignado (empresas, oportunidades, actividades) queda a nombre de ${p.nombre}.`,
       );
     }
-    if (!opts.dryRun) result.users.push(await store.upsertUser({ nombre: p.nombre, whatsapp: p.whatsapp, rol: p.rol }));
+    // el correo solo se escribe si está configurado: uno cargado a mano en el store no se borra al volver a sembrar
+    const extra = { ...(p.email ? { email: p.email } : {}), ...(p.calendarLinks !== undefined ? { calendarLinks: p.calendarLinks } : {}) };
+    if (!opts.dryRun) result.users.push(await store.upsertUser({ nombre: p.nombre, whatsapp: p.whatsapp, rol: p.rol, ...extra }));
   }
   const configured = new Set(plan.users.map((u) => u.whatsapp));
   for (const u of await store.listUsers()) {

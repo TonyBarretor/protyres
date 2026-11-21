@@ -1,8 +1,11 @@
 /**
  * `cita <empresa> <día y hora> [en <lugar>] [con danyer]`
  *   -> cita (appointments, con_tecnico), oportunidad abierta (en Prospecto si no hay) movida a Cita agendada (solo hacia
- *      adelante), próxima acción "Visita" en la fecha de la cita, actividad `cita`, y al vendedor: el .ics como documento
- *      SIN leyenda seguido del resumen en un mensaje aparte (para agregarla a Outlook).
+ *      adelante), próxima acción "Visita" en la fecha de la cita, actividad `cita`, y al vendedor: la invitación de
+ *      calendario por correo (corrida J: METHOD:REQUEST, Outlook la muestra con Aceptar; al técnico también si va), el
+ *      resumen, y el .ics como documento SIN leyenda de respaldo. Sin correo configurado o si falla, una línea lo dice y
+ *      la cita sigue igual.
+ * `cita cancelar <empresa> [día y hora]` -> la cita programada queda cancelada y sale la cancelación (METHOD:CANCEL).
  *   -> "con danyer" / "con el ing. danyer" / "con técnico": aviso por WhatsApp al jefe del Dpto. Técnico (config/portal.json
  *      `techLead`); sin número configurado, se le dice al vendedor que avise él.
  * La empresa es lo que va antes de la fecha (varias coincidencias -> lista y la cita sigue al elegir). Sin hora -> la pide.
@@ -13,10 +16,12 @@ import { canEditCompany } from "../../auth/permissions";
 import { loadPortalConfig, type PortalTechLeadConfig } from "../../config";
 import { stageIndex, stageLabel } from "../../stages";
 import { digits, foldText } from "../../store/shared";
-import type { Appointment, Company, Contact } from "../../store/types";
+import type { Appointment, Company, Contact, PortalUser } from "../../store/types";
 import { companyUrl, leftover, resolveCompany, shortName, splitCompany, unusedNote } from "../companies";
 import { atLimaTime, formatCitaDate, parseSpanishDateTime, parseTimeOfDay } from "../dates";
-import { buildIcs, ICS_MIME } from "../ics";
+import { googleCalendarUrl, outlookWebUrl } from "../../calendar/links";
+import { calendarEmailStatus, calendarMailerConfigured, parseFromAddress, sendCalendarInvite } from "../../calendar/mail";
+import { buildIcs, ICS_MIME, type IcsEvent, type IcsPerson } from "../ics";
 import { askAgain } from "../pause";
 import { companyProgressLine } from "../progress";
 import { registerCompanyAction, registerPausable, registerPendingHandler, registerPortalCommand, replyButtons, type PortalContext } from "../registry";
@@ -160,8 +165,8 @@ export async function findDuplicateCita(store: PortalContext["store"], companyId
   return rows.find((a) => a.id !== exceptId) ?? null;
 }
 
-/** Manda el .ics de la cita como documento sin leyenda (si WhatsApp no acepta text/calendar, como text/plain). */
-async function sendCitaIcs(ctx: PortalContext, company: Company, appt: Appointment, contacts: Contact[], sequence = 0): Promise<void> {
+/** Lo común del .ics de una cita (respaldo e invitación): mismo UID, textos y horario. */
+async function citaEvent(ctx: PortalContext, company: Company, appt: Appointment, contacts: Contact[]): Promise<IcsEvent> {
   const cfg = loadPortalConfig();
   const url = companyUrl(company.id, ctx.env);
   const vendedor = appt.userId && appt.userId !== ctx.user.id ? ((await ctx.store.getUser(appt.userId).catch(() => null))?.nombre ?? ctx.user.nombre) : ctx.user.nombre;
@@ -174,7 +179,7 @@ async function sendCitaIcs(ctx: PortalContext, company: Company, appt: Appointme
   ]
     .filter(Boolean)
     .join("\n");
-  const ics = buildIcs({
+  return {
     uid: `cita-${appt.id}-${company.ruc}@portal.360tyres`,
     start: appt.startsAt,
     durationMinutes: cfg.appointments.durationMinutes,
@@ -184,17 +189,160 @@ async function sendCitaIcs(ctx: PortalContext, company: Company, appt: Appointme
     url,
     stamp: ctx.now,
     alarmMinutes: cfg.appointments.alarmMinutes,
-    sequence,
-  });
+  };
+}
+
+/** Manda el .ics de la cita como documento sin leyenda (si WhatsApp no acepta text/calendar, como text/plain). Respaldo. */
+async function sendCitaIcs(ctx: PortalContext, company: Company, appt: Appointment, contacts: Contact[], sequence = 0): Promise<void> {
+  const ics = buildIcs({ ...(await citaEvent(ctx, company, appt, contacts)), sequence });
   const file = Buffer.from(ics, "utf8");
   const name = icsFileName(company, appt.startsAt);
   try {
     await ctx.sendDocument(file, name, "", ICS_MIME);
   } catch (err) {
-    // la API de WhatsApp puede no aceptar text/calendar al subir: mismo archivo .ics como texto plano
+    // la API de WhatsApp no acepta text/calendar al subir: mismo archivo .ics como texto plano
     ctx.log(`portal: .ics como ${ICS_MIME} falló (${(err as Error).message}); reintento como text/plain`);
     await ctx.sendDocument(file, name, "", "text/plain");
   }
+}
+
+/**
+ * SEQUENCE del próximo cambio de la cita, creciente sin columna nueva: segundos desde que se creó + cuántas actividades
+ * `cita` tiene ya esa cita (la de creación y cada cambio). Dos cambios en el mismo segundo igual suben (el segundo tiene
+ * una actividad más), y nunca queda por debajo de las SEQUENCE en segundos que se mandaron antes de la corrida J.
+ * Se calcula antes de anotar la actividad del cambio.
+ */
+async function nextSequence(store: PortalContext["store"], appt: Appointment, now: Date): Promise<number> {
+  const secs = Math.max(0, Math.floor((now.getTime() - appt.createdAt.getTime()) / 1000));
+  const acts = await store.listActivities(appt.opportunityId ? { opportunityId: appt.opportunityId } : { companyId: appt.companyId }).catch(() => []);
+  const changes = acts.filter((a) => a.tipo === "cita" && (a.data as { appointmentId?: unknown } | null)?.appointmentId === appt.id).length;
+  return Math.max(1, secs + changes);
+}
+
+// ── invitación por correo (corrida J, punto 4) ──
+
+type InviteKind = "crear" | "reprogramar" | "cancelar";
+type TechInvite = "enviado" | "sin_correo" | null;
+
+/** Resultado de la invitación (va en la actividad y arma la línea del mensaje). */
+export type InviteOutcome =
+  | { status: "enviado"; to: string[]; id?: string; tecnico: TechInvite }
+  | { status: "apagado"; reason: string }
+  | { status: "sin_correo" }
+  | { status: "error"; error: string };
+
+/** El jefe técnico como usuario interno: por su número configurado o, sin número, el técnico activo con su nombre. */
+async function techLeadUser(ctx: PortalContext): Promise<PortalUser | null> {
+  const cfg = techLeadConfig();
+  const number = techLeadNumber(cfg, ctx.env);
+  if (number) return ctx.store.getUserByWhatsapp(number).catch(() => null);
+  const want = foldText(cfg.nombre);
+  return (await ctx.store.listUsers().catch(() => [] as PortalUser[])).find((u) => u.activo && u.rol === "tecnico" && foldText(u.nombre) === want) ?? null;
+}
+
+/**
+ * Manda la invitación (REQUEST) o la cancelación (CANCEL) de la cita a su vendedor y, si va el técnico, al técnico.
+ * Solo usuarios internos (tabla users) con correo: nunca contactos de la empresa ni otra dirección. Nunca lanza.
+ *
+ * ORGANIZER = el remitente del bot (EMAIL_FROM), ATTENDEE = los usuarios. Si el organizador fuera el propio vendedor,
+ * Outlook la trataría como una reunión suya (sin Aceptar). Con el mismo UID y ORGANIZER, un REQUEST con SEQUENCE mayor
+ * actualiza la cita que ya está en el calendario y un CANCEL la quita (RFC 5546 §2.1.4-2.1.5, §3.2.2 y §3.2.5).
+ */
+async function sendCitaInvite(ctx: PortalContext, company: Company, appt: Appointment, contacts: Contact[], kind: InviteKind, sequence: number): Promise<InviteOutcome> {
+  try {
+    const cfg = loadPortalConfig().appointments.invite;
+    if (!cfg.enabled) return { status: "apagado", reason: "desactivada en config/portal.json (appointments.invite.enabled)" };
+    const status = calendarEmailStatus(ctx.env);
+    if (!status.ready && !calendarMailerConfigured()) return { status: "apagado", reason: status.reason };
+    // con el envío simulado (pruebas, simulador) y sin EMAIL_FROM válido, un organizador de mentira
+    const simFrom = "Portal 360 Tyres (simulación) <citas@simulacion.invalid>";
+    const from = status.ready ? status.from : parseFromAddress(ctx.env.EMAIL_FROM ?? "") ? ctx.env.EMAIL_FROM!.trim() : simFrom;
+    const org = parseFromAddress(from)!;
+    const organizer: IcsPerson = { email: org.email, name: org.name ?? "360 Tyres" };
+    const vendedor = appt.userId && appt.userId !== ctx.user.id ? ((await ctx.store.getUser(appt.userId).catch(() => null)) ?? ctx.user) : ctx.user;
+    if (!vendedor.email) return { status: "sin_correo" };
+    const attendees: IcsPerson[] = [{ email: vendedor.email, name: vendedor.nombre }];
+    let tecnico: TechInvite = null;
+    if (appt.conTecnico) {
+      // sin usuario técnico (falta su número) ya lo dice techLine; aquí solo si existe y no tiene correo
+      const tech = await techLeadUser(ctx);
+      if (tech && tech.id !== vendedor.id && tech.activo) {
+        if (tech.email) {
+          attendees.push({ email: tech.email, name: tech.nombre });
+          tecnico = "enviado";
+        } else tecnico = "sin_correo";
+      }
+    }
+    const method = kind === "cancelar" ? "CANCEL" : "REQUEST";
+    const ics = buildIcs({ ...(await citaEvent(ctx, company, appt, contacts)), sequence, method, organizer, attendees });
+    const when = formatCitaDate(appt.startsAt);
+    const subject =
+      kind === "cancelar" ? `Cita cancelada: ${company.razonSocial} (${when})` : kind === "reprogramar" ? `Cita reprogramada: ${company.razonSocial}, ${when}` : `Cita: ${company.razonSocial}, ${when}`;
+    const how =
+      kind === "cancelar"
+        ? "Ábrela en Outlook y pulsa «Quitar del calendario»."
+        : kind === "reprogramar"
+          ? "Ábrela en Outlook y pulsa Aceptar: la cita se mueve en tu calendario (no se duplica)."
+          : "Ábrela en Outlook y pulsa Aceptar para guardarla en tu calendario.";
+    const text = [
+      kind === "cancelar" ? `Se canceló la visita a ${company.razonSocial} del ${when}.` : `Visita a ${company.razonSocial} el ${when}${appt.lugar ? ` en ${appt.lugar}` : ""}.`,
+      how,
+      "",
+      `Ficha: ${companyUrl(company.id, ctx.env)}`,
+      "",
+      "Portal comercial 360 Tyres (mensaje automático).",
+    ].join("\n");
+    const r = await sendCalendarInvite({ from, to: attendees.map((a) => a.email), subject, text, ics, method, fileName: icsFileName(company, appt.startsAt) }, ctx.env, cfg.transport);
+    if (!r.configured) return { status: "apagado", reason: r.error ?? "correo no configurado" };
+    if (!r.sent) {
+      ctx.log(`portal: no pude enviar la invitación de la cita ${appt.id} por correo: ${r.error ?? "?"}`);
+      return { status: "error", error: (r.error ?? "error desconocido").slice(0, 200) };
+    }
+    ctx.log(`portal: invitación (${method}) de la cita ${appt.id} enviada por correo a ${r.to.length} destinatario(s)${r.id ? ` (id ${r.id})` : ""}`);
+    return { status: "enviado", to: r.to, ...(r.id ? { id: r.id } : {}), tecnico };
+  } catch (err) {
+    const error = ((err as Error)?.message ?? String(err)).slice(0, 200);
+    ctx.log(`portal: la invitación de la cita ${appt.id} falló: ${error}`);
+    return { status: "error", error };
+  }
+}
+
+/** La línea del mensaje de WhatsApp según cómo salió la invitación (el archivo .ics queda de respaldo). */
+function inviteLines(o: InviteOutcome, kind: InviteKind, techName: string): string[] {
+  const fallback =
+    kind === "cancelar"
+      ? "Bórrala a mano de tu calendario de Outlook."
+      : kind === "reprogramar"
+        ? "Actualízala en Outlook abriendo el archivo .ics que te mando abajo."
+        : "Agrégala a Outlook abriendo el archivo .ics que te mando abajo.";
+  if (o.status === "enviado") {
+    const main =
+      kind === "cancelar"
+        ? "✉️ Te envié la cancelación a tu correo; ábrela en Outlook y pulsa Quitar del calendario."
+        : kind === "reprogramar"
+          ? "✉️ Te envié la actualización a tu correo; ábrela en Outlook y pulsa Aceptar (la cita se mueve, no se duplica). El archivo .ics de abajo es solo de respaldo."
+          : "✉️ Te envié la invitación a tu correo; ábrela en Outlook y pulsa Aceptar. El archivo .ics de abajo es solo de respaldo.";
+    const tech = o.tecnico === "enviado" ? ` También se la envié al Ing. ${techName}.` : o.tecnico === "sin_correo" ? ` El Ing. ${techName} no tiene correo registrado: no le llegó.` : "";
+    return [`${main}${tech}`];
+  }
+  if (o.status === "sin_correo") return [`✉️ No tengo tu correo para enviarte la invitación (pide a Tony que lo registre). ${fallback}`];
+  if (o.status === "apagado") return [`✉️ No te envié la invitación por correo: el correo del bot no está configurado. ${fallback}`];
+  return [`⚠️ No pude enviarte la invitación por correo. ${fallback}`];
+}
+
+/** Enlaces opcionales (usuario con calendarLinks): Outlook web y Google Calendar. */
+async function calendarLinkLines(ctx: PortalContext, company: Company, appt: Appointment, contacts: Contact[]): Promise<string[]> {
+  if (!ctx.user.calendarLinks) return [];
+  const ev = await citaEvent(ctx, company, appt, contacts);
+  return [`Agregar a Outlook web: ${outlookWebUrl(ev)}`, `Agregar a Google Calendar: ${googleCalendarUrl(ev)}`];
+}
+
+/** Resumen de la invitación para la actividad. */
+function inviteData(o: InviteOutcome): Record<string, unknown> {
+  if (o.status === "enviado") return { status: o.status, to: o.to, tecnico: o.tecnico };
+  if (o.status === "error") return { status: o.status, error: o.error };
+  if (o.status === "apagado") return { status: o.status, reason: o.reason };
+  return { status: o.status };
 }
 
 /**
@@ -222,6 +370,8 @@ export async function createCita(ctx: PortalContext, company: Company, input: Ci
   const notice = input.conTecnico ? await notifyTechLead(ctx, company, appt, contacts) : null;
   const when = formatCitaDate(input.date);
   const techName = cfg.techLead.nombre;
+  // la invitación por correo nunca hace fallar la cita (sendCitaInvite no lanza)
+  const invite = await sendCitaInvite(ctx, company, appt, contacts, "crear", 0);
   await store.addActivity({
     companyId: company.id,
     opportunityId: opp.id,
@@ -230,19 +380,20 @@ export async function createCita(ctx: PortalContext, company: Company, input: Ci
     texto: `Cita agendada para el ${when}${input.lugar ? ` en ${input.lugar}` : ""}${input.conTecnico ? ` con el Ing. ${techName}` : ""}.`,
     canal: "whatsapp",
     occurredAt: now,
-    data: { appointmentId: appt.id, startsAt: input.date.toISOString(), lugar: input.lugar, conTecnico: input.conTecnico, avisoTecnico: notice },
+    data: { appointmentId: appt.id, startsAt: input.date.toISOString(), lugar: input.lugar, conTecnico: input.conTecnico, avisoTecnico: notice, invitacion: inviteData(invite) },
   });
 
-  await sendCitaIcs(ctx, company, appt, contacts);
-
-  const lines = [`📅 Cita con *${company.razonSocial}* el *${when}*${input.lugar ? ` en ${input.lugar}` : ""} · Agrégala a tu calendario de Outlook abriendo el archivo.`];
+  const lines = [`📅 Cita con *${company.razonSocial}* el *${when}*${input.lugar ? ` en ${input.lugar}` : ""}.`, ...inviteLines(invite, "crear", techName)];
   if (input.note) lines.push(input.note);
   lines.push(moved ? `Oportunidad: ${stageLabel(fromStage)} → *${stageLabel("cita_agendada")}* · próxima acción: Visita` : `Oportunidad: sigue en *${stageLabel(opp.etapa)}* · próxima acción: Visita`);
   const tl = techLine(notice, techName);
   if (tl) lines.push(tl);
   const progress = await companyProgressLine(store, company, 3);
   if (progress) lines.push(progress);
+  lines.push(...(await calendarLinkLines(ctx, company, appt, contacts)));
   await ctx.reply(lines.join("\n"));
+  // el archivo, solo de respaldo, después del resumen
+  await sendCitaIcs(ctx, company, appt, contacts);
   return appt;
 }
 
@@ -293,6 +444,10 @@ async function rescheduleCita(ctx: PortalContext, company: Company, appt: Appoin
   const opp = appt.opportunityId ? await store.getOpportunity(appt.opportunityId).catch(() => null) : null;
   // la próxima acción solo sigue a la cita si apuntaba a ella (no se pisa una próxima acción posterior distinta)
   if (opp && opp.proximaAccion === "Visita" && opp.proximaAccionAt?.getTime() === from.getTime()) await store.updateOpportunity(opp.id, { proximaAccionAt: date });
+  // mismo UID y SEQUENCE mayor: Outlook mueve la cita que ya tenía en vez de crear otra
+  const sequence = await nextSequence(store, appt, now);
+  const contacts = await store.listContacts(company.id);
+  const invite = await sendCitaInvite(ctx, company, moved, contacts, "reprogramar", sequence);
   await store.addActivity({
     companyId: company.id,
     opportunityId: appt.opportunityId,
@@ -301,12 +456,15 @@ async function rescheduleCita(ctx: PortalContext, company: Company, appt: Appoin
     texto: `Cita reprogramada del ${formatCitaDate(from)} al ${formatCitaDate(date)}.`,
     canal: "whatsapp",
     occurredAt: now,
-    data: { appointmentId: appt.id, startsAt: date.toISOString(), antes: from.toISOString(), reprogramada: true },
+    data: { appointmentId: appt.id, startsAt: date.toISOString(), antes: from.toISOString(), reprogramada: true, invitacion: inviteData(invite) },
   });
-  // SEQUENCE creciente sin columna nueva: segundos desde que se creó la cita
-  const sequence = Math.max(1, Math.floor((now.getTime() - appt.createdAt.getTime()) / 1000));
-  await sendCitaIcs(ctx, company, moved, await store.listContacts(company.id), sequence);
-  await ctx.reply(`🔁 Reprogramé la cita con *${company.razonSocial}*: del ${formatCitaDate(from)} al *${formatCitaDate(date)}*${moved.lugar ? ` en ${moved.lugar}` : ""}. Abre el archivo para actualizarla en Outlook.`);
+  const lines = [
+    `🔁 Reprogramé la cita con *${company.razonSocial}*: del ${formatCitaDate(from)} al *${formatCitaDate(date)}*${moved.lugar ? ` en ${moved.lugar}` : ""}.`,
+    ...inviteLines(invite, "reprogramar", loadPortalConfig().techLead.nombre),
+    ...(await calendarLinkLines(ctx, company, moved, contacts)),
+  ];
+  await ctx.reply(lines.join("\n"));
+  await sendCitaIcs(ctx, company, moved, contacts, sequence);
 }
 
 const reprogramarHandler: Parameters<typeof registerPendingHandler>[1] = async (ctx, step, text) => {
@@ -467,10 +625,93 @@ function pastReply(date: Date, allDay: boolean): string {
 
 const isPast = (date: Date, allDay: boolean, now: Date) => (allDay ? date.getTime() < limaStartOfDay(now).getTime() : date.getTime() <= now.getTime());
 
+// ── cancelar una cita (corrida J, punto 4: la cancelación también llega al calendario) ──
+
+export const CITA_CANCEL_USAGE = "Escríbelo así: *cita cancelar ZBUSS* (si tiene varias citas, añade el día y la hora: *cita cancelar ZBUSS jueves 4pm*).";
+
+/** "cancelar zbuss", "anular la cita con zbuss jueves 4pm" (lo que sigue a `cita`). */
+const CANCEL_RE = /^(?:cancelar|cancela|anular|anula)(?:\s+(?:la\s+)?(?:cita\s+)?(?:con\s+|de\s+)?(.*))?$/i;
+
+interface CitaCancelArgs {
+  /** Día (y hora) para elegir entre varias citas. */
+  fecha: string | null;
+  allDay: boolean;
+}
+
+/** Marca la cita como cancelada, despeja la próxima acción si apuntaba a ella, anota la actividad y manda la cancelación. */
+async function cancelCita(ctx: PortalContext, company: Company, appt: Appointment): Promise<void> {
+  const { store, user, now } = ctx;
+  const cancelled = (await store.updateAppointment(appt.id, { estado: "cancelada" })) ?? { ...appt, estado: "cancelada" as const };
+  const opp = appt.opportunityId ? await store.getOpportunity(appt.opportunityId).catch(() => null) : null;
+  if (opp && opp.proximaAccion === "Visita" && opp.proximaAccionAt?.getTime() === appt.startsAt.getTime()) await store.updateOpportunity(opp.id, { proximaAccion: null, proximaAccionAt: null });
+  const contacts = await store.listContacts(company.id);
+  const invite = await sendCitaInvite(ctx, company, cancelled, contacts, "cancelar", await nextSequence(store, appt, now));
+  const when = formatCitaDate(appt.startsAt);
+  await store.addActivity({
+    companyId: company.id,
+    opportunityId: appt.opportunityId,
+    userId: user.id,
+    tipo: "cita",
+    texto: `Cita del ${when} cancelada.`,
+    canal: "whatsapp",
+    occurredAt: now,
+    data: { appointmentId: appt.id, startsAt: appt.startsAt.toISOString(), cancelada: true, invitacion: inviteData(invite) },
+  });
+  await ctx.reply([`🗑️ Cancelé la cita con *${company.razonSocial}* del *${when}*${appt.lugar ? ` en ${appt.lugar}` : ""}.`, ...inviteLines(invite, "cancelar", loadPortalConfig().techLead.nombre)].join("\n"));
+}
+
+async function cancelForCompany(ctx: PortalContext, company: Company, a: CitaCancelArgs): Promise<void> {
+  if (!canEditCompany(ctx.user, company)) {
+    await ctx.reply(notYours(company));
+    return;
+  }
+  let rows = (await ctx.store.listAppointments({ companyId: company.id, estado: "programada", from: ctx.now })).sort((x, y) => x.startsAt.getTime() - y.startsAt.getTime());
+  const date = a.fecha ? new Date(a.fecha) : null;
+  if (date) {
+    rows = a.allDay
+      ? rows.filter((r) => limaDateKey(r.startsAt) === limaDateKey(date))
+      : rows.filter((r) => Math.floor(r.startsAt.getTime() / 60_000) === Math.floor(date.getTime() / 60_000));
+  }
+  if (!rows.length) {
+    await ctx.reply(`No hay citas programadas con *${company.razonSocial}*${date ? ` el ${formatCitaDate(date, a.allDay)}` : ""}; no cancelé nada.`);
+    return;
+  }
+  if (rows.length > 1) {
+    const list = rows.slice(0, 5).map((r) => `*${formatCitaDate(r.startsAt)}*`).join(", ");
+    await ctx.reply(`*${company.razonSocial}* tiene ${rows.length} citas programadas: ${list}. ¿Cuál cancelo? ${CITA_CANCEL_USAGE}`);
+    return;
+  }
+  await cancelCita(ctx, company, rows[0]);
+}
+
+async function cancelCitaCommand(ctx: PortalContext, rest: string): Promise<void> {
+  let query = rest.trim();
+  let args: CitaCancelArgs = { fecha: null, allDay: false };
+  const dm = parseSpanishDateTime(query, ctx.now);
+  if (dm && dm.before.trim()) {
+    query = dm.before.replace(/[\s,;:-]+(?:para|el|del)?$/i, "").trim();
+    args = { fecha: dm.date.toISOString(), allDay: !!dm.allDay };
+  }
+  if (!query) {
+    await ctx.reply(`¿De qué empresa es la cita? ${CITA_CANCEL_USAGE}`);
+    return;
+  }
+  const split = await splitCompany(ctx.store, query);
+  const company = await resolveCompany(ctx, split?.query ?? query, "cita_cancelar", args as unknown as Record<string, unknown>);
+  if (company) await cancelForCompany(ctx, company, args);
+}
+
+registerCompanyAction("cita_cancelar", (ctx, company, args) => cancelForCompany(ctx, company, args as unknown as CitaCancelArgs));
+
 registerCompanyAction("cita", (ctx, company, args) => continueCita(ctx, company, args as unknown as CitaArgs));
 registerCompanyAction("cita_sin_fecha", (ctx, company, args) => askCitaDate(ctx, company, args as unknown as { lugar: string | null; conTecnico: boolean }));
 
 registerPortalCommand("cita", async (ctx, args) => {
+  const cancel = CANCEL_RE.exec(args.trim());
+  if (cancel) {
+    await cancelCitaCommand(ctx, cancel[1] ?? "");
+    return;
+  }
   const p = parseCitaArgs(args, ctx.now);
   if ("error" in p) {
     if (p.missing === "fecha" && p.text) {

@@ -210,7 +210,8 @@ Variables de entorno: copiar `.env.example` a `.env`. Nada es obligatorio para e
       por WhatsApp (`proveedor nuevo: NOMBRE`) o borrarlo (`borrar proveedor NOMBRE`). Vacío = nadie.
 3. **Resend** – https://resend.com → API key → `RESEND_API_KEY`. `EMAIL_FROM` de un dominio verificado (para probar
    sirve `onboarding@resend.dev`, solo entrega a tu propio correo). `EMAIL_REDIRECT_TO=tu@correo` desvía todos los
-   envíos a ti durante las pruebas.
+   envíos a ti durante las pruebas. Las invitaciones de calendario de las citas exigen un `EMAIL_FROM` de dominio
+   verificado que no sea `@360tyres.pe` (ver *La cita en el calendario de Outlook*).
 4. **Google Drive** – https://console.cloud.google.com → proyecto → habilitar **Google Drive API** → cuenta de
    servicio → clave JSON → `secrets/service-account.json` (`GOOGLE_SERVICE_ACCOUNT_FILE`). El cliente comparte su
    carpeta (solo lectura) con el correo de la cuenta de servicio; el ID de la carpeta va en `GOOGLE_DRIVE_FOLDER_ID`.
@@ -357,6 +358,55 @@ carga dos veces. `.vercelignore` evita que `vercel deploy` suba el padrón y los
   pedidos)`; sin pedidos, el texto de siempre; el orden y la opción por defecto no cambian). Pedir más de lo disponible
   avisa y sigue solo con *sí*. Rehacer la misma OC reemplaza su descuento; `anular oc <n°>` lo devuelve; una carga nueva
   de stock del mismo origen lo pone en cero. Supervisor / admin: `descuentos` en el bot o `npm run portal:stock`.
+
+### La cita en el calendario de Outlook (corrida J)
+
+El vendedor usa Outlook clásico de escritorio con el calendario "Solo este PC": nada de afuera (ni un enlace web ni la
+API de Microsoft) puede escribir ahí, y WhatsApp no deja mandar `text/calendar` (el `.ics` le llegaba como "txt"). Por eso
+`cita …` manda una **invitación de calendario por correo** (iTIP, RFC 5546): Outlook la muestra con **Aceptar** y la
+guarda en el calendario local. El chat dice "Te envié la invitación a tu correo; ábrela en Outlook y pulsa Aceptar" y el
+`.ics` sigue llegando por WhatsApp, solo de respaldo.
+
+- **Crear**: `METHOD:REQUEST` con `ORGANIZER` = el remitente del bot (`EMAIL_FROM`) y un `ATTENDEE` por usuario invitado
+  (`RSVP=FALSE`: Aceptar no manda respuesta). **Reprogramar** (`Reprogramar` al repetir una cita): mismo `UID`, `SEQUENCE`
+  mayor y otra vez `REQUEST`: Outlook mueve la cita en vez de duplicarla. **Cancelar**: `cita cancelar ZBUSS [día hora]`
+  → `METHOD:CANCEL`, `STATUS:CANCELLED`, mismo `UID`: Outlook ofrece "Quitar del calendario". El organizador tiene que
+  ser siempre la misma dirección: si cambia `EMAIL_FROM`, las citas ya aceptadas no se actualizan (habría que borrarlas a
+  mano).
+- **Invitados**: el vendedor de la cita y, con "con danyer", el jefe técnico, si tienen correo en `users`. Nunca contactos
+  de la empresa ni direcciones de afuera.
+- **Correo de los usuarios**: columna `users.email` (migración aditiva). Se siembra con `npm run portal:seed-users` desde
+  `config/portal.json` (`users[].email`) o, para quien sale de `salespeople` (Frank), desde `config/pilot.json`. Volver a
+  sembrar sin correo no borra el que ya está. Danyer no tiene correo en la configuración: añadir `"email"` a su entrada.
+- **Enlaces opcionales** (apagados por defecto, por usuario: `"calendarLinks": true` en su entrada de `users`, columna
+  `users.calendar_links`): "Agregar a Outlook web" y "Agregar a Google Calendar", para quien tenga calendario en la nube.
+  Ninguno de los dos formatos tiene documentación oficial publicada; ver `src/lib/portal/calendar/links.ts`.
+- **Si el correo no está configurado o falla**: una línea en el mensaje ("No te envié la invitación por correo…" / "No
+  pude enviarte la invitación…") y queda el archivo; la cita nunca falla por el correo. El motivo va al registro y a la
+  actividad de la cita (`data.invitacion`).
+
+**Qué hace falta en producción (Vercel)** para que salga:
+
+1. Un dominio propio verificado en Resend (registros SPF/DKIM que da Resend), **que no sea `360tyres.pe`**: su SPF es
+   estricto y el correo sería rechazado. Sirve un subdominio dedicado (p. ej. `mail.<dominio>`), el mismo que se use
+   para los correos de cotización y de encuesta.
+2. `RESEND_API_KEY` (la misma de siempre) y `EMAIL_FROM="Nombre <citas@ese-dominio>"`. Sin `EMAIL_FROM`, o con el de
+   ejemplo (`@example.com`), el de pruebas (`onboarding@resend.dev`) o uno `@360tyres.pe`, la invitación queda apagada.
+3. `EMAIL_REDIRECT_TO` vacío (si está puesto, todas las invitaciones van a esa dirección: modo prueba).
+4. `npm run db:migrate` (columnas nuevas) y `npm run portal:seed-users` (correos).
+
+Transporte (`config/portal.json` → `appointments.invite.transport`): `smtp` (por defecto) manda el correo armado aquí
+por el SMTP de Resend (`smtp.resend.com:465`, usuario `resend`, la clave de la API), el único camino de Resend que deja
+poner la parte `text/calendar; method=REQUEST` inline, que es la que Outlook reconoce como reunión. `api` usa la API JSON
+de Resend, que solo acepta adjuntos: el `.ics` va adjunto con `contentType: text/calendar; method=REQUEST`, que Outlook
+muestra como archivo para abrir (menos directo); queda como alternativa si el SMTP no saliera desde el servidor.
+`appointments.invite.enabled: false` la apaga. En el simulador las invitaciones quedan como `.eml` en `out/simulacion/`.
+
+**Alternativa futura (Microsoft 365)**: si la empresa pasara a Microsoft 365 con buzones en la nube (Exchange Online), el
+bot podría escribir directo en el calendario con Microsoft Graph: una app registrada en Microsoft Entra ID con el permiso
+de aplicación `Calendars.ReadWrite` (con consentimiento de un administrador y, mejor, limitado a los buzones de los
+vendedores con una directiva de acceso de aplicación), y `POST /users/{correo}/events` / `PATCH` / `DELETE` sobre el evento
+guardado por cita (haría falta guardar el id del evento). No sirve para calendarios "Solo este PC".
 
 ### Resumen diario (cron)
 

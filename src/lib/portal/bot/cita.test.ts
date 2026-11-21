@@ -4,6 +4,7 @@ import { JsonStore } from "../../store/json-store";
 import { FakeWhatsAppClient } from "../../whatsapp/client";
 import { BotHandler } from "../../whatsapp/handler";
 import type { InboundMessage } from "../../whatsapp/webhook";
+import { configureCalendarMailer, type CalendarInviteMail } from "../calendar/mail";
 import { JsonPortalStore } from "../store";
 import type { Company } from "../store/types";
 import { seedUsers } from "../users";
@@ -101,7 +102,9 @@ describe("parseCitaArgs", () => {
 });
 
 describe("comando cita", () => {
-  it("crea la cita, mueve a Cita agendada, próxima acción Visita, actividad, .ics sin leyenda y resumen aparte", async () => {
+  // corrida J, punto 4: el resumen va primero y el .ics queda como respaldo después (el camino principal es la invitación
+  // por correo; aquí el correo no está configurado y el resumen lo dice en una línea)
+  it("crea la cita, mueve a Cita agendada, próxima acción Visita, actividad, resumen y .ics sin leyenda de respaldo", async () => {
     expect(await send("cita transportes andes martes 10am en su base de Ate")).toBe(true);
     const andes = ids[RUC_ANDES];
     const [appt] = await store.listAppointments({ companyId: andes });
@@ -116,9 +119,9 @@ describe("comando cita", () => {
     expect(act).toMatchObject({ tipo: "cita", canal: "whatsapp", userId: frankId, opportunityId: opp.id });
     expect(act.occurredAt.toISOString()).toBe(NOW.toISOString());
 
-    // orden: documento sin leyenda, luego el resumen
-    expect(out.map((m) => m.kind)).toEqual(["document", "text"]);
-    const doc = out[0];
+    // orden: el resumen, luego el documento sin leyenda (respaldo)
+    expect(out.map((m) => m.kind)).toEqual(["text", "document"]);
+    const doc = out[1];
     expect(doc.caption).toBe("");
     expect(doc.mimeType).toBe("text/calendar");
     expect(doc.fileName).toBe("cita-transportes-andes-del-peru-20261117.ics");
@@ -134,7 +137,7 @@ describe("comando cita", () => {
     expect(ev("DESCRIPTION").value).toContain(`Ficha: https://portal.example.pe/portal/empresas/${andes}`);
     expect(lastText()).toBe(
       // corrida D: termina con la línea de avance
-      "📅 Cita con *TRANSPORTES ANDES DEL PERU S.A.C.* el *martes 17/11 10:00* en su base de Ate · Agrégala a tu calendario de Outlook abriendo el archivo.\nOportunidad: Prospecto → *Cita agendada* · próxima acción: Visita\n✅ Paso 3 de 7 con TRANSPORTES ANDES DEL PERU: cita agendada. Sigue: reportar la visita.",
+      "📅 Cita con *TRANSPORTES ANDES DEL PERU S.A.C.* el *martes 17/11 10:00* en su base de Ate.\n✉️ No te envié la invitación por correo: el correo del bot no está configurado. Agrégala a Outlook abriendo el archivo .ics que te mando abajo.\nOportunidad: Prospecto → *Cita agendada* · próxima acción: Visita\n✅ Paso 3 de 7 con TRANSPORTES ANDES DEL PERU: cita agendada. Sigue: reportar la visita.",
     );
   });
 
@@ -378,8 +381,10 @@ describe("cita por el BotHandler (enganche de sendTextTo)", () => {
   });
   const saved: Record<string, string | undefined> = {};
   beforeEach(() => {
-    for (const k of ["PORTAL_TECH_LEAD_NUMBER", "PORTAL_BASE_URL", "PORTAL_SESSION_SECRET"]) saved[k] = process.env[k];
+    for (const k of ["PORTAL_TECH_LEAD_NUMBER", "PORTAL_BASE_URL", "PORTAL_SESSION_SECRET", "RESEND_API_KEY", "EMAIL_FROM"]) saved[k] = process.env[k];
     Object.assign(process.env, BASE_ENV, { PORTAL_TECH_LEAD_NUMBER: DANYER });
+    delete process.env.RESEND_API_KEY; // nunca un correo real desde las pruebas
+    delete process.env.EMAIL_FROM;
   });
   afterEach(() => {
     for (const [k, v] of Object.entries(saved)) {
@@ -396,11 +401,11 @@ describe("cita por el BotHandler (enganche de sendTextTo)", () => {
     await bot.handle(msg);
     expect(client.sent.map((m) => [m.to, m.kind])).toEqual([
       [DANYER, "text"],
-      [FRANK, "document"],
       [FRANK, "text"],
+      [FRANK, "document"],
     ]);
-    expect(client.sent[1].caption).toBe("");
-    expect(client.sent[2].body).toContain("👷 Avisé al Ing. Danyer Saavedra");
+    expect(client.sent[2].caption).toBe("");
+    expect(client.sent[1].body).toContain("👷 Avisé al Ing. Danyer Saavedra");
     const log = await quoter.listMessages(DANYER);
     expect(log.some((m) => m.direction === "out" && /Cita con el Dpto. Técnico/.test(m.body ?? ""))).toBe(true);
   });
@@ -413,5 +418,240 @@ describe("siembra del jefe técnico", () => {
     expect((await seedUsers(s, { users, env: {} })).warnings[0]).toMatch(/Danyer Saavedra.*PORTAL_TECH_LEAD_NUMBER/);
     const r = await seedUsers(s, { users, env: { PORTAL_TECH_LEAD_NUMBER: DANYER } });
     expect(r.users.map((u) => [u.nombre, u.rol, u.whatsapp])).toEqual([["Danyer Saavedra", "tecnico", DANYER]]);
+  });
+});
+
+// ── corrida J, punto 4: la invitación por correo (Outlook clásico: Aceptar) ──
+
+describe("invitación de la cita por correo", () => {
+  const MAIL_ENV = { RESEND_API_KEY: "re_test_x", EMAIL_FROM: "Cotizaciones <cotizaciones@mail.ejemplo-verificado.pe>" };
+  let mails: CalendarInviteMail[];
+  let mailFail: Error | string | null;
+
+  beforeEach(async () => {
+    mails = [];
+    mailFail = null;
+    // envío simulado: nunca sale un correo real
+    configureCalendarMailer(async (m) => {
+      if (mailFail instanceof Error) throw mailFail;
+      if (mailFail) return { sent: false, error: mailFail };
+      mails.push(m);
+      return { sent: true, id: `sim-${mails.length}` };
+    });
+    await store.upsertUser({ nombre: "Frank Rodríguez", whatsapp: FRANK, rol: "vendedor", email: "Frank.Rodriguez@Example.pe" });
+  });
+  afterEach(() => configureCalendarMailer(null));
+
+  const calPart = (m: CalendarInviteMail) => {
+    const lines = parseIcsLines(m.ics);
+    const ev = lines.slice(lines.findIndex((l) => l.name === "BEGIN" && l.value === "VEVENT"));
+    return { method: lines.find((l) => l.name === "METHOD")!.value, get: (n: string) => ev.find((l) => l.name === n)?.value, all: (n: string) => ev.filter((l) => l.name === n).map((l) => l.value) };
+  };
+
+  it("crear: invitación REQUEST al correo del vendedor; el mensaje lo dice y el .ics queda de respaldo", async () => {
+    await send("cita transportes andes martes 10am en su base de Ate", { env: MAIL_ENV });
+    const [appt] = await store.listAppointments({ companyId: ids[RUC_ANDES] });
+    expect(mails).toHaveLength(1);
+    const m = mails[0];
+    expect(m.from).toBe(MAIL_ENV.EMAIL_FROM); // el mismo remitente del proyecto, sin uno nuevo
+    expect(m.to).toEqual(["frank.rodriguez@example.pe"]);
+    expect(m.method).toBe("REQUEST");
+    expect(m.fileName).toBe("cita-transportes-andes-del-peru-20261117.ics");
+    expect(m.subject).toContain("TRANSPORTES ANDES DEL PERU S.A.C.");
+    expect(m.text).toContain("pulsa Aceptar");
+    const c = calPart(m);
+    expect(c.method).toBe("REQUEST");
+    expect(c.get("UID")).toBe(`cita-${appt.id}-${RUC_ANDES}@portal.360tyres`);
+    expect(c.get("SEQUENCE")).toBe("0");
+    expect(c.get("ORGANIZER")).toBe("mailto:cotizaciones@mail.ejemplo-verificado.pe");
+    expect(c.all("ATTENDEE")).toEqual(["mailto:frank.rodriguez@example.pe"]);
+    expect(c.get("DTSTART")).toBe("20261117T100000");
+    expect(c.get("LOCATION")).toBe("su base de Ate");
+
+    expect(out.map((o) => o.kind)).toEqual(["text", "document"]);
+    expect(lastText()).toContain("📅 Cita con *TRANSPORTES ANDES DEL PERU S.A.C.* el *martes 17/11 10:00* en su base de Ate.");
+    expect(lastText()).toContain("Te envié la invitación a tu correo; ábrela en Outlook y pulsa Aceptar");
+    expect(lastText()).toContain("archivo .ics de abajo es solo de respaldo");
+    expect(lastText()).not.toContain("Agrégala a tu calendario de Outlook abriendo el archivo");
+    const doc = out.find((o) => o.kind === "document")!;
+    expect(doc.fileName).toMatch(/\.ics$/);
+    const [act] = await store.listActivities({ companyId: ids[RUC_ANDES] });
+    expect(act.data).toMatchObject({ invitacion: { status: "enviado", to: ["frank.rodriguez@example.pe"] } });
+  });
+
+  it("con danyer: el técnico (usuario interno con correo) recibe la misma invitación; nunca un contacto de la empresa", async () => {
+    await store.upsertUser({ nombre: "Danyer Saavedra", whatsapp: DANYER, rol: "tecnico", email: "danyer@example.pe" });
+    await store.addContact({ companyId: ids[RUC_ANDES], nombre: "Cliente Externo", cargo: null, telefono: null, email: "cliente@andes.example", createdBy: frankId });
+    await send("cita andes del peru mañana 3pm con danyer", { env: { ...MAIL_ENV, PORTAL_TECH_LEAD_NUMBER: DANYER } });
+    expect(mails).toHaveLength(1);
+    expect(mails[0].to).toEqual(["frank.rodriguez@example.pe", "danyer@example.pe"]);
+    expect(calPart(mails[0]).all("ATTENDEE")).toEqual(["mailto:frank.rodriguez@example.pe", "mailto:danyer@example.pe"]);
+    // el contacto puede ir en el texto de la descripción, pero nunca como destinatario ni invitado
+    expect(mails[0].to.join(" ")).not.toContain("cliente@andes.example");
+    expect(calPart(mails[0]).all("ATTENDEE").join(" ")).not.toContain("cliente@andes.example");
+    expect(lastText()).toContain("También se la envié al Ing. Danyer Saavedra.");
+  });
+
+  it("con danyer sin correo registrado: va solo al vendedor y lo dice", async () => {
+    await send("cita andes del peru mañana 3pm con danyer", { env: { ...MAIL_ENV, PORTAL_TECH_LEAD_NUMBER: DANYER } });
+    expect(mails[0].to).toEqual(["frank.rodriguez@example.pe"]);
+    expect(lastText()).toContain("El Ing. Danyer Saavedra no tiene correo registrado");
+  });
+
+  it("con danyer sin número ni usuario técnico: no repite lo del correo (ya se dice que falta su número)", async () => {
+    await send("cita andes del peru mañana 3pm con danyer", { env: { ...MAIL_ENV, PORTAL_TECH_LEAD_NUMBER: "" } });
+    expect(mails[0].to).toEqual(["frank.rodriguez@example.pe"]);
+    expect(lastText()).toContain(NO_TECH_NUMBER);
+    expect(lastText()).not.toContain("no tiene correo registrado");
+  });
+
+  it("reprogramar: actualización REQUEST con el mismo UID y SEQUENCE mayor (Outlook la mueve, no la duplica)", async () => {
+    await send("cita transportes andes martes 10am", { env: MAIL_ENV });
+    await send("cita transportes andes martes 10am", { env: MAIL_ENV });
+    out = [];
+    const later = new Date(NOW.getTime() + 90_000);
+    await send("reprogramar", { now: later, env: MAIL_ENV });
+    out = [];
+    await send("jueves 19/11 4pm", { now: later, env: MAIL_ENV });
+    expect(mails).toHaveLength(2);
+    const [a, b] = mails.map(calPart);
+    expect(b.method).toBe("REQUEST");
+    expect(b.get("UID")).toBe(a.get("UID"));
+    expect(Number(b.get("SEQUENCE"))).toBeGreaterThan(Number(a.get("SEQUENCE")));
+    expect(b.get("DTSTART")).toBe("20261119T160000");
+    expect(b.get("ORGANIZER")).toBe(a.get("ORGANIZER"));
+    expect(mails[1].subject).toMatch(/reprogramada/i);
+    expect(lastText()).toContain("🔁 Reprogramé la cita con *TRANSPORTES ANDES DEL PERU S.A.C.*");
+    expect(lastText()).toContain("Te envié la actualización a tu correo; ábrela en Outlook y pulsa Aceptar");
+    expect(out.map((o) => o.kind)).toEqual(["text", "document"]);
+  });
+
+  it("cita cancelar <empresa>: la cita queda cancelada y sale la cancelación (METHOD:CANCEL, mismo UID, SEQUENCE mayor)", async () => {
+    await send("cita transportes andes martes 10am", { env: MAIL_ENV });
+    const [appt] = await store.listAppointments({ companyId: ids[RUC_ANDES] });
+    out = [];
+    const later = new Date(NOW.getTime() + 120_000);
+    expect(await send("cita cancelar transportes andes", { now: later, env: MAIL_ENV })).toBe(true);
+    expect((await store.getAppointment(appt.id))!.estado).toBe("cancelada");
+    expect(mails).toHaveLength(2);
+    const [a, c] = mails.map(calPart);
+    expect(mails[1].method).toBe("CANCEL");
+    expect(c.method).toBe("CANCEL");
+    expect(c.get("STATUS")).toBe("CANCELLED");
+    expect(c.get("UID")).toBe(a.get("UID"));
+    expect(Number(c.get("SEQUENCE"))).toBeGreaterThan(Number(a.get("SEQUENCE")));
+    expect(c.all("ATTENDEE")).toEqual(a.all("ATTENDEE"));
+    expect(lastText()).toContain("Cancelé la cita con *TRANSPORTES ANDES DEL PERU S.A.C.* del *martes 17/11 10:00*");
+    expect(lastText()).toContain("Te envié la cancelación a tu correo");
+    const opp = (await store.getOpenOpportunity(ids[RUC_ANDES]))!;
+    expect(opp.proximaAccion).toBeNull(); // apuntaba a la cita cancelada
+    const acts = (await store.listActivities({ companyId: ids[RUC_ANDES] })).filter((x) => x.tipo === "cita");
+    expect(acts[0].texto).toContain("cancelada");
+    // ya no hay cita que cancelar
+    await send("cita cancelar transportes andes", { now: later, env: MAIL_ENV });
+    expect(lastText()).toContain("No hay citas programadas con *TRANSPORTES ANDES DEL PERU S.A.C.*");
+    expect(mails).toHaveLength(2);
+  });
+
+  it("reprogramar y cancelar en el mismo segundo: cada envío lleva una SEQUENCE mayor que el anterior", async () => {
+    await send("cita transportes andes martes 10am", { env: MAIL_ENV });
+    await send("cita transportes andes martes 10am", { env: MAIL_ENV });
+    await send("jueves 19/11 4pm", { env: MAIL_ENV });
+    await send("cita cancelar transportes andes", { env: MAIL_ENV });
+    expect(mails.map((m) => m.method)).toEqual(["REQUEST", "REQUEST", "CANCEL"]);
+    const seq = mails.map((m) => Number(calPart(m).get("SEQUENCE")));
+    expect(seq[1]).toBeGreaterThan(seq[0]);
+    expect(seq[2]).toBeGreaterThan(seq[1]);
+  });
+
+  it("cita cancelar con dos citas programadas: pide el día y la hora, y con ellos cancela esa", async () => {
+    await send("cita transportes andes martes 10am", { env: MAIL_ENV });
+    await send("cita transportes andes jueves 4pm", { env: MAIL_ENV });
+    await send("cita cancelar transportes andes", { env: MAIL_ENV });
+    expect(lastText()).toContain("tiene 2 citas programadas");
+    expect((await store.listAppointments({ companyId: ids[RUC_ANDES], estado: "programada" })).length).toBe(2);
+    await send("cita cancelar transportes andes jueves 4pm", { env: MAIL_ENV });
+    const left = await store.listAppointments({ companyId: ids[RUC_ANDES], estado: "programada" });
+    expect(left.map((x) => x.startsAt.toISOString())).toEqual(["2026-11-17T15:00:00.000Z"]);
+  });
+
+  it("cita cancelar de una empresa ajena: no la toca", async () => {
+    await send("cita transportes andes martes 10am", { env: MAIL_ENV });
+    await send("cita cancelar transportes andes", { from: OTRO, env: MAIL_ENV });
+    expect(texts(OTRO).at(-1)).toContain("no es tuya");
+    expect((await store.listAppointments({ companyId: ids[RUC_ANDES], estado: "programada" })).length).toBe(1);
+  });
+
+  it("el correo falla (error o excepción): la cita se crea igual, una línea lo dice y queda el archivo", async () => {
+    mailFail = "The domain is not verified";
+    await send("cita transportes andes martes 10am", { env: MAIL_ENV });
+    expect(await store.listAppointments({ companyId: ids[RUC_ANDES] })).toHaveLength(1);
+    expect(lastText()).toContain("⚠️ No pude enviarte la invitación por correo. Agrégala a Outlook abriendo el archivo .ics que te mando abajo.");
+    expect(out.map((o) => o.kind)).toEqual(["text", "document"]);
+    out = [];
+    mailFail = new Error("ECONNRESET");
+    await send("cita andes sur martes 10am", { env: MAIL_ENV });
+    expect(await store.listAppointments({ companyId: ids[RUC_ANDES_SUR] })).toHaveLength(1);
+    expect(lastText()).toContain("No pude enviarte la invitación por correo");
+    expect(out.map((o) => o.kind)).toEqual(["text", "document"]);
+  });
+
+  it("vendedor sin correo registrado: lo dice en una línea y queda el archivo", async () => {
+    await store.upsertUser({ nombre: "Frank Rodríguez", whatsapp: FRANK, rol: "vendedor", email: null });
+    await send("cita transportes andes martes 10am", { env: MAIL_ENV });
+    expect(mails).toHaveLength(0);
+    expect(lastText()).toContain("✉️ No tengo tu correo para enviarte la invitación");
+    expect(out.map((o) => o.kind)).toEqual(["text", "document"]);
+  });
+
+  it("enlaces Outlook web / Google Calendar: solo para el usuario que los tiene encendidos", async () => {
+    await send("cita transportes andes martes 10am", { env: MAIL_ENV });
+    expect(lastText()).not.toContain("calendar.google.com");
+    await store.upsertUser({ nombre: "Frank Rodríguez", whatsapp: FRANK, rol: "vendedor", calendarLinks: true });
+    await send("cita andes sur martes 10am", { env: MAIL_ENV });
+    expect(lastText()).toContain("Agregar a Outlook web: https://outlook.office.com/calendar/action/compose?");
+    expect(lastText()).toContain("Agregar a Google Calendar: https://calendar.google.com/calendar/render?action=TEMPLATE");
+    expect((await store.getUserByWhatsapp(FRANK))!.email).toBe("frank.rodriguez@example.pe"); // el upsert sin email lo conserva
+  });
+
+  it("sin remitente válido (EMAIL_FROM @360tyres.pe): no envía, lo dice y lo anota", async () => {
+    configureCalendarMailer(null);
+    await send("cita transportes andes martes 10am", { env: { RESEND_API_KEY: "re_x", EMAIL_FROM: "Citas <citas@360tyres.pe>" } });
+    expect(lastText()).toContain("✉️ No te envié la invitación por correo: el correo del bot no está configurado.");
+    const [act] = await store.listActivities({ companyId: ids[RUC_ANDES] });
+    expect(act.data).toMatchObject({ invitacion: { status: "apagado" } });
+  });
+});
+
+describe("correo de los usuarios (siembra)", () => {
+  it("Frank toma el correo de salespeople (config/pilot.json); email explícito; volver a sembrar sin correo no lo borra", async () => {
+    const s = JsonPortalStore.memory();
+    const salespeople = { [FRANK]: { name: "Frank Melek Rodríguez Mirano", email: "Frank.Rodriguez@360tyres.pe" } };
+    const users = [
+      { nombre: "Frank Rodríguez", rol: "vendedor" as const, whatsappSalesperson: "Frank" },
+      { nombre: "Danyer Saavedra", rol: "tecnico" as const, whatsappEnv: "PORTAL_TECH_LEAD_NUMBER", email: "danyer@example.pe", calendarLinks: true },
+    ];
+    const r = await seedUsers(s, { users, salespeople, env: { PORTAL_TECH_LEAD_NUMBER: DANYER } });
+    expect(r.users.map((u) => [u.nombre, u.email, u.calendarLinks])).toEqual([
+      ["Frank Rodríguez", "frank.rodriguez@360tyres.pe", false],
+      ["Danyer Saavedra", "danyer@example.pe", true],
+    ]);
+    expect(r.entries.map((e) => e.action)).toEqual(["crear", "crear"]);
+    // otra siembra igual: sin cambios
+    expect((await seedUsers(s, { users, salespeople, env: { PORTAL_TECH_LEAD_NUMBER: DANYER } })).entries.map((e) => e.action)).toEqual(["igual", "igual"]);
+    // sin correo en la configuración: el del store se conserva
+    await seedUsers(s, { users: [{ nombre: "Danyer Saavedra", rol: "tecnico", whatsappEnv: "PORTAL_TECH_LEAD_NUMBER" }], env: { PORTAL_TECH_LEAD_NUMBER: DANYER } });
+    expect((await s.getUserByWhatsapp(DANYER))!.email).toBe("danyer@example.pe");
+    expect((await s.getUserByWhatsapp(DANYER))!.calendarLinks).toBe(true);
+    // el aviso al técnico (upsert sin correo) tampoco lo borra
+    await s.upsertUser({ nombre: "Danyer Saavedra", whatsapp: DANYER, rol: "tecnico" });
+    expect((await s.getUserByWhatsapp(DANYER))!.email).toBe("danyer@example.pe");
+  });
+
+  it("un correo mal escrito no se guarda", async () => {
+    const s = JsonPortalStore.memory();
+    const u = await s.upsertUser({ nombre: "X", whatsapp: "51900000099", rol: "vendedor", email: "no es correo" });
+    expect(u.email).toBeNull();
+    expect(u.calendarLinks).toBe(false);
   });
 });

@@ -36,7 +36,8 @@ async function main(): Promise<void> {
       const what =
         e.action === "crear" ? (dryRun ? "se crearía" : "creado") : e.action === "igual" ? "sin cambios" : `${dryRun ? "se actualizaría" : "actualizado"} (antes: ${e.before?.nombre} · ${e.before?.rol})`;
       const id = e.before ? `#${e.before.id}` : dryRun ? "nuevo" : `#${r.users.find((u) => u.whatsapp === e.whatsapp)?.id ?? "?"}`;
-      console.log(`  ${e.nombre} · ${e.rol}  ${maskNumber(e.whatsapp)}  ${id}  ${what}  [${e.from}]`);
+      const mail = e.email ? "con correo" : e.before?.email ? "correo del store" : "sin correo";
+      console.log(`  ${e.nombre} · ${e.rol}  ${maskNumber(e.whatsapp)}  ${id}  ${what}  [${e.from}] · ${mail}`);
     }
     if (r.warnings.length) {
       console.log("");

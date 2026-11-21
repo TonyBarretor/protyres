@@ -8,6 +8,12 @@ export const MAX_PAGE_SIZE = 500;
 
 export const digits = (s: string | null | undefined): string => (s ?? "").replace(/\D/g, "");
 
+/** Correo de un usuario: recortado y en minúsculas; vacío o sin forma de correo -> null. */
+export function normEmail(s: string | null | undefined): string | null {
+  const t = (s ?? "").trim().toLowerCase();
+  return /^[^\s@"<>:;,\\]+@[^\s@"<>:;,\\]+\.[^\s@"<>:;,\\]+$/.test(t) ? t : null;
+}
+
 /** Minúsculas y sin tildes, para buscar por razón social. */
 export function foldText(s: string | null | undefined): string {
   return (s ?? "")

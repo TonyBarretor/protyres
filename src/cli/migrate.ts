@@ -583,6 +583,9 @@ export const STATEMENTS = [
   `alter table sales add column if not exists monto_calculado boolean not null default false`,
   `alter table sales add column if not exists total_original numeric(14,2)`,
   `alter table sales add column if not exists precio_unitario_original numeric(12,2)`,
+  // corrida J, punto 4: correo del usuario (invitación de calendario de las citas) y enlaces a calendarios en la nube
+  `alter table users add column if not exists email text`,
+  `alter table users add column if not exists calendar_links boolean not null default false`,
 ];
 
 /** Desde aquí empiezan las sentencias del portal: antes de ejecutarlas se pasa la guardia (migrate-guard.ts). */
