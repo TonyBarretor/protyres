@@ -75,6 +75,8 @@ async function scenario(s: PortalStore, trace: (label: string, v: unknown) => vo
   trace("fleet.move", await s.upsertFleet([vehicle(C, "BUS-001", { origen: "pasajeros", clase: "OMNIBUS", marca: "MERCEDES BENZ" })]));
   trace("fleet.prune", await s.pruneFleet([B, C], [{ placa: "bus 001", origen: "pasajeros" }]));
   trace("fleet.list", await s.listFleet(A));
+  // corrida J: la placa de una línea contra el padrón (sin guion, espacios ni mayúsculas)
+  trace("fleet.byPlacas", await s.findFleetByPlacas(["abc-124", "BUS 001", "new001", "ZZZ-999"]));
   trace("fleet.byBrand", await s.fleetByBrand(A));
   trace("fleet.count", await s.countFleet());
   trace("fleet.origin", await s.companyOriginCounts());

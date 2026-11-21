@@ -44,7 +44,9 @@ import { findCandidates } from "../quote/match";
 import { renderQuotePdf } from "../quote/pdf";
 import { attachPhotos, findPhoto, itemsWithoutPhoto, loadImage, searchWebPhotos, webSearchAvailable } from "../quote/photos";
 import { fmtMoney, r2 } from "../quote/pricing";
-import { FIELD_LABEL, askRequired, detectProfile, findProfile, hasExcelFormat, leadingProfile, missingInQuote, missingRequired, profileGuide, profileHead, profileId, profileKey, profileRequestText, shortItemLabel, type RequiredField } from "../quote/profiles";
+import { FIELD_LABEL, askRequired, detectProfile, findProfile, hasExcelFormat, leadingProfile, missingInQuote, missingRequired, profileGuide, profileHead, profileId, profileKey, profileRequestText, shortItemLabel, usesUnits, type RequiredField } from "../quote/profiles";
+import { invalidPlateReply, lineRefs, lineRefsChat, normalizePlate, parsePlateCommand, type PlateCommand } from "../quote/line-refs";
+import { portalPlateNotes } from "../portal/quotes/plates";
 import { PROSEGUR_MAX_ITEMS, prosegurTooManyItems, renderProsegurXlsx } from "../quote/prosegur-xlsx";
 import { describeLine, describeRequest, parseEmail, parseQuantity, parseRequest, parseRequestRegex, shadowCompare, stripMargin, unparsedHintInfo } from "../quote/request";
 import type { Candidate, EmailDraft, LineCandidates, Quote, QuoteItem, QuoteRequest, RequestLine } from "../quote/types";
@@ -375,7 +377,7 @@ function pendingProfile(state: ConversationState): { profile: string; header?: s
 }
 
 /** "unidad: …" / "ub: …" / "solicitante: …": the line that sets a profile's required field. */
-const FIELD_KEY: Record<RequiredField, string> = { unit: "unidad", ub: "ub", requester: "solicitante" };
+const FIELD_KEY: Record<RequiredField, string> = { unit: "unidad", ub: "ub", requester: "solicitante", plate: "placa" };
 
 /** Words that are commands, never a bare answer (a requester's name, a unit, an APLICACIÓN). */
 /**
@@ -410,6 +412,34 @@ const COMMAND_WORD = /^(?:enviar|send|ayuda|help|hola|menu|inicio|gracias|listo|
 /** The question for a contract item without APLICACIÓN yet ("Flama 77"). */
 function askApplication(name: string): string {
   return `¿Qué aplicación lleva la ${name}? (MIXT, POST, DEL…)`;
+}
+
+/** The request line with what the salesman typed for it after the request ("aplicación 2 MIXT", "placa 2 ABC-123", "sin placa 2"). */
+function lineWithEdits(line: RequestLine, p: { application?: string; plate?: string | null } | undefined): RequestLine {
+  if (!p || (!p.application && p.plate === undefined)) return line;
+  const out: RequestLine = { ...line };
+  if (p.application) out.application = p.application;
+  if (p.plate !== undefined) {
+    delete out.badPlate;
+    if (p.plate) out.plate = p.plate;
+    else delete out.plate;
+  }
+  return out;
+}
+
+/** "2. 295/80R22.5 x4": the lines without a plate, for the profile's question (corrida J, "pedir placa"). */
+function linesWithoutPlate(lines: RequestLine[]): string[] {
+  return lines.map((l, i) => (l.plate ? "" : `${i + 1}. ${describeLine(l)}`)).filter(Boolean);
+}
+
+/** "⚠️ Ítem 2: «AB12» no parece una placa …": one line per line whose written plate is not a plate (corrida J). */
+function badPlateNotes(lines: RequestLine[]): string[] {
+  return lines.flatMap((l, i) => (l.badPlate && !l.plate ? [`⚠️ Ítem ${i + 1}: ${invalidPlateReply(l.badPlate, i + 1)}`] : []));
+}
+
+/** A profile with UB (Prosegur) never takes a plate: "placa …" is text it does not understand (corrida J, punto 1.2). */
+function plateRefused(profile: CustomerProfile | undefined, text: string): string {
+  return `No entendí «${text.trim().slice(0, 40)}»: en ${profile?.name ?? "este cliente"} cada llanta lleva su *UB* (4 cifras), no placa. ¿Qué querías cambiar? (p. ej. *UB 1830* junto a la llanta)`;
 }
 
 export class BotHandler {
@@ -571,6 +601,9 @@ export class BotHandler {
         if (files) return this.renameFiles(from, state, files);
       }
       if (state.step === "review_quote" || state.step === "need_email") {
+        // corrida J: "placa 2 ABC-123", "sin placa 2", "placa ABC-123" (a single item) on the quote already presented
+        const plateCmd = findTyreSizes(text).length ? null : parsePlateCommand(text);
+        if (plateCmd) return this.reviewPlate(from, state, plateCmd, text);
         // "cantidad 8" / "x8" / "precio 254" / "a 254" / "quitar" / "aplicación MIXT" on a quote with a single item
         const bare = parseBareItemCommand(text);
         if (bare) {
@@ -819,7 +852,7 @@ export class BotHandler {
     const blocks = lcs.map((lc, i) => {
       if (only && !only.includes(i)) return "";
       const p = pending[i];
-      const head = `*${i + 1}.* ${describeLine(p.application ? { ...lc.line, application: p.application } : lc.line)}${p.removed ? " _(quitado)_" : ""}`;
+      const head = `*${i + 1}.* ${describeLine(lineWithEdits(lc.line, p))}${p.removed ? " _(quitado)_" : ""}`;
       if (p.removed) return head;
       if (lc.line.contract) {
         // the customer's contract price: nothing to choose
@@ -948,6 +981,20 @@ export class BotHandler {
     return [profileHead(profile, req), ...lines].join("\n");
   }
 
+  /**
+   * Corrida J: the lines' plates for the salesman, one line each: a written plate that is not one ("placa AB12": how to
+   * write it) and, for a portal salesman, the plate against the customer's fleet in the portal (never blocks). [] for a
+   * profile with UB (Prosegur: no plates) and for a request without plates (nothing changes then).
+   */
+  private async plateNotes(from: string, text: string, req: { lines: RequestLine[]; customerCompany?: string; customerName?: string; customerEmail?: string; customerRef?: string }, profile: CustomerProfile | undefined, only?: string[]): Promise<string[]> {
+    if (profile && usesUnits(profile)) return [];
+    const bad = only ? [] : badPlateNotes(req.lines);
+    const plates = only ?? req.lines.map((l) => l.plate).filter((p): p is string => !!p);
+    if (!plates.length) return bad;
+    const fleet = await portalPlateNotes({ from, text, plates, customer: { company: req.customerCompany, name: req.customerName, email: req.customerEmail, ref: req.customerRef }, store: this.deps.portalStore, log: (m) => this.log(m) });
+    return [...bad, ...fleet];
+  }
+
   /** Price-list candidates of every line; a contract line has none (its price is the contract's). */
   private async lineCandidates(req: QuoteRequest, limit?: number): Promise<LineCandidates[]> {
     const lcs = await findCandidates(this.store, req, this.settings.pricing, limit ? { limit } : {});
@@ -958,7 +1005,10 @@ export class BotHandler {
    * The profile's required fields first (unidad, ub, solicitante), then the options of every line. A request made only
    * of contract items has nothing to choose: the quote is built right away.
    */
-  private async showOptions(from: string, text: string, req: QuoteRequest, profile: CustomerProfile | undefined, opts: { note?: string; skipRequired?: boolean; newQuote?: boolean; lead?: string[]; voice?: boolean } = {}): Promise<void> {
+  private async showOptions(from: string, text: string, parsed: QuoteRequest, profile: CustomerProfile | undefined, opts: { note?: string; skipRequired?: boolean; newQuote?: boolean; lead?: string[]; voice?: boolean; plates?: Record<string, string | null>; plateAsked?: boolean } = {}): Promise<void> {
+    // corrida J: the plates typed while the profile's fields were asked for ("placa 2 ABC-123") go on their lines
+    const plates = opts.plates && Object.keys(opts.plates).length ? opts.plates : undefined;
+    const req = plates ? { ...parsed, lines: parsed.lines.map((l, i) => lineWithEdits(l, { plate: plates[String(i)] })) } : parsed;
     const allContract = req.lines.length > 0 && req.lines.every((l) => l.contract);
     // a new quote is announced ("🆕 Cotización nueva · MOVIL BUS S.A.C."), with the lines that explain it ("Cerré la 032 …");
     // the short contract texts go without them (their summary is the boundary), except "Cerré …", sent on its own
@@ -968,16 +1018,20 @@ export class BotHandler {
     // the short contract texts leave out the memory note: the summary shows what was reused (correo, solicitante)
     const note = [...head, ...(opts.note && !allContract ? [opts.note] : [])].map((l) => `${l}\n`).join("");
     const id = profile ? profileId(profile) : undefined;
-    const missingFields = profile && !opts.skipRequired ? missingRequired(profile, req) : [];
+    // the plate ("pedir placa") is asked once: after that question, lines without one go on without it
+    const missingFields = profile && !opts.skipRequired ? missingRequired(profile, req).filter((f) => f !== "plate" || !opts.plateAsked) : [];
+    // the plates of the lines against the portal's fleet, and plates that are not plates (corrida J; [] without plates)
+    const plateNotes = allContract ? [] : await this.plateNotes(from, text, req, profile);
     if (profile && missingFields.length) {
-      await this.store.setConversation(from, { phone: from, step: "need_fields", requestText: text, profile: id, ...(opts.voice ? { voice: true } : {}), updatedAt: now() });
+      const asked = missingFields.includes("plate") || !!opts.plateAsked;
+      await this.store.setConversation(from, { phone: from, step: "need_fields", requestText: text, profile: id, ...(opts.voice ? { voice: true } : {}), ...(plates ? { plates } : {}), ...(asked ? { plateAsked: true } : {}), updatedAt: now() });
       const unparsed = this.unparsedOf(req);
-      const understood = `${allContract ? this.contractSummary(profile, req) : `Entendí:\n${describeRequest(req)}\n`}${unparsed.length ? `\n${unparsedWarning(unparsed)}\n` : ""}`;
-      return this.reply(from, `${note}${understood}\n${askRequired(profile, missingFields)}`);
+      const understood = `${allContract ? this.contractSummary(profile, req) : `Entendí:\n${describeRequest(req)}\n`}${plateNotes.map((l) => `${l}\n`).join("")}${unparsed.length ? `\n${unparsedWarning(unparsed)}\n` : ""}`;
+      return this.reply(from, `${note}${understood}\n${askRequired(profile, missingFields, linesWithoutPlate(req.lines))}`);
     }
     const lcs = await this.lineCandidates(req);
     // "precio 259" written on a line is its manual price from the start (as "precio 1 259")
-    const pending: PendingLine[] = lcs.map((lc) => ({ candidateIds: lc.candidates.map((c) => c.row.id), chosen: lc.candidates.length ? 0 : null, quantity: lc.line.quantity, ...(lc.line.unitPrice !== undefined ? { unitPriceOverride: lc.line.unitPrice } : {}) }));
+    const pending: PendingLine[] = lcs.map((lc, i) => ({ candidateIds: lc.candidates.map((c) => c.row.id), chosen: lc.candidates.length ? 0 : null, quantity: lc.line.quantity, ...(lc.line.unitPrice !== undefined ? { unitPriceOverride: lc.line.unitPrice } : {}), ...(plates?.[String(i)] !== undefined ? { plate: plates[String(i)] } : {}) }));
     // a new quote to a customer quoted lately: the manual price of the same tyre is kept ("precio 254 como en la 031")
     const carried = opts.newQuote ? await this.carryPrices(from, req, profile, lcs, pending) : [];
     const state: ConversationState = { phone: from, step: "choose", requestText: text, pending, profile: id, ...(opts.voice ? { voice: true } : {}), updatedAt: now() };
@@ -992,7 +1046,7 @@ export class BotHandler {
       return;
     }
     const missing = lcs.filter((lc) => !lc.line.contract && lc.candidates.length === 0 && lc.line.unitPrice === undefined).length;
-    const intro = `${note}${carried.map((l) => `${l}\n`).join("")}Entendí:\n${describeRequest(req)}\n${missing ? `\n⚠️ ${missing} ítem(s) sin precio en las listas.\n` : ""}`;
+    const intro = `${note}${carried.map((l) => `${l}\n`).join("")}Entendí:\n${describeRequest(req)}\n${plateNotes.map((l) => `${l}\n`).join("")}${missing ? `\n⚠️ ${missing} ítem(s) sin precio en las listas.\n` : ""}`;
     // the first options message of a quote whose request (and memory) says nothing of the terms: the default, once
     const term = this.settings.quote.paymentTerm;
     const defaultTerm = opts.newQuote && term && req.paymentTerm === undefined && req.paymentType === undefined ? `\nPlazo ${term} por defecto (escribe plazo: 45 días para cambiarlo).` : "";
@@ -1009,6 +1063,10 @@ export class BotHandler {
     const contract = await this.contractFor(profile);
     const cmd = norm(text);
     const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+    // corrida J: "placa 2 ABC-123" (one per line), "sin placa" — or "placa …" with a UB profile (Prosegur), not understood
+    const plateHandled = await this.needFieldsPlates(from, state, profile, contract, lines);
+    if (plateHandled) return true;
+    const plateEdits = { plates: state.plates, plateAsked: state.plateAsked };
     // more items may come with the answer or instead of it ("4 v89"): they are added to the request
     const itemLine = (l: string) => !!this.moreContractLines(contract, l);
     let fieldLines = lines.length > 0 && lines.every((l) => TERM_LINE.test(l) || parseNumberCommand(l) || /^(?:correo|email|mail)\s*:?\s*\S+@\S+$/i.test(l) || itemLine(l));
@@ -1023,19 +1081,71 @@ export class BotHandler {
       }
     } else if (!["ok", "seguir", "continuar", "listo", "si", "sí", "dale"].includes(cmd)) {
       if (findTyreSizes(text).length > 0 || leadingProfile(this.settings, text)) return false; // a new request
-      const missing = missingRequired(profile, this.parseForRegex(requestText, contract));
+      const parsed = this.parseForRegex(requestText, contract);
+      const edited = state.plates ? parsed.lines.map((l, i) => lineWithEdits(l, { plate: state.plates![String(i)] })) : parsed.lines;
+      const missing = missingRequired(profile, { ...parsed, lines: edited }).filter((f) => f !== "plate" || !state.plateAsked);
       const value = text.trim();
       const only = missing.length === 1 ? missing[0] : undefined;
-      const bare = !!only && lines.length === 1 && !COMMAND_WORD.test(cmd) && (only === "ub" ? /^\d{3,5}$/.test(value) : /^[\p{L}][\p{L} .'-]{1,59}$/u.test(value));
+      // a bare answer is never the plate (that one is "placa 2 ABC-123", handled above)
+      const bare = !!only && only !== "plate" && lines.length === 1 && !COMMAND_WORD.test(cmd) && (only === "ub" ? /^\d{3,5}$/.test(value) : /^[\p{L}][\p{L} .'-]{1,59}$/u.test(value));
       if (!bare) {
-        await this.reply(from, askRequired(profile, missing));
+        await this.reply(from, askRequired(profile, missing, linesWithoutPlate(edited)));
         return true;
       }
       requestText += `\n${FIELD_KEY[only!]}: ${value}`;
       fieldLines = true;
     }
     const req = await this.parseFor(requestText, contract);
-    await this.showOptions(from, requestText, req, profile, { skipRequired: !fieldLines, newQuote: true, ...(state.voice ? { voice: true } : {}) });
+    await this.showOptions(from, requestText, req, profile, { skipRequired: !fieldLines, newQuote: true, ...(state.voice ? { voice: true } : {}), ...plateEdits });
+    return true;
+  }
+
+  /**
+   * Corrida J, "pedir placa": the answer to the plate question, while the profile's fields are asked for. "placa 2
+   * ABC-123" / "plc 2 ABC123" (one per line), "placa ABC-123" or a bare "ABC-123" for the only line without one, "sin
+   * placa 2", and "sin placa" to go on without them. After it the options are shown (the plate is asked only once).
+   * With a UB profile (Prosegur) a "placa …" is not understood and the bot asks. False: not about plates.
+   */
+  private async needFieldsPlates(from: string, state: ConversationState, profile: CustomerProfile, contract: Contract | null, lines: string[]): Promise<boolean> {
+    const text = lines.join("\n");
+    if (!lines.length || findTyreSizes(text).length) return false;
+    const bareOne = lines.length === 1 && normalizePlate(lines[0]) && profile.required.includes("plate") ? ({ kind: "set", line: null, plate: normalizePlate(lines[0])! } as PlateCommand) : null;
+    const cmds = bareOne ? [bareOne] : lines.map((l) => parsePlateCommand(l));
+    if (cmds.some((c) => !c)) return false;
+    if (usesUnits(profile)) {
+      await this.reply(from, plateRefused(profile, text));
+      return true;
+    }
+    const requestText = state.requestText ?? "";
+    // the same reading the question showed (its line numbers)
+    const parsed = await this.parseFor(requestText, contract);
+    const plates: Record<string, string | null> = { ...state.plates };
+    const plateOf = (i: number) => (plates[String(i)] !== undefined ? plates[String(i)] : parsed.lines[i]?.plate ?? null);
+    for (const c of cmds as PlateCommand[]) {
+      if (c.kind === "invalid") {
+        await this.reply(from, invalidPlateReply(c.heard, c.line));
+        return true;
+      }
+      if (c.kind === "clear" && c.line === null) {
+        // "sin placa": the lines without one go on without it (the question is not asked again)
+        continue;
+      }
+      let at = c.line !== null ? c.line - 1 : -1;
+      if (c.line === null) {
+        const without = parsed.lines.map((_, i) => i).filter((i) => !plateOf(i));
+        at = parsed.lines.length === 1 ? 0 : without.length === 1 ? without[0] : -1;
+        if (at < 0) {
+          await this.reply(from, `¿De qué ítem? Escribe *placa N ${c.kind === "set" ? c.plate : "ABC-123"}* (N = número del ítem).`);
+          return true;
+        }
+      }
+      if (!parsed.lines[at]) {
+        await this.reply(from, `No existe el ítem ${at + 1}; hay ${parsed.lines.length}.`);
+        return true;
+      }
+      plates[String(at)] = c.kind === "set" ? c.plate : null;
+    }
+    await this.showOptions(from, requestText, parsed, profile, { newQuote: true, ...(state.voice ? { voice: true } : {}), plates, plateAsked: true });
     return true;
   }
 
@@ -1113,6 +1223,10 @@ export class BotHandler {
       await this.reply(from, files.xlsxName ? `📎 El Excel se llamará *${withExtension(files.xlsxName, ".xlsx")}*.` : `📎 El PDF se llamará *${withExtension(files.pdfName ?? "", ".pdf")}*.`);
       return true;
     }
+
+    // corrida J: "placa 2 ABC-123", "sin placa 2", "placa ABC-123" (a single item)
+    const plateCmd = findTyreSizes(text).length ? null : parsePlateCommand(text);
+    if (plateCmd) return this.choosePlate(from, state, plateCmd, text);
 
     // "cantidad 8" / "x8" / "precio 254" / "a 254" / "quitar" / "aplicación MIXT" on a quote with a single item
     const bare = parseBareItemCommand(text);
@@ -1254,6 +1368,55 @@ export class BotHandler {
     await this.reshow(from, { ...state, pending }, state.requestText ?? "", { lead: `✏️ Ítem ${h.line + 1}: *${model}*.` });
   }
 
+  /**
+   * The item a plate command is for (index from 0), or the reply when it cannot be told: "placa ABC-123" / "sin placa"
+   * without a number is for the only item (`active`: the items still quoted).
+   */
+  private static plateTarget(c: PlateCommand, count: number, active: number[]): { at: number } | { reply: string } {
+    if (c.line === null) {
+      if (active.length === 1) return { at: active[0] };
+      return { reply: `¿De qué ítem? (ej. *${c.kind === "clear" ? "sin placa 2" : `placa 2 ${c.kind === "set" ? c.plate : "ABC-123"}`}*)` };
+    }
+    if (c.line < 1 || c.line > count) return { reply: `No existe el ítem ${c.line}; hay ${count}.` };
+    return { at: c.line - 1 };
+  }
+
+  /** Corrida J: a plate command while choosing options: the line's plate (or none), and the summary again. */
+  private async choosePlate(from: string, state: ConversationState, c: PlateCommand, text: string): Promise<boolean> {
+    const say = async (body: string) => {
+      await this.reply(from, body);
+      return true;
+    };
+    const profile = findProfile(this.settings, state.profile);
+    if (profile && usesUnits(profile)) return say(plateRefused(profile, text));
+    const pending = (state.pending ?? []).map((p) => ({ ...p }));
+    if (c.kind === "invalid") return say(invalidPlateReply(c.heard, c.line));
+    const target = BotHandler.plateTarget(c, pending.length, pending.map((_, i) => i).filter((i) => !pending[i].removed));
+    if ("reply" in target) return say(target.reply);
+    pending[target.at].plate = c.kind === "set" ? c.plate : null;
+    const requestText = state.requestText ?? "";
+    const lead = [`✏️ Ítem ${target.at + 1}: ${c.kind === "set" ? `placa *${c.plate}*` : "sin placa"}.`];
+    if (c.kind === "set") lead.push(...(await this.plateNotes(from, requestText, parseRequestRegex(requestText), profile, [c.plate])));
+    return this.reshow(from, { ...state, pending }, requestText, { lead: lead.join("\n") });
+  }
+
+  /** Corrida J: a plate command on the quote already presented: the item's plate (or none), and the quote again. */
+  private async reviewPlate(from: string, state: ConversationState, c: PlateCommand, text: string): Promise<void> {
+    const quote = state.quoteNumber ? await this.store.getQuote(state.quoteNumber) : null;
+    if (!quote) return this.reply(from, "No encuentro la cotización; escribe el pedido de nuevo.");
+    const profile = findProfile(this.settings, quote.customerProfile);
+    if (profile && usesUnits(profile)) return this.reply(from, plateRefused(profile, text));
+    if (c.kind === "invalid") return this.reply(from, invalidPlateReply(c.heard, c.line));
+    const target = BotHandler.plateTarget(c, quote.items.length, quote.items.map((_, i) => i));
+    if ("reply" in target) return this.reply(from, target.reply);
+    const lead = [`✏️ Ítem ${target.at + 1}: ${c.kind === "set" ? `placa *${c.plate}*` : "sin placa"}.`];
+    if (c.kind === "set") {
+      const who = { lines: [], customerCompany: quote.customer.company, customerName: quote.customer.name, customerEmail: quote.customer.email };
+      lead.push(...(await this.plateNotes(from, quote.requestText ?? "", who, profile, [c.plate])));
+    }
+    return this.rebuildQuote(from, state, { lineIndex: target.at, plate: c.kind === "set" ? c.plate : null, lead: lead.join("\n") });
+  }
+
   /** "número 451" / "nombre: …" while choosing: used when the quote is built; a number already taken asks first. */
   private async setNumbering(from: string, state: ConversationState, target: { counter?: number; name?: string; confirmed: boolean }): Promise<boolean> {
     const today = new Date().toISOString().slice(0, 10);
@@ -1301,7 +1464,7 @@ export class BotHandler {
       const ids = lc.candidates.map((c) => c.row.id);
       const keep = prev?.chosen !== null && prev?.chosen !== undefined && prev.candidateIds[prev.chosen] ? ids.indexOf(prev.candidateIds[prev.chosen]) : -1;
       const extra = (prev?.extra ?? []).map((x) => ({ chosen: ids.indexOf(prev!.candidateIds[x.chosen]), quantity: x.quantity })).filter((x) => x.chosen >= 0);
-      return { candidateIds: ids, chosen: keep >= 0 ? keep : ids.length ? 0 : null, quantity: prev?.quantity ?? lc.line.quantity, unitPriceOverride: prev?.unitPriceOverride ?? lc.line.unitPrice, removed: prev?.removed, application: prev?.application, extra: extra.length ? extra : undefined };
+      return { candidateIds: ids, chosen: keep >= 0 ? keep : ids.length ? 0 : null, quantity: prev?.quantity ?? lc.line.quantity, unitPriceOverride: prev?.unitPriceOverride ?? lc.line.unitPrice, removed: prev?.removed, application: prev?.application, ...(prev?.plate !== undefined ? { plate: prev.plate } : {}), extra: extra.length ? extra : undefined };
     });
     await this.store.setConversation(from, { ...state, step: "choose", requestText, pending, confirmText: undefined, resume: undefined, updatedAt: now() });
     const summary = show === "options" ? "" : this.chooseSummary(req, lcs, pending);
@@ -1320,7 +1483,7 @@ export class BotHandler {
   /** "Fenixway FLAMA 77 315/80R22.5 20PR MIXT placa ABC-123 x8". */
   private static itemName(x: { brand?: string; model?: string; sizeDisplay?: string; ply?: number; description?: string; application?: string; plate?: string; ub?: string }, quantity: number, quoteUb?: string): string {
     const name = x.sizeDisplay ? [x.brand, x.model, `${x.sizeDisplay}${x.ply ? ` ${x.ply}PR` : ""}`].filter(Boolean).join(" ") : (x.description ?? "");
-    const refs = [x.application, x.plate ? `placa ${x.plate}` : "", x.ub && x.ub !== quoteUb ? `UB ${x.ub}` : ""].filter(Boolean).join(" ");
+    const refs = [x.application, lineRefsChat(lineRefs(x, quoteUb))].filter(Boolean).join(" ");
     return `${name}${refs ? ` ${refs}` : ""} x${quantity}`;
   }
 
@@ -1337,7 +1500,7 @@ export class BotHandler {
     lcs.forEach((lc, i) => {
       const p = pending[i];
       if (!p) return;
-      const line = p.application ? { ...lc.line, application: p.application } : lc.line;
+      const line = lineWithEdits(lc.line, p);
       const cand = p.chosen !== null ? lc.candidates.find((c) => c.row.id === p.candidateIds[p.chosen!]) : undefined;
       const what = cand ? { ...cand.row, application: line.application, plate: line.plate, ub: line.ub } : { brand: line.brand, model: line.model, sizeDisplay: line.size?.display, ply: line.ply, description: line.text ?? line.raw, application: line.application, plate: line.plate, ub: line.ub };
       const label = `${i + 1}. ${BotHandler.itemName(what, p.quantity, req.ub)}`;
@@ -1353,7 +1516,7 @@ export class BotHandler {
       for (const x of p.extra ?? []) {
         const more = lc.candidates.find((c) => c.row.id === p.candidateIds[x.chosen]);
         if (!more) continue;
-        lines.push(`   + ${BotHandler.itemName({ ...more.row, application: line.application }, x.quantity)} @ ${fmtMoney(shown(more.unitNet), this.cur)}`);
+        lines.push(`   + ${BotHandler.itemName({ ...more.row, application: line.application, plate: line.plate }, x.quantity)} @ ${fmtMoney(shown(more.unitNet), this.cur)}`);
         total += shown(more.unitNet) * x.quantity;
       }
     });
@@ -1392,7 +1555,7 @@ export class BotHandler {
       const lc = lcs[i];
       if (!lc) return;
       const quantity = p.quantity;
-      const line = p.application ? { ...lc.line, application: p.application } : lc.line; // "aplicación 2 MIXT DEL"
+      const line = lineWithEdits(lc.line, p); // "aplicación 2 MIXT DEL", "placa 2 ABC-123"
       if (line.contract) {
         items.push(contractQuoteItem(line, quantity, this.settings, p.unitPriceOverride));
         return;
@@ -1474,7 +1637,8 @@ export class BotHandler {
     if (xlsx && profile) await this.client.sendDocument(from, xlsx.buffer, xlsx.fileName, "", XLSX_MIME);
     if (!quote.customer.email) {
       await this.store.setConversation(from, { phone: from, step: "need_email", quoteNumber: quote.number, updatedAt: now() });
-      return this.reply(from, `${recap}\n\nEl pedido no tiene correo del cliente. *¿A qué correo lo envío?* (o *cancelar*)`);
+      // corrida J: lo que cambió ("✏️ Ítem 3: placa *ABC-123*" y su contraste con el padrón) también sin correo
+      return this.reply(from, `${opts.lead ? `${opts.lead}\n\n` : ""}${recap}\n\nEl pedido no tiene correo del cliente. *¿A qué correo lo envío?* (o *cancelar*)`);
     }
     await this.store.setConversation(from, { phone: from, step: "review_quote", quoteNumber: quote.number, updatedAt: now() });
     const d = quote.emailDraft;
@@ -2022,11 +2186,11 @@ export class BotHandler {
     return true;
   }
 
-  private async rebuildQuote(from: string, state: ConversationState, change: { unitPrice?: number; lineIndex?: number; email?: string; pricesIncludeTax?: boolean; extraText?: string; application?: string; quantity?: number; remove?: boolean; add?: RequestLine[]; addText?: string; addItems?: QuoteItem[]; edits?: { index: number; quantity?: number; unitPrice?: number }[]; lead?: string }): Promise<void> {
+  private async rebuildQuote(from: string, state: ConversationState, change: { unitPrice?: number; lineIndex?: number; email?: string; pricesIncludeTax?: boolean; extraText?: string; application?: string; plate?: string | null; quantity?: number; remove?: boolean; add?: RequestLine[]; addText?: string; addItems?: QuoteItem[]; edits?: { index: number; quantity?: number; unitPrice?: number }[]; lead?: string }): Promise<void> {
     const quote = state.quoteNumber ? await this.store.getQuote(state.quoteNumber) : null;
     if (!quote) return this.reply(from, "No encuentro la cotización; escribe el pedido de nuevo.");
     const at = change.lineIndex ?? 0;
-    const perItem = change.unitPrice !== undefined || change.application !== undefined || change.quantity !== undefined || change.remove;
+    const perItem = change.unitPrice !== undefined || change.application !== undefined || change.plate !== undefined || change.quantity !== undefined || change.remove;
     if (perItem && !quote.items[at]) return this.reply(from, `No existe el ítem ${at + 1}; hay ${quote.items.length}.`);
     // terms typed after the quote ("pago: letras 30 días") are appended to the request text so they persist
     // ("pago letras 30 días" gets its colon; text already written as "clave: valor" is kept as it is); so are added items
@@ -2040,9 +2204,14 @@ export class BotHandler {
       const discountPct = it.listPrice ? Math.round((1 - unitPrice / it.listPrice) * 10000) / 100 : it.discountPct;
       return { ...it, unitPrice, discountPct: Math.max(0, discountPct), total: Math.round(unitPrice * it.quantity * 100) / 100, origin: it.listPrice ? it.origin : "manual", manualPrice: true };
     };
-    let items = quote.items.map((it, i) => {
+    let items = quote.items.map((it, i): QuoteItem => {
       if (i !== at) return it;
       if (change.application !== undefined) return { ...it, application: change.application };
+      if (change.plate !== undefined) {
+        // "placa 2 ABC-123" / "sin placa 2": only the plate changes (the item, its price and its place stay)
+        const { plate: _old, ...rest } = it;
+        return change.plate ? { ...rest, plate: change.plate } : rest;
+      }
       if (change.quantity !== undefined) return { ...it, quantity: change.quantity, total: r2(it.unitPrice * change.quantity) };
       if (change.unitPrice === undefined) return it;
       return priced(it, change.unitPrice);

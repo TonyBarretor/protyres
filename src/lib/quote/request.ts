@@ -17,6 +17,7 @@ import type { PriceRow } from "../ingest/types";
 import { llmAvailable, quoteLlmMode } from "../llm/client";
 import { parseRequestWithLLMResult, type LLMRequest } from "../llm/parse-request";
 import { currentQuoteScope, diffViews, shadowView, type QuoteLlmScope, type QuoteShadowEntry } from "./shadow";
+import { lineRefs, lineRefsChat } from "./line-refs";
 import type { QuoteRequest, RequestLine } from "./types";
 
 const NUMBER_WORDS: Record<string, number> = {
@@ -315,13 +316,29 @@ function rawLines(text: string): { text: string; src: Span }[] {
   return out;
 }
 
-/** Peruvian vehicle plate written next to an item ("BLM-923", "A1B-234", "placa BVV704"). */
-const PLATE = /(?:\bplaca\s*:?\s*)?\b((?:[A-Z]{3}|[A-Z]\d[A-Z])-?\d{3})\b(?![\w/.-])/i;
+/** Peruvian vehicle plate written next to an item ("BLM-923", "A1B-234", "placa BVV704", "plc BVV704"). */
+const PLATE = /(?:\b(?:placa|plc\.?)\s*:?\s*)?\b((?:[A-Z]{3}|[A-Z]\d[A-Z])-?\d{3})\b(?![\w/.-])/i;
 export function extractPlate(text: string): string | undefined {
   const m = text.match(PLATE);
   if (!m) return undefined;
-  if (!/placa/i.test(m[0]) && !m[1].includes("-")) return undefined; // without a hyphen only "placa BVV704" counts (models look alike: AT557)
+  if (!/placa|plc/i.test(m[0]) && !m[1].includes("-")) return undefined; // without a hyphen only "placa BVV704" counts (models look alike: AT557)
   return m[1].toUpperCase().replace(/^([A-Z0-9]{3})(\d{3})$/, "$1-$2");
+}
+
+/**
+ * "placa AB12" / "plc 12ABC3": what is written as the line's plate but is not a Peruvian plate (corrida J). The token
+ * as written, so the bot asks instead of reading it as the quantity or the model. Only a token with a digit ("Placa
+ * Unidad Medida…" in a pasted table header is not one).
+ */
+const BAD_PLATE = /\b(?:placa|plc\.?)\s*:?\s*([A-Z0-9][A-Z0-9-]*\d[A-Z0-9-]*)(?![\w/.-])/i;
+export function extractBadPlate(text: string): string | undefined {
+  if (extractPlate(text)) return undefined;
+  return text.match(BAD_PLATE)?.[1]?.toUpperCase();
+}
+
+/** The line with its unreadable plate ("placa AB12") blanked out (same length). */
+function withoutBadPlate(line: string): string {
+  return line.replace(BAD_PLATE, (m) => " ".repeat(m.length));
 }
 
 /** The line with its plate blanked out (same length), so "BVV704 x8" is never read as a tyre size. */
@@ -358,7 +375,7 @@ function lineFromText(line: string, explicitQty: number | null): RequestLine | n
   if (size && !isRim) {
     const sizeRaw = norm.slice(size.index, size.index + size.length);
     // plate, "placa", the application words and the LT prefix are not part of the model
-    let cleaned = norm.replace(/\bplaca\b\s*:?/gi, " ").replace(/\bLT(?=\d)/g, "  ");
+    let cleaned = norm.replace(/\b(?:placa|plc)\b\.?\s*:?/gi, " ").replace(/\bLT(?=\d)/g, "  ");
     if (plate) cleaned = cleaned.replace(new RegExp(`\\b${plate.replace("-", "[-\\s]?")}\\b`, "gi"), (m) => " ".repeat(m.length));
     if (application) cleaned = cleaned.replace(new RegExp(`(?<![\\w/-])${application.replace(/[/ ]/g, "[\\s/]*")}(?![\\w/-])`, "gi"), (m) => " ".repeat(m.length));
     let model = stripToModel(cleaned, { sizeRaw, brandAlias: brandHit?.alias });
@@ -377,7 +394,7 @@ function lineFromText(line: string, explicitQty: number | null): RequestLine | n
     const text = line
       .replace(/\b(?:und|unidades|unidad|cant|cantidad|x)\s*\d{1,4}\b/gi, " ")
       .replace(/\b\d{1,4}\s*(?:und|unidades|unidad|uds?|u)\b/gi, " ")
-      .replace(/\bplaca\s*:?\s*[A-Z0-9-]+/i, " ")
+      .replace(/\b(?:placa|plc)\.?\s*:?\s*[A-Z0-9-]+/i, " ")
       .replace(plate ? new RegExp(`\\b${plate.replace("-", "-?")}\\b`, "i") : /$^/, " ")
       .replace(/\s+/g, " ")
       .trim();
@@ -449,11 +466,14 @@ export function parseRequestRegex(text: string): QuoteRequest {
     }
     // "UB 1830" is the line's UB: blanked before reading quantity / size / model
     const ub = extractUb(item);
-    const itemText = ub ? withoutUb(item).replace(/\s+/g, " ").trim() : item;
+    // "placa AB12" (not a plate): blanked as well, and kept on the line so the bot asks for it (corrida J)
+    const badPlate = extractBadPlate(item);
+    const refsOut = badPlate ? withoutBadPlate(item) : item;
+    const itemText = ub ? withoutUb(refsOut).replace(/\s+/g, " ").trim() : badPlate ? refsOut.replace(/\s+/g, " ").trim() : item;
     const parsed = lineFromText(itemText, parseQuantity(itemText));
     prevItem = !!parsed;
     if (parsed) {
-      const withUb = ub ? { ...parsed, raw: item, ub } : parsed;
+      const withUb = ub || badPlate ? { ...parsed, raw: item, ...(ub ? { ub } : {}), ...(badPlate ? { badPlate } : {}) } : parsed;
       lines.push(unitPrice !== undefined ? { ...withUb, unitPrice } : withUb);
       if (unitPrice !== undefined) priceLines.push(src);
       if (!itemLines.some((s) => s[0] === src[0])) itemLines.push(src);
@@ -877,11 +897,12 @@ function regexPriceFor(base: RequestLine[], i: number, size: RequestLine["size"]
 export function describeLine(l: RequestLine): string {
   if (l.size) {
     const app = l.application ? l.application : l.position === "DEL" ? "delantera" : l.position === "TRAC" ? "tracción/posterior" : l.position === "MIX" ? "mixta" : "";
-    return [l.brand ?? "", l.size.display, l.model ?? "", l.ply ? `${l.ply}PR` : "", app, l.plate ? `placa ${l.plate}` : "", l.ub ? `UB ${l.ub}` : "", `x${l.quantity}`, l.unitPrice !== undefined ? `precio ${l.unitPrice}` : ""]
+    return [l.brand ?? "", l.size.display, l.model ?? "", l.ply ? `${l.ply}PR` : "", app, lineRefsChat(lineRefs(l)), l.badPlate ? `placa ¿${l.badPlate}?` : "", `x${l.quantity}`, l.unitPrice !== undefined ? `precio ${l.unitPrice}` : ""]
       .filter(Boolean)
       .join(" ");
   }
-  return `${l.text ?? l.raw}${l.plate ? ` placa ${l.plate}` : ""}${l.ub ? ` UB ${l.ub}` : ""} x${l.quantity}${l.unitPrice !== undefined ? ` precio ${l.unitPrice}` : ""}`;
+  const refs = lineRefsChat(lineRefs(l));
+  return `${l.text ?? l.raw}${refs ? ` ${refs}` : ""}${l.badPlate ? ` placa ¿${l.badPlate}?` : ""} x${l.quantity}${l.unitPrice !== undefined ? ` precio ${l.unitPrice}` : ""}`;
 }
 
 /** Human-readable summary of what was understood (sent back to the salesman). */

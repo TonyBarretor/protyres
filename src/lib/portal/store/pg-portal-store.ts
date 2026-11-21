@@ -952,6 +952,16 @@ export class PgPortalStore implements PortalStore {
     return groupFleet(agg);
   }
 
+  async findFleetByPlacas(placas: string[]): Promise<FleetVehicle[]> {
+    const keys = [...new Set(placas.map((p) => p.toUpperCase().replace(/[\s-]+/g, "")).filter(Boolean))];
+    if (!keys.length) return [];
+    // la misma expresión que el índice fleet_vehicles_placa_key_idx (src/cli/migrate.ts)
+    const rows = await this.sql`
+      select * from fleet_vehicles where upper(replace(replace(placa, '-', ''), ' ', '')) in ${this.sql(keys)}
+      order by placa, id`;
+    return rows.map(toVehicle);
+  }
+
   async countFleet(): Promise<number> {
     const [{ n }] = await this.sql`select count(*)::int as n from fleet_vehicles`;
     return Number(n);

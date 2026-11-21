@@ -25,6 +25,8 @@ export interface PendingLine {
   removed?: boolean;
   /** APLICACIÓN typed by the salesman for this line ("aplicación 2 MIXT DEL"). */
   application?: string;
+  /** Vehicle plate typed for this line ("placa 2 ABC-123"); null = "sin placa 2" (the request's plate is dropped). */
+  plate?: string | null;
   /** More options of the same line quoted as extra items ("opción a x2, opción b x8"). */
   extra?: { chosen: number; quantity: number }[];
 }
@@ -62,6 +64,12 @@ export interface ConversationState {
   files?: { pdfName?: string; xlsxName?: string };
   /** Lines being quoted (same order as the parsed request). */
   pending?: PendingLine[];
+  /**
+   * need_fields (corrida J): plates typed before the options ("placa 2 ABC-123" / "sin placa 2"), by line index (from
+   * 0); they become the lines' `plate` in `pending`. `plateAsked`: the profile's plate was already asked for (once).
+   */
+  plates?: Record<string, string | null>;
+  plateAsked?: boolean;
   /** Quote number waiting for "enviar". */
   quoteNumber?: string;
   /** Pending provider price text waiting for a provider name. */
@@ -132,6 +140,11 @@ export interface ListQuotesOptions {
   company?: string;
   /** WhatsApp number of the salesman who made the quote. */
   requestedBy?: string;
+  /**
+   * Corrida J: quotes with an item for this vehicle plate ("ABC-123"; written as normalizePlate leaves it): what was
+   * quoted (and, with its purchase order, sold) to each vehicle.
+   */
+  plate?: string;
   /** Default 50. */
   limit?: number;
 }

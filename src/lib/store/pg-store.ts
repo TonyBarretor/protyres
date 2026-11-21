@@ -7,6 +7,7 @@ import postgres from "postgres";
 import { serverlessPostgres } from "./pg-options";
 import * as schema from "../../db/schema";
 import type { PriceRow, PriceSource } from "../ingest/types";
+import { normalizePlate } from "../quote/line-refs";
 import type { Quote } from "../quote/types";
 import type { QuoteShadowEntry, QuoteShadowRow } from "../quote/shadow";
 import { foldKey, photoKey, stockOriginKey, type BlockedInbound, type ConversationState, type ListQuotesOptions, type LoggedMessage, type MessageLogEntry, type PriceStore, type ProductPhoto, type ProviderSummary, type QuoteFile, type ReplaceScope, type StoredContractItem, type StockDeduction, type StockDeductionInput, type Supplier, type UsageEntry, type UsageSummaryRow } from "./types";
@@ -348,6 +349,8 @@ export class PgStore implements PriceStore {
     const conds = [];
     if (o.company) conds.push(sql`${FOLD(sql`(${schema.quotes.data}->'customer'->>'company')`)} like ${`%${foldKey(o.company)}%`}`);
     if (o.requestedBy) conds.push(sql`regexp_replace(coalesce(${schema.quotes.requestedBy}, ''), '[^0-9]', '', 'g') = ${o.requestedBy.replace(/\D/g, "")}`);
+    // corrida J: ítems con esa placa (índice quotes_items_gin_idx sobre data->'items')
+    if (o.plate) conds.push(sql`(${schema.quotes.data}->'items') @> ${JSON.stringify([{ plate: normalizePlate(o.plate) ?? o.plate.trim().toUpperCase() }])}::jsonb`);
     const rows = await this.db
       .select()
       .from(schema.quotes)

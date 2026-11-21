@@ -7,6 +7,7 @@
 import type { CustomerProfile, Settings } from "../settings";
 import { foldKey } from "../store/types";
 import { fold } from "../tyre/brands";
+import { lineRefs, lineRefsChat } from "./line-refs";
 import { parseRequestRegex } from "./request";
 import type { Quote, QuoteItem, QuoteRequest } from "./types";
 
@@ -188,9 +189,12 @@ export function profileRequestText(settings: Settings, p: CustomerProfile, text:
   return { text: defaults.length ? `${full}\n${defaults.join("\n")}` : full, bare: false, header };
 }
 
-/** Required fields still missing (ub counts as present when the quote has one or every line has its own). */
-export function missingRequired(p: CustomerProfile, req: Pick<QuoteRequest, "unit" | "ub" | "requester"> & { lines: { ub?: string }[] }): RequiredField[] {
-  return p.required.filter((f) => (f === "unit" ? !req.unit : f === "requester" ? !req.requester : !req.ub && req.lines.some((l) => !l.ub)));
+/**
+ * Required fields still missing (ub counts as present when the quote has one or every line has its own; plate, when
+ * every line has its own: a plate is never the whole quote's).
+ */
+export function missingRequired(p: CustomerProfile, req: Pick<QuoteRequest, "unit" | "ub" | "requester"> & { lines: { ub?: string; plate?: string }[] }): RequiredField[] {
+  return p.required.filter((f) => (f === "unit" ? !req.unit : f === "requester" ? !req.requester : f === "plate" ? req.lines.some((l) => !l.plate) : !req.ub && req.lines.some((l) => !l.ub)));
 }
 
 /** The same check on a built quote (fields the salesman skipped with "ok"). */
@@ -198,16 +202,26 @@ export function missingInQuote(p: CustomerProfile, q: Quote): RequiredField[] {
   return missingRequired(p, { unit: q.unit, ub: q.ub, requester: q.requester, lines: q.items });
 }
 
-export const FIELD_LABEL: Record<RequiredField, string> = { unit: "unidad", ub: "ub", requester: "solicitante" };
+export const FIELD_LABEL: Record<RequiredField, string> = { unit: "unidad", ub: "ub", requester: "solicitante", plate: "placa" };
 
 const FIELD_HINT: Record<RequiredField, string> = {
   unit: "*unidad:* Ayacucho _(la unidad atendida)_",
   ub: "*ub:* 1830 _(o *UB 1830* al lado de cada llanta)_",
   requester: "*solicitante:* nombre de quien pide la cotización",
+  plate: "*placa 1 ABC-123* _(la placa del vehículo de cada llanta, una por línea)_",
 };
 
-export function askRequired(p: CustomerProfile, missing: RequiredField[]): string {
-  return `Para el formato de ${p.name} me falta:\n${missing.map((f) => `• ${FIELD_HINT[f]}`).join("\n")}\nEnvíamelos (uno por línea) o responde *ok* para seguir sin ellos.`;
+/**
+ * What is missing for the profile, asked once before the summary. `withoutPlate`: the lines without a plate ("2.
+ * 295/80R22.5 x4") when the profile asks for one ("pedir placa": `required` with "plate"); "sin placa" goes on without.
+ */
+export function askRequired(p: CustomerProfile, missing: RequiredField[], withoutPlate: string[] = []): string {
+  if (missing.length === 1 && missing[0] === "plate") {
+    const which = withoutPlate.length ? `\n${withoutPlate.join("\n")}` : "";
+    return `🚗 ${p.name} pide la placa de cada llanta. Sin placa:${which}\nEscríbela con el número del ítem (*placa 1 ABC-123*, una por línea) o responde *sin placa* para seguir sin ella.`;
+  }
+  const plate = missing.includes("plate") && withoutPlate.length ? ` (sin placa: ${withoutPlate.map((l) => l.split(".")[0]).join(", ")})` : "";
+  return `Para el formato de ${p.name} me falta:\n${missing.map((f) => `• ${FIELD_HINT[f]}${f === "plate" ? plate : ""}`).join("\n")}\nEnvíamelos (uno por línea) o responde *ok* para seguir sin ellos.`;
 }
 
 /** How the salesman writes the customer ("prosegur"). */
@@ -246,6 +260,6 @@ export function profileHead(p: CustomerProfile, q: { unit?: string; ub?: string;
 /** "215/75R17.5 18PR Fenixway Valor 99 MIXT x2" (+ plate, + the item's own UB when it is not the quote's). */
 export function shortItemLabel(it: Pick<QuoteItem, "size" | "sizeDisplay" | "ply" | "brand" | "model" | "description" | "application" | "plate" | "ub" | "quantity">, quoteUb?: string): string {
   const what = it.size ? [`${it.sizeDisplay || it.size}${it.ply ? ` ${it.ply}PR` : ""}`, it.brand, it.model].filter(Boolean).join(" ") : it.description;
-  const refs = [it.application, it.plate, it.ub && it.ub !== quoteUb ? `UB ${it.ub}` : ""].filter(Boolean).join(" ");
+  const refs = [it.application, lineRefsChat(lineRefs(it, quoteUb))].filter(Boolean).join(" ");
   return `${what}${refs ? ` ${refs}` : ""} x${it.quantity}`;
 }

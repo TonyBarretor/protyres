@@ -140,6 +140,11 @@ export interface PedidoItem {
   size?: string;
   /** Prosegur: armoured units (UB) of the quote lines summed in this line. */
   ubs?: string[];
+  /**
+   * Corrida J: vehicle plates of the quote lines summed in this line, with how many tyres each (lines of the same product
+   * stay one detail line; the plates go to the observaciones: pedidoPlatesNote).
+   */
+  placas?: { placa: string; cantidad: number }[];
   /** Branch (sucursal) of the quote line ("JULIACA"). */
   sucursal?: string;
 }
@@ -230,15 +235,42 @@ export function groupPedidoItems(items: PedidoItem[]): PedidoItem[] {
     const key = [pedidoDescription(it), pedidoOrigin(it), price, it.sucursal ?? ""].join("|");
     const prev = byKey.get(key);
     if (!prev) {
-      const copy: PedidoItem = { ...it, ...(it.ubs ? { ubs: [...it.ubs] } : {}) };
+      const copy: PedidoItem = { ...it, ...(it.ubs ? { ubs: [...it.ubs] } : {}), ...(it.placas ? { placas: it.placas.map((p) => ({ ...p })) } : {}) };
       byKey.set(key, copy);
       out.push(copy);
       continue;
     }
+    // a line without plate next to lines with one keeps its tyres counted ("sin placa" in the note)
+    if ((prev.placas || it.placas) && !(prev.placas && it.placas)) {
+      if (!prev.placas) prev.placas = [{ placa: "", cantidad: prev.cantidad }];
+      if (!it.placas) prev.placas.push({ placa: "", cantidad: it.cantidad });
+    }
     prev.cantidad += it.cantidad;
     for (const ub of it.ubs ?? []) if (!(prev.ubs ??= []).includes(ub)) prev.ubs.push(ub);
+    for (const p of it.placas ?? []) {
+      const same = prev.placas!.find((x) => x.placa === p.placa);
+      if (same) same.cantidad += p.cantidad;
+      else prev.placas!.push({ ...p });
+    }
   }
   return out;
+}
+
+/**
+ * Corrida J: the plates for Patricia's observaciones, one group per detail line that has any (lines already grouped by
+ * product): "Placas: 295/80R22.5 FENIXWAY VALOR 99: ABC-123 (8), DEF-456 (2); 11R22.5 …: ABC-123 (4), sin placa (2)".
+ * "" when no line has a plate.
+ */
+export function pedidoPlatesNote(lines: PedidoItem[]): string {
+  const parts = lines
+    .filter((it) => it.placas?.some((p) => p.placa))
+    .map((it) => {
+      const merged = new Map<string, number>();
+      for (const p of it.placas ?? []) merged.set(p.placa, (merged.get(p.placa) ?? 0) + p.cantidad);
+      const list = [...merged].sort(([a], [b]) => (a ? 0 : 1) - (b ? 0 : 1)).map(([placa, n]) => `${placa || "sin placa"} (${n})`);
+      return `${pedidoDescription(it)}: ${list.join(", ")}`;
+    });
+  return parts.length ? `Placas: ${parts.join("; ")}` : "";
 }
 
 /** One third-party block per product and origin (the price does not split a block), in detail order. */
@@ -573,6 +605,7 @@ export function pedidoFromQuote(quote: Quote, extra: PedidoExtra = {}): PedidoDa
     }
     const ub = it.ub ?? quote.ub;
     if (ub) item.ubs = [ub];
+    if (it.plate) item.placas = [{ placa: it.plate, cantidad: it.quantity }];
     if (quote.unit) item.sucursal = quote.unit.toUpperCase();
     return item;
   });
