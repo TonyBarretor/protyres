@@ -69,6 +69,12 @@ export interface HandlerDeps {
    * guion (un guion no es una ráfaga) y lo congela para @rafaga.
    */
   burstClock?: () => number;
+  /**
+   * Tiempo límite (ms) de los enganches del portal (router, enlazar cotización, plazo, última venta); por defecto 4 s
+   * (PORTAL_ROUTE_TIMEOUT_MS / PORTAL_HOOK_TIMEOUT_MS). Solo pruebas: contra una base remota la latencia varía y la
+   * comparación JSON / Postgres no debe depender de ella (corrida J, punto 6).
+   */
+  portalTimeoutMs?: number;
 }
 
 const HELP = [
@@ -503,7 +509,7 @@ export class BotHandler {
       // reciba "no leo audios" (ni con el cotizador a mitad de un flujo: corrida F); con el cotizador a mitad de un flujo
       // solo entran comandos explícitos del portal y notas de voz.
       const quoteStep = pendingProfile(state) ? "profile" : state.step;
-      if (await routePortal({ from, text, msg, quoteStep, voiceQuote: state.step === "choose" && !!state.voice, voiceCatalog: () => voiceCatalogFromStore(this.store, Date.now(), this.settings.customers), reply: (body) => this.reply(from, body), replyInteractive: (m) => this.client.sendInteractive(from, m), sendDocument: (file, name, caption, mime) => this.client.sendDocument(from, file, name, caption, mime), sendTextTo: (to, body) => this.client.sendText(to, body), downloadMedia: (id) => this.client.downloadMedia(id), logMessage: (e) => this.store.logMessage(e), requote: (m) => this.handle(m), defer: (fn) => after.push(fn), store: this.deps.portalStore, log: (m) => this.log(m) })) return;
+      if (await routePortal({ from, text, msg, quoteStep, voiceQuote: state.step === "choose" && !!state.voice, voiceCatalog: () => voiceCatalogFromStore(this.store, Date.now(), this.settings.customers), reply: (body) => this.reply(from, body), replyInteractive: (m) => this.client.sendInteractive(from, m), sendDocument: (file, name, caption, mime) => this.client.sendDocument(from, file, name, caption, mime), sendTextTo: (to, body) => this.client.sendText(to, body), downloadMedia: (id) => this.client.downloadMedia(id), logMessage: (e) => this.store.logMessage(e), requote: (m) => this.handle(m), defer: (fn) => after.push(fn), store: this.deps.portalStore, timeoutMs: this.deps.portalTimeoutMs, log: (m) => this.log(m) })) return;
       if (["ayuda", "help", "?", "hola", "menu", "inicio"].includes(cmd)) return this.reply(from, HELP);
       if (["cancelar", "cancel", "salir", "reset"].includes(cmd)) {
         await this.store.setConversation(from, null);
@@ -887,7 +893,7 @@ export class BotHandler {
       note = `${note ? note + "\n" : ""}📒 ${what}, ${where} _(se cambian con ${remembered.keys.slice(0, 3).map((k) => `*${k}: …*`).join(", ")})_`;
     }
     // portal: plazo de crédito de la empresa cuando ni el pedido ni la memoria lo dan (null fuera del portal: sin cambios)
-    const credit = await portalCreditTerm({ from, text, req, store: this.deps.portalStore, log: (m) => this.log(m) });
+    const credit = await portalCreditTerm({ from, text, req, store: this.deps.portalStore, timeoutMs: this.deps.portalTimeoutMs, log: (m) => this.log(m) });
     if (credit) {
       // la línea queda en el texto (lo que se guarda y se vuelve a leer después); el plazo se aplica sin re-parsear (con LLM
       // sería otra llamada que podría leer distinto). Es lo mismo que el parser saca de "plazo: N días".
@@ -897,7 +903,7 @@ export class BotHandler {
     }
     // portal (ventas-odoo, punto 8): "Última venta a este cliente: …", solo informativa y solo en este mensaje al vendedor
     // ([] fuera del portal: sin cambios); el precio y lo que ve el cliente no cambian
-    const saleRefs = await portalSaleReference({ from, text, req, store: this.deps.portalStore, log: (m) => this.log(m) });
+    const saleRefs = await portalSaleReference({ from, text, req, store: this.deps.portalStore, timeoutMs: this.deps.portalTimeoutMs, log: (m) => this.log(m) });
     if (saleRefs.length) note = `${note ? note + "\n" : ""}${saleRefs.join("\n")}`;
     return this.showOptions(from, text, req, profile, { note, newQuote: true, lead: opts.lead, ...(opts.voice ? { voice: true } : {}) });
   }
@@ -1444,7 +1450,7 @@ export class BotHandler {
   private async presentQuote(from: string, quote: Quote, opts: { lead?: string; summary?: boolean } = {}): Promise<void> {
     await this.presentQuoteMessages(from, quote, opts);
     // portal: enlace a la oportunidad, después de todos los mensajes del cotizador; nunca lanza (fuera del portal no hace nada)
-    await linkQuoteToPortal({ from, quote, reply: (body) => this.reply(from, body), replyInteractive: (m) => this.client.sendInteractive(from, m), store: this.deps.portalStore, log: (m) => this.log(m) });
+    await linkQuoteToPortal({ from, quote, reply: (body) => this.reply(from, body), replyInteractive: (m) => this.client.sendInteractive(from, m), store: this.deps.portalStore, timeoutMs: this.deps.portalTimeoutMs, log: (m) => this.log(m) });
   }
 
   private async presentQuoteMessages(from: string, quote: Quote, opts: { lead?: string; summary?: boolean } = {}): Promise<void> {
@@ -2101,7 +2107,7 @@ export class BotHandler {
       await this.store.saveQuote(quote);
       await this.storeSentFiles(quote, files);
       await this.store.setConversation(from, null);
-      await onQuoteSentToPortal({ from, quoteNumber: quote.number, store: this.deps.portalStore, log: (m) => this.log(m) }); // portal: Cotización enviada; nunca lanza
+      await onQuoteSentToPortal({ from, quoteNumber: quote.number, store: this.deps.portalStore, timeoutMs: this.deps.portalTimeoutMs, log: (m) => this.log(m) }); // portal: Cotización enviada; nunca lanza
       const what = files.length > 1 ? ` (${files.map((f) => (f.contentType === XLSX_MIME ? "Excel" : "PDF")).join(" + ")})` : "";
       if (res.sent) return this.reply(from, `Enviado ✔ Cotización ${quote.number} a ${quote.emailDraft.to}${what}.`);
       return this.reply(from, `(Modo prueba: el envío de correos no está activo) Guardé el correo como borrador en vez de enviarlo. Cotización ${quote.number} marcada como enviada${what}.`);

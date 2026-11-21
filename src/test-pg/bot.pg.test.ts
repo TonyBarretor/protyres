@@ -143,7 +143,9 @@ async function runScript(portal: PortalStore, prices: PriceStore): Promise<Run> 
   const voiceFetch = (async () =>
     new Response(JSON.stringify({ metadata: { duration: 7 }, results: { channels: [{ alternatives: [{ transcript, confidence: 0.95 }] }] } }), { status: 200, headers: { "Content-Type": "application/json" } })) as unknown as typeof fetch;
   configureReportBot({ llm: null, deepgramFetch: voiceFetch, downloadMedia: async () => ({ data: Buffer.from("OggS-prueba"), mimeType: "audio/ogg" }) });
-  const bot = new BotHandler({ client, store: prices, settings, portalStore: portal, burstClock: (() => { let t = Date.now(); return () => (t += 5000); })() });
+  // 30 s y no los 4 s de producción: contra el pooler remoto un pico de latencia vencía el enlace de la cotización solo en
+  // la corrida de Postgres (corrida J, punto 6)
+  const bot = new BotHandler({ client, store: prices, settings, portalStore: portal, portalTimeoutMs: 30_000, burstClock: (() => { let t = Date.now(); return () => (t += 5000); })() });
   const trace: Record<string, unknown> = {};
   let seq = 0;
   const lines = SCRIPT.flatMap((l) => (l.startsWith("@resto ") ? Array.from({ length: 5 }, () => l) : [l]));

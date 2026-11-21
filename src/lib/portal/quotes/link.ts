@@ -18,6 +18,7 @@
  * Todo lo que llama el handler es seguro: si el número no es del portal, si el store falla o tarda, no hace nada (lo
  * registra en el log) y el cotizador sigue igual.
  */
+import { withDeadline, withTimeout } from "../deadline";
 import { companyKey, findCompanies, shortName } from "../bot/companies";
 import { creditWarning } from "../credit/warning";
 import { companyProgressLine } from "../bot/progress";
@@ -105,36 +106,25 @@ function itemsText(quote: Pick<Quote, "items">): string {
   return shown.join("; ");
 }
 
-export function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    const t = setTimeout(() => reject(new Error(`el portal no respondió en ${ms} ms`)), ms);
-    (t as { unref?: () => void }).unref?.();
-    p.then(
-      (v) => {
-        clearTimeout(t);
-        resolve(v);
-      },
-      (e) => {
-        clearTimeout(t);
-        reject(e);
-      },
-    );
-  });
-}
+export { withTimeout };
 
-/** Corre `fn` con el store y el usuario activo del portal; null si el número no es del portal o algo falla. */
-async function safely<T>(what: string, phone: string, opts: HookOptions, fn: (store: PortalStore, user: PortalUser) => Promise<T>): Promise<T | null> {
+/**
+ * Corre `fn` con el store y el usuario activo del portal; null si el número no es del portal o algo falla.
+ *
+ * Con tiempo límite de verdad: al vencer, quien llama sigue (el cotizador no espera), y lo que quedó en marcha ya no
+ * puede escribir ni responder. El store que recibe `fn` rechaza toda llamada nueva y `alive()` pasa a false (las
+ * respuestas al vendedor se descartan). Antes seguía en segundo plano y, tarde, guardaba la propuesta de enlace y
+ * mandaba "¿La cotización … es para …?" en medio del mensaje siguiente (corrida J, punto 6).
+ */
+async function safely<T>(what: string, phone: string, opts: HookOptions, fn: (store: PortalStore, user: PortalUser, alive: () => boolean) => Promise<T>): Promise<T | null> {
   const log = opts.log ?? (() => undefined);
   try {
-    return await withTimeout(
-      (async () => {
-        const store = opts.store ?? (await getPortalStore());
-        const user = await store.getUserByWhatsapp(phone);
-        if (!user || !user.activo) return null;
-        return fn(store, user);
-      })(),
-      opts.timeoutMs ?? PORTAL_HOOK_TIMEOUT_MS,
-    );
+    return await withDeadline(opts.timeoutMs ?? PORTAL_HOOK_TIMEOUT_MS, async (d) => {
+      const store = d.store(opts.store ?? (await getPortalStore()));
+      const user = await store.getUserByWhatsapp(phone);
+      if (!user || !user.activo) return null;
+      return fn(store, user, d.alive);
+    });
   } catch (err) {
     log(`portal: ${what} falló, el cotizador sigue igual: ${(err as Error).message}`);
     return null;
@@ -251,7 +241,10 @@ export interface LinkQuoteInput extends HookOptions {
  * Una cotización que se vuelve a presentar (precio cambiado, renombrada) no se enlaza ni se pregunta dos veces.
  */
 export async function linkQuoteToPortal(input: LinkQuoteInput): Promise<LinkOutcome> {
-  const res = await safely("enlazar la cotización", input.from, input, async (store, user) => {
+  const res = await safely("enlazar la cotización", input.from, input, async (store, user, alive) => {
+    // vencido el tiempo límite no se responde nada (el vendedor ya siguió con el cotizador)
+    const reply = async (body: string) => (alive() ? input.reply(body) : undefined);
+    const replyInteractive = input.replyInteractive && (async (m: InteractiveMessage) => (alive() ? input.replyInteractive!(m) : undefined));
     const now = input.now ?? new Date();
     const q = input.quote;
     const short = shortQuoteNumber(q.number);
@@ -265,7 +258,7 @@ export async function linkQuoteToPortal(input: LinkQuoteInput): Promise<LinkOutc
     const direct = byRuc ?? before;
     if (direct) {
       const opp = await performLink(store, user, direct, { ...base, via: byRuc ? "ruc" : "cliente" }, now);
-      await input.reply(withCredit(`🔗 Cotización *${short}* enlazada a *${direct.razonSocial}* en el portal (${stageLabel(opp.etapa)}).`, await creditWarning(store, direct)));
+      await reply(withCredit(`🔗 Cotización *${short}* enlazada a *${direct.razonSocial}* en el portal (${stageLabel(opp.etapa)}).`, await creditWarning(store, direct)));
       return "linked" as const;
     }
 
@@ -277,7 +270,7 @@ export async function linkQuoteToPortal(input: LinkQuoteInput): Promise<LinkOutc
     await setLinkStep(store, input.from, step);
     const ask = `¿La cotización *${short}* es para *${candidate.razonSocial}* (RUC ${candidate.ruc}) del portal? Responde *enlazar* o ignóralo.`;
     // botón *Enlazar* (id = el comando `enlazar`): pulsarlo o escribirlo es lo mismo
-    await deliverInteractive({ type: "button", body: ask, buttons: portalButtons([{ id: "enlazar", title: "Enlazar" }]) }, { send: input.replyInteractive, sendText: input.reply, log: input.log }, ask);
+    await deliverInteractive({ type: "button", body: ask, buttons: portalButtons([{ id: "enlazar", title: "Enlazar" }]) }, { send: replyInteractive, sendText: reply, log: input.log }, ask);
     return "asked" as const;
   });
   return res ?? "none";

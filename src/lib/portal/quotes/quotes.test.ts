@@ -9,7 +9,7 @@ import { BotHandler } from "../../whatsapp/handler";
 import type { InboundMessage } from "../../whatsapp/webhook";
 import { JsonPortalStore } from "../store";
 import type { Activity, Opportunity, PortalStore, PortalUser } from "../store/types";
-import { confirmQuoteLink, LINK_STATE_KEY, markQuoteForwarded, quoteNumberMatches, setCompanyCreditTerms, shortQuoteNumber } from "./link";
+import { confirmQuoteLink, LINK_STATE_KEY, linkQuoteToPortal, markQuoteForwarded, quoteNumberMatches, setCompanyCreditTerms, shortQuoteNumber } from "./link";
 import { businessDaysBetween, followUpMessage, quoteFollowUpsFor, recordQuoteFollowUp, selectQuoteFollowUps } from "./reminders";
 
 const settings: Settings = SettingsSchema.parse({
@@ -413,5 +413,47 @@ describe("números de cotización", () => {
     expect(quoteNumberMatches("OCTUBRE 2026 - 032", "octubre 2026 - 032")).toBe(true);
     expect(quoteNumberMatches("OCTUBRE 2026 - 032", "033")).toBe(false);
     expect(quoteNumberMatches("COT-0032", "cotización 32")).toBe(true);
+  });
+});
+
+// Corrida J, punto 6: "recorrido del vendedor" (test:pg) fallaba a veces. Contra el pooler remoto, enlazar la cotización
+// pasaba del límite de 4 s; withTimeout dejaba de esperar pero el trabajo seguía y, tarde, guardaba la propuesta y mandaba
+// "¿La cotización … es para …?" fuera de orden (en la respuesta del mensaje siguiente).
+describe("enganche del portal con tiempo límite", () => {
+  function slowStore(store: JsonPortalStore, ms: number): JsonPortalStore {
+    return new Proxy(store, {
+      get(target, prop, receiver) {
+        const v = Reflect.get(target, prop, receiver);
+        if (typeof v !== "function") return v;
+        return async (...args: unknown[]) => {
+          await new Promise((r) => setTimeout(r, ms));
+          return (v as (...a: unknown[]) => unknown).apply(target, args);
+        };
+      },
+    });
+  }
+
+  it("si se pasa del tiempo, no escribe ni responde nada después: el cotizador sigue igual", async () => {
+    await seedPortal();
+    const sent: string[] = [];
+    const logs: string[] = [];
+    const quote = { number: "COT-0099", total: 1000, currency: "USD", items: [], customer: { company: "Transportes Andes del Peru SAC" }, requestText: REQ_NAME } as unknown as Parameters<typeof linkQuoteToPortal>[0]["quote"];
+    const res = await linkQuoteToPortal({ from: FRANK, quote, reply: async (b) => void sent.push(b), replyInteractive: async (m) => void sent.push(m.body), store: slowStore(portal, 30), timeoutMs: 50, log: (m) => logs.push(m) });
+    expect(res).toBe("none");
+    expect(logs.join("\n")).toMatch(/no respondió en 50 ms/);
+    // lo que seguía en marcha termina mucho después del límite: no debe mandar ni guardar nada
+    await new Promise((r) => setTimeout(r, 800));
+    expect(sent).toEqual([]);
+    expect((await portal.getPortalConversation(FRANK))?.state?.[LINK_STATE_KEY]).toBeUndefined();
+  });
+
+  it("sin tiempo límite de por medio, pregunta y guarda la propuesta como siempre", async () => {
+    await seedPortal();
+    const sent: string[] = [];
+    const quote = { number: "COT-0099", total: 1000, currency: "USD", items: [], customer: { company: "Transportes Andes del Peru SAC" }, requestText: REQ_NAME } as unknown as Parameters<typeof linkQuoteToPortal>[0]["quote"];
+    const res = await linkQuoteToPortal({ from: FRANK, quote, reply: async (b) => void sent.push(b), replyInteractive: async (m) => void sent.push(m.body), store: slowStore(portal, 5), timeoutMs: 5000 });
+    expect(res).toBe("asked");
+    expect(sent).toHaveLength(1);
+    expect((await portal.getPortalConversation(FRANK))?.state?.[LINK_STATE_KEY]).toMatchObject({ quoteNumber: "COT-0099" });
   });
 });

@@ -158,6 +158,18 @@ describe("store lento: el cotizador no espera al portal", () => {
     expect(logs.join("\n")).toContain("no pude revisar los avisos pendientes");
   });
 
+  // corrida J, punto 6: vencido el límite, lo que quedó en marcha ya no manda ni borra los avisos (antes los mandaba tarde,
+  // en medio de la respuesta del cotizador, y los borraba)
+  it("avisos pendientes con el límite vencido: no llegan tarde y quedan para el próximo mensaje", async () => {
+    await portal.setPortalConversation(FRANK, { notices: [{ text: "Resumen del día", createdAt: new Date().toISOString() }] });
+    const replies: string[] = [];
+    const handled = await routePortal({ from: FRANK, text: "ok", quoteStep: "review_quote", reply: async (b) => void replies.push(b), store: slow(portal, 300), timeoutMs: 40, log: () => undefined });
+    expect(handled).toBe(false);
+    await new Promise((r) => setTimeout(r, 1200));
+    expect(replies).toEqual([]);
+    expect((await portal.getPortalConversation(FRANK))?.state).toMatchObject({ notices: [{ text: "Resumen del día" }] });
+  });
+
   it("un comando explícito espera al store (no hay a quién más pasárselo)", async () => {
     const replies: string[] = [];
     const handled = await routePortal({ from: FRANK, text: "hoy", reply: async (b) => void replies.push(b), store: slow(portal, 60), timeoutMs: 20 });

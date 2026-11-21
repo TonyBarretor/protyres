@@ -42,7 +42,7 @@ import { askAgain, expirePaused, findPaused, parseResume, pauseStep, resumePause
 import { getPausable, getPendingDrop, getPendingHandler, getPortalCommand, handleReport, registerPausable, registerPendingDrop, registerPendingHandler, replyButtons, type DropContext, type DropReason, type PortalContext } from "./registry";
 import { OFF_TOPIC_REPLY } from "../../guard/off-topic";
 import { isCancel, isQuoterCommand, mediaAccepted, parsePortalCommand, routeIntent, textSignals, type Intent, type RouteRule } from "./router";
-import { withTimeout } from "../quotes/link";
+import { withDeadline, withTimeout } from "../deadline";
 import type { VoiceCatalog } from "../voice/catalog";
 import { deepgramKeyFromEnv } from "../voice/deepgram";
 import { fetchVoice, logTranscript, VOICE_EMPTY, VOICE_TOO_SHORT } from "./report";
@@ -237,13 +237,11 @@ async function deliverNotices(input: PortalRouteInput, store: PortalStore, conv:
 async function deliverNoticesOnly(input: PortalRouteInput): Promise<void> {
   const log = input.log ?? (() => undefined);
   try {
-    await withTimeout(
-      (async () => {
-        const store = input.store ?? (await getPortalStore());
-        await deliverNotices(input, store, await store.getPortalConversation(input.from), log);
-      })(),
-      routeTimeout(input),
-    );
+    // con límite de verdad: si vence, los avisos ni llegan tarde ni se borran (quedan para el próximo mensaje)
+    await withDeadline(routeTimeout(input), async (d) => {
+      const store = d.store(input.store ?? (await getPortalStore()));
+      await deliverNotices(d.quiet(input), store, await store.getPortalConversation(input.from), log);
+    });
   } catch (err) {
     log(`portal: no pude revisar los avisos pendientes: ${(err as Error).message}`);
   }
@@ -345,14 +343,14 @@ export async function routePortal(input: PortalRouteInput): Promise<boolean> {
   let conv = d.conv;
   if (active && conv) {
     const before = conv;
-    conv = await withTimeout(deliverNotices(input, store, conv, log), routeTimeout(input)).catch((err: Error) => {
+    conv = await withDeadline(routeTimeout(input), (d) => deliverNotices(d.quiet(input), d.store(store), before, log)).catch((err: Error) => {
       log(`portal: los avisos pendientes tardaron: ${err.message}`);
       return before;
     });
   }
   const dctx: DropContext = { store, from, now, log };
   if (cancel) {
-    if (active) await withTimeout(dropPending(input, dctx, pendingOf(conv, now), "cancel"), routeTimeout(input)).catch((err: Error) => log(`portal: no pude limpiar el paso pendiente: ${err.message}`));
+    if (active) await withDeadline(routeTimeout(input), (d) => dropPending(d.quiet(input), { ...dctx, store: d.store(store) }, pendingOf(conv, now), "cancel")).catch((err: Error) => log(`portal: no pude limpiar el paso pendiente: ${err.message}`));
     return false;
   }
   if ((cmd?.name === "portal" || portalButton) && !active) {
@@ -363,7 +361,7 @@ export async function routePortal(input: PortalRouteInput): Promise<boolean> {
 
   // procesos en pausa vencidos (48 h): se descartan avisando (antes de responder, como los avisos pendientes)
   try {
-    const expired = await withTimeout(expirePaused(dctx), routeTimeout(input));
+    const expired = await withDeadline(routeTimeout(input), (d) => expirePaused({ ...dctx, store: d.store(store) }));
     if (expired.length) await input.reply(expired.join("\n"));
   } catch (err) {
     log(`portal: no pude revisar los procesos en pausa: ${(err as Error).message}`);
