@@ -232,3 +232,95 @@ export function docClienteOf(doc: string): "ruc" | "dni" | "otro" {
   const n = digits(doc).length;
   return n === 11 ? "ruc" : n === 8 ? "dni" : "otro";
 }
+
+// ── Corrida J, punto 5: pantalla general de ventas (la misma regla en Postgres: pg-portal-store.ts, SALES_HAYSTACK_SQL) ──
+
+/** Letras con tilde que se pliegan al buscar (translate() de Postgres usa las mismas dos listas). */
+export const SALES_FOLD_FROM = "áàäâãéèëêíìïîóòöôõúùüûñç";
+export const SALES_FOLD_TO = "aaaaaeeeeiiiiooooouuuunc";
+const FOLD_MAP = new Map([...SALES_FOLD_FROM].map((c, i) => [c, SALES_FOLD_TO[i]]));
+
+/** btrim() de Postgres: quita solo espacios al inicio y al final (trim() de JS quita también saltos de línea). */
+export const btrim = (s: string): string => s.replace(/^ +| +$/g, "");
+
+/** lower() + translate() como en Postgres: el texto donde se busca y las palabras buscadas pasan por aquí. */
+export function salesFold(s: string): string {
+  return [...s.toLowerCase()].map((c) => FOLD_MAP.get(c) ?? c).join("");
+}
+
+/**
+ * Palabras del texto libre de la pantalla de ventas, plegadas y sin comodines de LIKE (% _ \). Cada una va con su forma de
+ * N° de documento (sin ceros a la izquierda del correlativo: "f003-0100" → "f003-100"), que también vale. Máximo 8.
+ */
+export function salesSearchWords(q: string | null | undefined): { word: string; doc: string }[] {
+  return salesFold(q ?? "")
+    .replace(/[%_\\]/g, " ")
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 8)
+    .map((word) => ({ word, doc: salesFold(normDocumento(word)) }));
+}
+
+/**
+ * Texto donde busca la pantalla de ventas (mismo orden que SALES_HAYSTACK_SQL; los nulos no entran, como concat_ws):
+ * razón social, RUC, RUC del cliente final, razón social del cliente final (padrón), documento tal cual y normalizado,
+ * descripción, marca, diseño, medida y código del producto.
+ */
+export function salesHaystack(s: { ruc: string; razonSocial: string | null; marca: string | null; diseno: string | null; medida: string | null; detalle: { documento: string; descripcion: string; codigoProducto: string | null; clienteFinalRuc: string | null } | null }, clienteFinalNombre: string | null): string {
+  const d = s.detalle;
+  const parts = [s.razonSocial, s.ruc, d?.clienteFinalRuc ?? null, clienteFinalNombre, d?.documento ?? null, d ? normDocumento(d.documento) : "", d?.descripcion ?? null, s.marca, s.diseno, s.medida, d?.codigoProducto ?? null];
+  return salesFold(parts.filter((p): p is string => p !== null).join(" "));
+}
+
+/** Montos en diezmilésimos (entero): las sumas del store JSON dan exactamente lo mismo que las de numeric en Postgres. */
+export const toTenThousandths = (n: number | null | undefined): number => (n === null || n === undefined ? 0 : Math.round(n * 10_000));
+
+/** Diezmilésimos → número con 2 decimales. */
+export const fromTenThousandths = (n: number): number => Math.round(n / 100) / 100;
+
+type SaleMoneyLike = SaleLike & {
+  total: number | null;
+  precioUnitario: number | null;
+  detalle?: { cuentaUnidades: boolean; excluida: boolean; tipoDoc: string; totalUsd: number | null; costoTotal: number | null; margenPct: number | null } | null;
+};
+
+/** Venta en soles de una línea en diezmilésimos: `total` o, si falta, precio × cantidad (redondeado a 2 decimales). */
+export function saleSolesTT(s: SaleMoneyLike): number {
+  if (s.total !== null) return toTenThousandths(s.total);
+  if (s.precioUnitario !== null) return Math.round(s.precioUnitario * s.cantidad * 100) * 100;
+  return 0;
+}
+
+/** true si la línea entra en el margen ponderado: margen numérico en el reporte, o nota de crédito (ver SalesListSummary). */
+export function saleInMargin(s: SaleMoneyLike): boolean {
+  return !!s.detalle && (s.detalle.margenPct !== null || s.detalle.tipoDoc === "nota_credito");
+}
+
+/** Sumas de la pantalla de ventas (en diezmilésimos los montos). Misma cuenta que SALES_TOTALS_SQL en Postgres. */
+export function salesTotals(lines: SaleMoneyLike[]): { lineas: number; neumaticos: number; pen: number; usd: number; mVenta: number; mCosto: number; nc: number; ncPen: number } {
+  const t = { lineas: 0, neumaticos: 0, pen: 0, usd: 0, mVenta: 0, mCosto: 0, nc: 0, ncPen: 0 };
+  let units = 0;
+  for (const s of lines) {
+    const pen = saleSolesTT(s);
+    t.lineas++;
+    units += toTenThousandths(saleUnits(s));
+    t.pen += pen;
+    t.usd += toTenThousandths(s.detalle?.totalUsd);
+    if (saleInMargin(s)) {
+      t.mVenta += pen;
+      t.mCosto += toTenThousandths(s.detalle?.costoTotal);
+    }
+    if (s.detalle?.tipoDoc === "nota_credito") {
+      t.nc++;
+      t.ncPen += pen;
+    }
+  }
+  t.neumaticos = units / 10_000;
+  return t;
+}
+
+/** Margen ponderado en % (2 decimales) a partir de las sumas de venta y costo (en diezmilésimos); null si la venta no es positiva. */
+export function weightedMarginPct(venta: number, costo: number): number | null {
+  if (venta <= 0) return null;
+  return Math.round(((venta - costo) / venta) * 10_000) / 100;
+}

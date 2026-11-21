@@ -5,8 +5,29 @@
 import postgres from "postgres";
 import { serverlessPostgres } from "../../store/pg-options";
 import { isClosedStage, stageProbability, type StageId } from "../stages";
-import { dedupeBy, defaultSince, digits, docClienteOf, groupFleet, normDocumento, normMarca, pageOf, searchRucPrefix, searchTerms, toIsoDate, topMedidas, ttlCache, type FleetAggRow } from "./shared";
-import type { SaleClientDoc, SaleDetail, SaleDocType, SaleLineType, SalesClientRow, SalesQuery, SalesUpload, SalesUploadInput, ServiceType } from "./types";
+import {
+  dedupeBy,
+  defaultSince,
+  digits,
+  docClienteOf,
+  fromTenThousandths,
+  groupFleet,
+  normDocumento,
+  normMarca,
+  pageOf,
+  SALES_FOLD_FROM,
+  SALES_FOLD_TO,
+  salesSearchWords,
+  searchRucPrefix,
+  searchTerms,
+  toIsoDate,
+  topMedidas,
+  toTenThousandths,
+  ttlCache,
+  weightedMarginPct,
+  type FleetAggRow,
+} from "./shared";
+import type { SaleClientDoc, SaleDetail, SaleDocType, SaleLineType, SalesClientRow, SalesClientSort, SalesListClientRow, SalesListFilter, SalesListSummary, SalesQuery, SalesUpload, SalesUploadInput, ServiceType } from "./types";
 import type { BestCompaniesQuery, BestCompany, Nivel, RankingValidation, RankingValidationInput, ScoreDetail, ScoreInput, ScoreInputQuery, ScoreRun, ScoreRunInput, ScoreUpdate, ValidationAnswer } from "./types";
 import type {
   Activity,
@@ -316,6 +337,42 @@ function saleRow(r: SaleInput): Record<string, unknown> {
  * Postgres le llegaba "s+" (no quitaba los espacios de "F NDI-00000001"; lo encontró la prueba de paridad de ventas-odoo).
  */
 const DOC_NORM_SQL = "regexp_replace(upper(regexp_replace(coalesce(documento, ''), '[[:space:]]+', '', 'g')), '-0+([0-9])', '-\\1')";
+
+/**
+ * Corrida J, punto 5: texto donde busca la pantalla de ventas (misma regla que salesHaystack en shared.ts), sobre
+ * `sales s left join companies cf on cf.id = s.cliente_final_company_id`.
+ */
+const SALES_HAYSTACK_SQL = `translate(lower(concat_ws(' ', s.razon_social, s.ruc, s.cliente_final_ruc, cf.razon_social, s.documento, ${DOC_NORM_SQL.replace("coalesce(documento,", "coalesce(s.documento,")},
+  s.descripcion, s.marca, s.diseno, s.medida, s.codigo_producto)), '${SALES_FOLD_FROM}', '${SALES_FOLD_TO}')`;
+
+/** Venta en soles de una línea (saleSolesTT en shared.ts). */
+const SALE_SOLES_SQL = "coalesce(s.total, round(s.precio_unitario * s.cantidad, 2), 0)";
+/** Línea que entra en el margen ponderado (saleInMargin en shared.ts). */
+const SALE_IN_MARGIN_SQL = "s.line_key is not null and (s.margen_pct is not null or s.tipo_doc = 'nota_credito')";
+
+/** Sumas de la pantalla de ventas (salesTotals en shared.ts); se leen con pgTotals. */
+const SALES_TOTALS_SQL = `count(*)::int as lineas,
+  coalesce(sum(case when s.cuenta_unidades then s.cantidad else 0 end), 0) as neum,
+  coalesce(sum(${SALE_SOLES_SQL}), 0) as pen,
+  coalesce(sum(coalesce(s.total_usd, 0)), 0) as usd,
+  coalesce(sum(case when ${SALE_IN_MARGIN_SQL} then ${SALE_SOLES_SQL} else 0 end), 0) as m_venta,
+  coalesce(sum(case when ${SALE_IN_MARGIN_SQL} then coalesce(s.costo_total, 0) else 0 end), 0) as m_costo,
+  (count(*) filter (where s.tipo_doc = 'nota_credito'))::int as nc,
+  coalesce(sum(${SALE_SOLES_SQL}) filter (where s.tipo_doc = 'nota_credito'), 0) as nc_pen`;
+
+function pgTotals(r: Row | undefined): { lineas: number; neumaticos: number; pen: number; usd: number; mVenta: number; mCosto: number; nc: number; ncPen: number } {
+  const tt = (v: unknown) => toTenThousandths(Number(v ?? 0));
+  return {
+    lineas: Number(r?.lineas ?? 0),
+    neumaticos: tt(r?.neum) / 10_000,
+    pen: tt(r?.pen),
+    usd: tt(r?.usd),
+    mVenta: tt(r?.m_venta),
+    mCosto: tt(r?.m_costo),
+    nc: Number(r?.nc ?? 0),
+    ncPen: tt(r?.nc_pen),
+  };
+}
 
 /** Columnas que una carga posterior actualiza (todas menos id, created_at, line_key y las del cliente final). */
 const SALE_UPDATE_COLS = Object.keys(saleRow({ fecha: "2000-01-01", ruc: "", cantidad: 0 })).filter((c) => c !== "line_key");
@@ -999,6 +1056,119 @@ export class PgPortalStore implements PortalStore {
       lineas: Number(r.lineas ?? 0),
       ultimaFecha: String(r.ultima),
     }));
+  }
+
+  /**
+   * Condición del filtro de la pantalla de ventas sobre `sales s left join companies cf on cf.id = s.cliente_final_company_id`.
+   * Misma regla que salesListMatches del store JSON.
+   */
+  private salesListWhere(f: SalesListFilter): Fragment {
+    const sql = this.sql;
+    const conds = [f.demo ? sql`s.is_demo` : sql`not s.is_demo`, sql`not s.excluida`];
+    if (f.medida) conds.push(sql`s.medida = ${f.medida}`);
+    const marca = f.marca?.trim().toUpperCase();
+    if (marca) conds.push(sql`upper(btrim(s.marca)) = ${marca}`);
+    if (f.tipoLinea) conds.push(sql`coalesce(s.tipo_linea, 'neumatico') = ${f.tipoLinea}`);
+    if (f.vendedor) conds.push(sql`s.vendedor = ${f.vendedor}`);
+    if (f.desde) conds.push(sql`s.fecha >= ${f.desde}::date`);
+    if (f.hasta) conds.push(sql`s.fecha <= ${f.hasta}::date`);
+    if (f.docRucs) {
+      const r = f.docRucs.map(digits);
+      conds.push(sql`s.ruc in ${sql(r.length ? r : [""])}`);
+    }
+    if (f.sinClienteFinal) conds.push(sql`s.cliente_final_ruc is null`);
+    for (const w of salesSearchWords(f.q)) {
+      const hay = sql.unsafe(SALES_HAYSTACK_SQL);
+      conds.push(w.doc === w.word ? sql`${hay} like ${`%${w.word}%`}` : sql`(${hay} like ${`%${w.word}%`} or ${hay} like ${`%${w.doc}%`})`);
+    }
+    return where(sql, conds);
+  }
+
+  async listSalesLines(f: SalesListFilter, page: { limit: number; offset: number }): Promise<Sale[]> {
+    const sql = this.sql;
+    const rows = await sql`
+      select s.*, s.fecha::text as fecha, s.vencimiento::text as vencimiento
+      from sales s left join companies cf on cf.id = s.cliente_final_company_id
+      where ${this.salesListWhere(f)}
+      order by s.fecha desc, s.id desc limit ${page.limit} offset ${page.offset}`;
+    return rows.map(toSale);
+  }
+
+  async salesListSummary(f: SalesListFilter): Promise<SalesListSummary> {
+    const sql = this.sql;
+    const [r] = await sql`
+      select ${sql.unsafe(SALES_TOTALS_SQL)}, count(distinct coalesce(s.cliente_final_ruc, s.ruc))::int as clientes
+      from sales s left join companies cf on cf.id = s.cliente_final_company_id
+      where ${this.salesListWhere(f)}`;
+    const t = pgTotals(r);
+    return {
+      lineas: t.lineas,
+      neumaticos: t.neumaticos,
+      totalPen: fromTenThousandths(t.pen),
+      totalUsd: fromTenThousandths(t.usd),
+      margenPct: weightedMarginPct(t.mVenta, t.mCosto),
+      clientes: Number(r?.clientes ?? 0),
+      notasCredito: t.nc,
+      notasCreditoPen: fromTenThousandths(t.ncPen),
+    };
+  }
+
+  async salesListByClient(f: SalesListFilter, opts: { sort: SalesClientSort; dir: "asc" | "desc"; limit: number; offset: number }): Promise<{ rows: SalesListClientRow[]; total: number }> {
+    const sql = this.sql;
+    const dir = opts.dir === "asc" ? "asc" : "desc";
+    const key: Record<SalesClientSort, string> = {
+      neumaticos: `g.neum ${dir}`,
+      total: `g.pen ${dir}`,
+      ultima: `g.ultima ${dir}`,
+      cliente: `translate(lower(coalesce(c.razon_social, g.doc_name, g.ruc)), '${SALES_FOLD_FROM}', '${SALES_FOLD_TO}') collate "C" ${dir}`,
+      // sin margen (venta no positiva), al final en los dos sentidos
+      margen: `case when g.m_venta > 0 then round((g.m_venta - g.m_costo) / g.m_venta, 10) end ${dir} nulls last`,
+    };
+    const rows = await sql`
+      with g as (
+        select coalesce(s.cliente_final_ruc, s.ruc) as ruc, ${sql.unsafe(SALES_TOTALS_SQL)}, max(s.fecha)::text as ultima,
+          max(s.razon_social) filter (where s.cliente_final_ruc is null) as doc_name
+        from sales s left join companies cf on cf.id = s.cliente_final_company_id
+        where ${this.salesListWhere(f)}
+        group by 1
+      )
+      select g.*, c.id as company_id, coalesce(c.razon_social, g.doc_name) as razon_social, count(*) over () as n
+      from g left join companies c on c.ruc = g.ruc
+      order by ${sql.unsafe(key[opts.sort])}, g.ruc collate "C" asc
+      limit ${opts.limit} offset ${opts.offset}`;
+    let total = Number(rows[0]?.n ?? 0);
+    if (!rows.length && opts.offset > 0) {
+      const [c] = await sql`select count(distinct coalesce(s.cliente_final_ruc, s.ruc))::int as n from sales s left join companies cf on cf.id = s.cliente_final_company_id where ${this.salesListWhere(f)}`;
+      total = Number(c?.n ?? 0);
+    }
+    return {
+      total,
+      rows: rows.map((r) => {
+        const t = pgTotals(r);
+        return {
+          ruc: String(r.ruc),
+          companyId: num(r.company_id),
+          razonSocial: str(r.razon_social),
+          neumaticos: t.neumaticos,
+          totalPen: fromTenThousandths(t.pen),
+          totalUsd: fromTenThousandths(t.usd),
+          margenPct: weightedMarginPct(t.mVenta, t.mCosto),
+          ultimaFecha: String(r.ultima),
+          lineas: t.lineas,
+        };
+      }),
+    };
+  }
+
+  async salesFilterOptions(demo: boolean): Promise<{ marcas: string[]; vendedores: string[] }> {
+    const sql = this.sql;
+    const base = sql`from sales where is_demo = ${demo} and not excluida`;
+    const [marcas, vendedores] = await Promise.all([
+      sql`select distinct upper(btrim(marca)) as v ${base} and btrim(coalesce(marca, '')) <> ''`,
+      sql`select distinct vendedor as v ${base} and btrim(coalesce(vendedor, '')) <> ''`,
+    ]);
+    const sorted = (rows: Row[]) => rows.map((r) => String(r.v)).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+    return { marcas: sorted(marcas), vendedores: sorted(vendedores) };
   }
 
   async recordSalesUpload(input: SalesUploadInput): Promise<SalesUpload> {

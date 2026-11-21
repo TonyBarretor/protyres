@@ -420,6 +420,83 @@ export interface SalesRepo {
   salesByClient(): Promise<SalesClientRow[]>;
   recordSalesUpload(input: SalesUploadInput): Promise<SalesUpload>;
   listSalesUploads(limit?: number): Promise<SalesUpload[]>;
+  /**
+   * Corrida J, punto 5 (pantalla general de ventas): una página de líneas según el filtro, la más reciente primero
+   * (fecha, id). Sin las excluidas (ventas anuladas). Pagina en la base: no trae las demás.
+   */
+  listSalesLines(filter: SalesListFilter, page: { limit: number; offset: number }): Promise<Sale[]>;
+  /** Resumen del filtro (calculado en la base): líneas, neumáticos netos, totales S/ y US$, margen ponderado, clientes. */
+  salesListSummary(filter: SalesListFilter): Promise<SalesListSummary>;
+  /** Vista "Por cliente": una fila por RUC al que cuenta la línea (cliente final si lo hay), ordenada y paginada en la base. */
+  salesListByClient(filter: SalesListFilter, opts: { sort: SalesClientSort; dir: "asc" | "desc"; limit: number; offset: number }): Promise<{ rows: SalesListClientRow[]; total: number }>;
+  /** Marcas y vendedores distintos de las ventas (reales o demo), para los filtros; orden alfabético. */
+  salesFilterOptions(demo: boolean): Promise<{ marcas: string[]; vendedores: string[] }>;
+}
+
+/**
+ * Filtro de la pantalla general de ventas (/portal/ventas/lista). Todos los campos se combinan (y). Las líneas excluidas
+ * (ventas anuladas) nunca salen.
+ */
+export interface SalesListFilter {
+  /**
+   * Texto libre: cada palabra tiene que aparecer (sin mayúsculas ni tildes) en la razón social, el RUC, el RUC o la razón
+   * social del cliente final, el N° de documento (también sin ceros a la izquierda del correlativo), la descripción, la
+   * marca, el diseño, la medida o el código del producto.
+   */
+  q?: string;
+  /** Medida canónica (canonicalMedida). */
+  medida?: string;
+  /** Marca, sin distinguir mayúsculas. */
+  marca?: string;
+  tipoLinea?: SaleLineType;
+  /** Vendedor tal como viene en la venta. */
+  vendedor?: string;
+  /** Fechas inclusive (AAAA-MM-DD). */
+  desde?: IsoDate;
+  hasta?: IsoDate;
+  /** Solo líneas de estos RUC de documento (la pantalla pasa los de sales.leasingRucs para "solo leasing sin cliente final"). */
+  docRucs?: string[];
+  /** Solo líneas sin cliente final asignado. */
+  sinClienteFinal?: boolean;
+  /** true: solo las ventas demo; si no, solo las reales (nunca se mezclan). */
+  demo?: boolean;
+}
+
+/**
+ * Resumen de un filtro. Montos en soles (`total`, o precio × cantidad en las ventas sin total) y en dólares (`total_usd`
+ * del reporte de Odoo): las notas de crédito restan porque vienen con signo.
+ * Margen ponderado (en %, 2 decimales) = (Σ venta S/ − Σ costo S/) ÷ Σ venta S/ sobre las líneas con margen numérico en el
+ * reporte y las notas de crédito (que revierten venta y costo, o solo venta si corrigen el monto). Equivale al margen de
+ * cada línea ponderado por su venta en soles. Los servicios "SERVICIO SIN COSTO" no entran (darían 100 %). null si la
+ * venta de esas líneas no es positiva.
+ */
+export interface SalesListSummary {
+  lineas: number;
+  neumaticos: number;
+  totalPen: number;
+  totalUsd: number;
+  margenPct: number | null;
+  clientes: number;
+  notasCredito: number;
+  /** Suma de las notas de crédito en soles (negativa). */
+  notasCreditoPen: number;
+}
+
+export type SalesClientSort = "neumaticos" | "total" | "margen" | "ultima" | "cliente";
+
+export interface SalesListClientRow {
+  /** RUC al que cuentan las líneas (el del cliente final si se asignó). */
+  ruc: string;
+  /** Empresa del padrón con ese RUC (para enlazar su ficha), o null. */
+  companyId: number | null;
+  /** Razón social del padrón o, si no está, la mayor de sus documentos (sin las de leasing); null si no hay ninguna. */
+  razonSocial: string | null;
+  neumaticos: number;
+  totalPen: number;
+  totalUsd: number;
+  margenPct: number | null;
+  ultimaFecha: IsoDate;
+  lineas: number;
 }
 
 export interface SalesQuery {
