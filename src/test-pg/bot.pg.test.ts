@@ -69,6 +69,17 @@ async function seed(portal: PortalStore, prices: PriceStore): Promise<void> {
   await recalcScores(portal, loadPortalConfig().scoring, { prices });
 }
 
+/**
+ * La mitad JSON y la de Postgres deben correr el mismo día de Lima: el guion dice "20/11" y "hoy", y si la medianoche cae
+ * entre las dos, la entrega pasa a leerse como el año siguiente y la agenda cambia de día (pasó 1 vez en 30 corridas).
+ * No se usa un reloj falso porque Postgres sella filas con now() del servidor. Cerca de la medianoche se espera a que pase.
+ */
+async function notNearLimaMidnight(windowMs = 10 * 60_000): Promise<void> {
+  const lima = new Date(Date.now() - 5 * 3600_000); // Lima es UTC−5 todo el año
+  const msToMidnight = 86_400_000 - ((lima.getUTCHours() * 60 + lima.getUTCMinutes()) * 60_000 + lima.getUTCSeconds() * 1000 + lima.getUTCMilliseconds());
+  if (msToMidnight < windowMs) await new Promise((r) => setTimeout(r, msToMidnight + 5_000));
+}
+
 /** Lo que el vendedor (y otros números) reciben, sin lo que cambia de una corrida a otra (enlaces con token). */
 function visible(m: OutboundMessage): unknown {
   // la hora del mensaje ("16:51") cambia entre la corrida JSON y la de Postgres: las horas de Lima de estos minutos
@@ -207,6 +218,7 @@ afterAll(async () => {
 
 describe("bot completo: JSON y Postgres responden lo mismo", () => {
   it("recorrido del vendedor", async () => {
+    await notNearLimaMidnight();
     const jsonPortal = JsonPortalStore.memory();
     const jsonPrices = JsonStore.memory();
     await seed(jsonPortal, jsonPrices);
@@ -238,7 +250,10 @@ describe("bot completo: JSON y Postgres responden lo mismo", () => {
     expect((await pgPrices.usageSummary(new Date(Date.now() - 3600_000))).find((r) => r.phone === FRANK && r.purpose === "voz")?.audioSeconds).toBe(14);
     expect((await pgPrices.listMessages(FRANK, 500)).length).toBeGreaterThan(SCRIPT.length);
     expect((await pgPortal.listVocabulary()).map((v) => v.term)).toContain("flamita");
-  });
+    // Límite propio: el guion completo hace cientos de idas y vueltas al pooler remoto y, con los pasos de la corrida J
+    // (placa, empresas, citas), tarda 90–110 s; con el límite global de 120 s fallaba por tiempo 3 de cada 30 veces.
+    // Incluye la espera de notNearLimaMidnight (hasta 10 min).
+  }, 900_000);
 });
 
 describe("vendedores que se asignan la misma empresa a la vez", () => {
