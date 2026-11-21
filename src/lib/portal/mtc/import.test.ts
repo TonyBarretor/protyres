@@ -79,3 +79,51 @@ describe("importMtc (fixtures)", () => {
     expect(await store.countFleet()).toBe(10);
   });
 });
+
+describe("corrida J: empresas fuera del padrón", () => {
+  it("importa una empresa puntual por RUC aunque tenga menos unidades que el umbral, y solo esa", async () => {
+    const store = JsonPortalStore.memory();
+    const s = await importMtc({ files, config: config(3), rules, store, onlyRucs: ["20555555555"] });
+    expect(s.empresas).toBe(1);
+    expect(s.faltantes).toEqual([]);
+    expect(await store.countCompanies()).toBe(1);
+    const c = (await store.getCompanyByRuc("20555555555"))!;
+    expect(c.unidades).toBe(1);
+    expect(await store.listFleet(c.id)).toHaveLength(1);
+    expect(formatImportSummary(s)).toContain("Empresas pedidas por RUC: 20555555555");
+    // un RUC que no está en el padrón vigente: no escribe nada y lo dice
+    const none = await importMtc({ files, config: config(3), rules, store, onlyRucs: ["20600000013"] });
+    expect(none.empresas).toBe(0);
+    expect(none.faltantes).toEqual(["20600000013"]);
+    expect(formatImportSummary(none)).toContain("No están en el padrón vigente: 20600000013");
+    expect(await store.countCompanies()).toBe(1);
+  });
+
+  it("la reimportación no toca las empresas creadas a mano; si llega su RUC se fusiona y conserva lo cargado a mano", async () => {
+    const store = JsonPortalStore.memory();
+    const frank = await store.upsertUser({ nombre: "Frank Prueba", whatsapp: "51900000001", rol: "vendedor" });
+    const andinos = (await store.createManualCompany({ ruc: "20111111111", razonSocial: "ANDINOS (A MANO)", sector: "carga", departamento: "LIMA", unidades: 2, createdBy: frank.id })).company;
+    const sol = (await store.createManualCompany({ ruc: "20600000013", razonSocial: "TRANSPORTES SOL SAC", sector: "carga", departamento: "JUNIN", unidades: 3, createdBy: frank.id })).company;
+    for (const [c, placa] of [[andinos, "MAN111"], [sol, "MAN222"]] as const) await store.addManualVehicle(c.id, { placa, marca: "VOLVO", clase: "CAMION", ejes: 2, llantas: 6, medida: "11R22.5" });
+    await store.addContact({ companyId: andinos.id, nombre: "Rosa Díaz", createdBy: frank.id });
+    const opp = await store.createOpportunity({ companyId: andinos.id, ownerUserId: frank.id, createdBy: frank.id });
+
+    const s = await importMtc({ files, config: config(3), rules, store });
+    expect(s.fusionadas).toEqual(["20111111111"]);
+    expect(formatImportSummary(s)).toContain("Empresas creadas a mano que llegaron en el padrón (fusionadas): 20111111111");
+    const merged = (await store.getCompany(andinos.id))!;
+    expect(merged).toMatchObject({ origen: "mtc", razonSocial: "TRANSPORTES ANDINOS DEMO S.A.C.", unidades: 4, ownerUserId: frank.id, createdBy: frank.id });
+    const placas = (await store.listFleet(andinos.id)).map((v) => `${v.placa}:${v.origen}`);
+    expect(placas).toEqual(["AAA111:carga", "AAA112:carga", "AAA113:carga", "MAN111:manual", "P2B001:pasajeros"]);
+    expect((await store.listContacts(andinos.id)).map((c) => c.nombre)).toEqual(["Rosa Díaz"]);
+    expect((await store.getOpenOpportunity(andinos.id))?.id).toBe(opp.id);
+    expect((await store.listActivities({ companyId: andinos.id })).map((a) => a.texto)).toEqual([expect.stringContaining("apareció en el padrón del MTC")]);
+    // la que no está en el padrón: intacta
+    expect(await store.getCompany(sol.id)).toMatchObject({ origen: "manual", razonSocial: "TRANSPORTES SOL SAC", departamento: "JUNIN", unidades: 3, ownerUserId: frank.id });
+    expect((await store.listFleet(sol.id)).map((v) => v.placa)).toEqual(["MAN222"]);
+    // otra vez: idempotente, ya no hay nada que fusionar ni se borra lo cargado a mano
+    const again = await importMtc({ files, config: config(3), rules, store });
+    expect(again.fusionadas).toEqual([]);
+    expect((await store.listFleet(andinos.id)).map((v) => v.placa)).toContain("MAN111");
+  });
+});

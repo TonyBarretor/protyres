@@ -114,7 +114,7 @@ describe("cotización enlazada", () => {
     await h.say(REQ_RUC);
     const out = await h.say("ok");
     // sin fila de crédito = sin evaluar: el mismo mensaje del portal suma el aviso (C4)
-    expect(out.at(-1)).toBe(`🔗 Cotización *0001* enlazada a *TRANSPORTES ANDES DEL PERU S.A.C.* en el portal (Prospecto).\n${WARN_SIN_EVALUAR}`);
+    expect(out.at(-1)).toBe(`🔗 Cotización *0001* enlazada a *TRANSPORTES ANDES DEL PERU S.A.C.* en el portal (Prospecto). Quedó asignada a ti.\n${WARN_SIN_EVALUAR}`);
     expect(out.slice(0, -1).some((m) => m.startsWith("[document]"))).toBe(true);
     const opp = (await portal.getOpenOpportunity(andesId, frank.id))!;
     expect(opp).toMatchObject({ ownerUserId: frank.id, quoteNumber: "COT-0001", etapa: "prospecto" });
@@ -135,7 +135,7 @@ describe("cotización enlazada", () => {
     await h.say(REQ_RUC);
     let out = await h.say("ok");
     expect(out.at(-1)).toBe(
-      "🔗 Cotización *0001* enlazada a *TRANSPORTES ANDES DEL PERU S.A.C.* en el portal (Prospecto).\n⛔ Crédito RECHAZADO para *TRANSPORTES ANDES DEL PERU*: no ofrezcas plazo sin revisar la ficha del portal.",
+      "🔗 Cotización *0001* enlazada a *TRANSPORTES ANDES DEL PERU S.A.C.* en el portal (Prospecto). Quedó asignada a ti.\n⛔ Crédito RECHAZADO para *TRANSPORTES ANDES DEL PERU*: no ofrezcas plazo sin revisar la ficha del portal.",
     );
 
     for (const estado of ["aprobado", "en_evaluacion"] as const) {
@@ -144,7 +144,7 @@ describe("cotización enlazada", () => {
       h = await harness(portal);
       await h.say(REQ_RUC);
       out = await h.say("ok");
-      expect(out.at(-1)).toBe("🔗 Cotización *0001* enlazada a *TRANSPORTES ANDES DEL PERU S.A.C.* en el portal (Prospecto).");
+      expect(out.at(-1)).toBe("🔗 Cotización *0001* enlazada a *TRANSPORTES ANDES DEL PERU S.A.C.* en el portal (Prospecto). Quedó asignada a ti.");
     }
   });
 
@@ -197,7 +197,7 @@ describe("cotización enlazada", () => {
     const { ctx, replies } = ctxFor(portal, frank);
     expect(await confirmQuoteLink(ctx, "")).toBe(true);
     // corrida D: termina con la línea de avance (la empresa de la prueba no tiene dueño ni contactos: pasos omitidos)
-    expect(replies).toEqual([`🔗 Listo: cotización *0001* enlazada a *TRANSPORTES ANDES DEL PERU S.A.C.* (Prospecto).\n${WARN_SIN_EVALUAR}\n✅ Paso 5 de 7 con TRANSPORTES ANDES DEL PERU: cotización enlazada (4 pasos omitidos). Sigue: registrar la orden de compra.`]);
+    expect(replies).toEqual([`🔗 Listo: cotización *0001* enlazada a *TRANSPORTES ANDES DEL PERU S.A.C.* (Prospecto). Quedó asignada a ti.\n${WARN_SIN_EVALUAR}\n✅ Paso 5 de 7 con TRANSPORTES ANDES DEL PERU: cotización enlazada (3 pasos omitidos). Sigue: registrar la orden de compra.`]);
     expect((await portal.getOpenOpportunity(andesId, frank.id))?.quoteNumber).toBe("COT-0001");
     expect((await portal.getPortalConversation(FRANK))?.state?.[LINK_STATE_KEY]).toBeUndefined();
     expect(await confirmQuoteLink(ctx, "")).toBe(false); // ya no hay propuesta
@@ -228,7 +228,7 @@ describe("cotización enlazada", () => {
     const { ctx, replies } = ctxFor(portal, frank);
     expect(await markQuoteForwarded(ctx, "la cotización 001")).toBe(true);
     // corrida D: termina con la línea de avance
-    expect(replies[0]).toBe("📤 Cotización *0001* de *TRANSPORTES ANDES DEL PERU* registrada como enviada (Cotización enviada).\n✅ Paso 5 de 7 con TRANSPORTES ANDES DEL PERU: cotización enviada (pasos 1 y 2 omitidos). Sigue: registrar la orden de compra.");
+    expect(replies[0]).toBe("📤 Cotización *0001* de *TRANSPORTES ANDES DEL PERU* registrada como enviada (Cotización enviada).\n✅ Paso 5 de 7 con TRANSPORTES ANDES DEL PERU: cotización enviada (paso 2 omitido). Sigue: registrar la orden de compra.");
     expect((await portal.getOpenOpportunity(andesId, frank.id))?.etapa).toBe("cotizacion_enviada");
     expect((await quoteActs(portal, "cotizacion_enviada"))[0].data).toMatchObject({ via: "whatsapp" });
     expect(await markQuoteForwarded(ctx, "999")).toBe(false);

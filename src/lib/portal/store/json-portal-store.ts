@@ -33,6 +33,9 @@ import type {
   FleetVehicle,
   FleetVehicleInput,
   IsoDate,
+  ManualCompanyInput,
+  ManualVehicleInput,
+  ManualVehicleResult,
   CurrentLoginToken,
   LoginToken,
   MarcaCount,
@@ -400,6 +403,9 @@ export class JsonPortalStore implements PortalStore {
   // ── índices ──
 
   private putCompany(c: Company): void {
+    // archivos anteriores a la corrida J: empresas del padrón
+    c.origen ??= "mtc";
+    c.createdBy ??= null;
     this.companies.set(c.id, c);
     this.companyByRuc.set(c.ruc, c.id);
   }
@@ -456,15 +462,22 @@ export class JsonPortalStore implements PortalStore {
   async upsertCompanies(batch: CompanyInput[]): Promise<UpsertCompaniesResult> {
     const now = new Date();
     const res: UpsertCompaniesResult = { inserted: 0, updated: 0, ids: {} };
+    const merged: string[] = [];
     for (const input of dedupeBy(batch, (c) => digits(c.ruc))) {
       const ruc = digits(input.ruc);
       if (!ruc) continue;
       const id = this.companyByRuc.get(ruc);
       const prev = id === undefined ? undefined : this.companies.get(id);
       if (prev) {
+        // corrida J: la empresa creada a mano aparece en el padrón: se fusiona; sector y departamento a mano si el padrón no trae
+        const manual = prev.origen === "manual";
+        if (manual) {
+          merged.push(ruc);
+          prev.origen = "mtc";
+        }
         prev.razonSocial = input.razonSocial;
-        if (input.sector !== undefined) prev.sector = input.sector;
-        if (input.departamento !== undefined) prev.departamento = input.departamento;
+        if (input.sector !== undefined && !(manual && input.sector === null)) prev.sector = input.sector;
+        if (input.departamento !== undefined && !(manual && input.departamento === null)) prev.departamento = input.departamento;
         if (input.unidades !== undefined) prev.unidades = input.unidades;
         if (input.llantasPiso !== undefined) prev.llantasPiso = input.llantasPiso;
         if (input.antiguedadMedia !== undefined) prev.antiguedadMedia = input.antiguedadMedia;
@@ -489,6 +502,8 @@ export class JsonPortalStore implements PortalStore {
           scoreDetalle: null,
           scoreAt: null,
           creditTermsDays: null,
+          origen: "mtc",
+          createdBy: null,
           createdAt: now,
           updatedAt: now,
         };
@@ -497,8 +512,42 @@ export class JsonPortalStore implements PortalStore {
         res.ids[ruc] = c.id;
       }
     }
+    if (merged.length) res.merged = merged.sort();
     this.changed();
     return res;
+  }
+
+  async createManualCompany(input: ManualCompanyInput): Promise<{ company: Company; created: boolean }> {
+    const ruc = digits(input.ruc);
+    if (!/^\d{11}$/.test(ruc)) throw new Error(`RUC inválido: ${input.ruc}`);
+    const id = this.companyByRuc.get(ruc);
+    if (id !== undefined) return { company: copy(this.companies.get(id)!), created: false };
+    const now = new Date();
+    const c: Company = {
+      id: this.nextId("companies"),
+      ruc,
+      razonSocial: input.razonSocial.trim(),
+      sector: input.sector,
+      departamento: input.departamento,
+      unidades: Math.max(0, Math.round(input.unidades ?? 0)),
+      llantasPiso: 0,
+      antiguedadMedia: null,
+      esCliente: false,
+      ownerUserId: input.createdBy,
+      temperatura: null,
+      score: null,
+      nivel: null,
+      scoreDetalle: null,
+      scoreAt: null,
+      creditTermsDays: null,
+      origen: "manual",
+      createdBy: input.createdBy,
+      createdAt: now,
+      updatedAt: now,
+    };
+    this.putCompany(c);
+    this.changed();
+    return { company: copy(c), created: true };
   }
 
   async getCompany(id: number): Promise<Company | null> {
@@ -627,7 +676,7 @@ export class JsonPortalStore implements PortalStore {
     const keep = new Set(vehicles.map((v) => fleetKey(normPlaca(v.placa), v.origen)));
     let removed = 0;
     for (const key of [...(this.fleetByCompany.get(companyId) ?? [])]) {
-      if (keep.has(key)) continue;
+      if (keep.has(key) || this.fleet.get(key)?.origen === "manual") continue;
       this.fleet.delete(key);
       this.fleetByCompany.get(companyId)?.delete(key);
       removed++;
@@ -644,7 +693,7 @@ export class JsonPortalStore implements PortalStore {
       const keys = this.fleetByCompany.get(companyId);
       if (!keys) continue;
       for (const key of [...keys]) {
-        if (keepSet.has(key)) continue;
+        if (keepSet.has(key) || this.fleet.get(key)?.origen === "manual") continue;
         this.fleet.delete(key);
         keys.delete(key);
         removed++;
@@ -657,15 +706,61 @@ export class JsonPortalStore implements PortalStore {
     return removed;
   }
 
+  async addManualVehicle(companyId: number, input: ManualVehicleInput): Promise<ManualVehicleResult> {
+    const placa = normPlaca(input.placa);
+    if (!placa) throw new Error("Falta la placa");
+    const key = fleetKey(placa, "manual");
+    const prev = this.fleet.get(key);
+    if (prev && prev.companyId !== companyId) return { ok: false, reason: "otra_empresa", companyId: prev.companyId };
+    const v: FleetVehicle = {
+      id: prev?.id ?? this.nextId("fleet"),
+      companyId,
+      placa,
+      marca: input.marca,
+      clase: input.clase,
+      anio: input.anio ?? null,
+      ejes: input.ejes,
+      llantas: input.llantas,
+      llantasFuente: null,
+      pesoBruto: null,
+      chasis: null,
+      departamento: null,
+      origen: "manual",
+      medidaProbable: input.medida,
+      confianza: input.medida ? "alta" : null,
+    };
+    this.putVehicle(v);
+    this.changed();
+    return { ok: true, vehicle: copy(v), updated: !!prev };
+  }
+
+  async deleteManualVehicle(companyId: number, vehicleId: number): Promise<boolean> {
+    for (const key of this.fleetByCompany.get(companyId) ?? []) {
+      const v = this.fleet.get(key);
+      if (!v || v.id !== vehicleId || v.origen !== "manual") continue;
+      this.fleet.delete(key);
+      this.fleetByCompany.get(companyId)?.delete(key);
+      this.marcasCache = null;
+      this.changed();
+      return true;
+    }
+    return false;
+  }
+
   async listFleet(companyId: number): Promise<FleetVehicle[]> {
     const keys = this.fleetByCompany.get(companyId) ?? new Set<string>();
     return [...keys].map((k) => copy(this.fleet.get(k)!)).sort((a, b) => a.placa.localeCompare(b.placa));
+  }
+
+  async listManualVehicles(companyId: number): Promise<FleetVehicle[]> {
+    return (await this.listFleet(companyId)).filter((v) => v.origen === "manual");
   }
 
   async fleetByBrand(companyId: number): Promise<FleetGroup[]> {
     const agg = new Map<string, FleetAggRow>();
     for (const key of this.fleetByCompany.get(companyId) ?? []) {
       const v = this.fleet.get(key)!;
+      if (v.origen === "manual") continue;
       const marca = v.marca ? normMarca(v.marca) : null;
       const k = [marca, v.clase, v.medidaProbable, v.confianza].join("\u0000");
       let r = agg.get(k);
@@ -691,7 +786,10 @@ export class JsonPortalStore implements PortalStore {
     const out: CompanyOriginCounts[] = [];
     for (const c of this.companies.values()) {
       const r: CompanyOriginCounts = { companyId: c.id, ruc: c.ruc, razonSocial: c.razonSocial, sector: c.sector, carga: 0, pasajeros: 0 };
-      for (const key of this.fleetByCompany.get(c.id) ?? []) r[this.fleet.get(key)!.origen]++;
+      for (const key of this.fleetByCompany.get(c.id) ?? []) {
+        const origen = this.fleet.get(key)!.origen;
+        if (origen !== "manual") r[origen]++; // los cargados a mano no cuentan para el sector (dato del padrón)
+      }
       out.push(r);
     }
     return out.sort((a, b) => a.companyId - b.companyId);

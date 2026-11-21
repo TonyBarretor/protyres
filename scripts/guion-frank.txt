@@ -111,9 +111,73 @@ cliente final F003-96005 quimera prueba
 Fenixway Valor 89 295/80R22.5 x4 para Transportes Quimera Prueba RUC 20999000077
 @espera-texto Última venta a este cliente: Valor 89 a US$ 258 el 04/10/2026
 cancelar
+# 10c. Corrida J: empresas que no están en el padrón (RUC inventados con dígito verificador válido) y reportes sobre
+#      empresas sin dueño.
+#      Alta por texto en un mensaje: RUC validado, razón social, sector y departamento; queda asignada a Frank (Prospecto)
+nueva empresa 20600000013 Transportes Sol Naciente SAC, carga, Junín, 12 unidades
+@espera-texto *Empresa nueva* (no está en el padrón del MTC)
+@btn Crear empresa || sí
+@espera-texto Empresa creada y asignada a ti: *TRANSPORTES SOL NACIENTE SAC*
+@espera-texto su flota no viene del MTC
+#      RUC que ya está (ZBUSS, del padrón): la muestra, no la duplica
+nueva empresa 20602221505
+@espera-texto Ese RUC ya está en el portal: no la dupliqué
+#      RUC con el dígito verificador mal: lo dice y lo vuelve a pedir; *No crear* lo deja
+nueva empresa 20600000019 Transportes Error SAC
+@espera-texto no es válido
+no
+@espera-texto no creé la empresa
+#      Reporte de visita a una empresa que no está en el padrón: *Crear empresa nueva*, el alta, y el reporte sigue sin
+#      perder lo dictado
+Visité a un cliente nuevo, hablé con Rosa Díaz, jefa de mantenimiento; les interesa Fenixway en direccional
+Expreso Luna Llena
+@espera-texto No encontré «Expreso Luna Llena» en el padrón
+@btn Crear empresa nueva || nueva empresa
+20612345679
+@btn Pasajeros || pasajeros
+Arequipa
+@btn Crear empresa || sí
+@espera-texto Empresa creada y asignada a ti: *EXPRESO LUNA LLENA*
+@espera-texto Sigo con tu reporte
+@btn Sí, guardar || sí
+@espera-texto Guardado: visita — *EXPRESO LUNA LLENA*
+#      OC de una empresa que no está: *Crear empresa nueva* y la OC sigue con su número (luego se cancela)
+oc zumbayllu cargo 4500777
+@espera-texto No encontré «zumbayllu cargo» en el padrón
+@btn Crear empresa nueva || nueva empresa
+20500000008
+@btn Mixto || mixto
+Lima
+@btn Crear empresa || sí
+@espera-texto OC *4500777* de *ZUMBAYLLU CARGO* registrada
+cancelar
+#      Cotización para un cliente que no está: el cotizador no cambia; *enlazar* lo busca, ofrece crearlo y la enlaza
+Fenixway Valor 87 295/80R22.5 x4 para Transportes Kantu Andino
+ok
+enlazar
+@espera-texto No encontré «Transportes Kantu Andino» en el padrón
+@btn Crear empresa nueva || nueva empresa
+20999000020
+@btn Carga || carga
+Cusco
+@btn Crear empresa || sí
+@espera-texto enlazada a *TRANSPORTES KANTU ANDINO*
+#      Reporte sobre empresas del padrón sin dueño: *Asignármela y guardar todo* (queda de Frank, con oportunidad y
+#      contacto) y *Guardar solo la nota* (la empresa sigue libre)
+Visité Labocer, hablé con Ana Torres, jefa de logística; les interesa Fenixway
+@btn Sí, guardar || sí
+@espera-texto no tiene dueño. ¿Qué guardo?
+@btn Asignar y guardar || asignármela
+@espera-texto Empresa asignada a ti
+@espera-texto Contacto nuevo: Ana Torres
+Llamé a Jevaro, no contestaron
+@btn Sí, guardar || sí
+@btn Guardar solo la nota || solo la nota
+@espera-texto guardé la actividad sin mover su oportunidad
 # 11. Pendientes del día y ayuda
 hoy
 ayuda portal
 @espera-texto *mejores*
 @espera-texto *ultima venta ZBUSS 295/80R22.5*
 @espera-texto *cliente final F003-4050 ZBUSS*
+@espera-texto *nueva empresa*

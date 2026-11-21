@@ -60,3 +60,14 @@ export function Flash({ aviso, error }: { aviso?: string; error?: string }) {
 }
 
 export const MTC_LEGEND = "Unidades, ejes y llantas: padrón MTC. Medida: estimación a confirmar en inspección.";
+
+/** Corrida J: empresa creada a mano (no está en el padrón del MTC). */
+export function ManualTag() {
+  return (
+    <span className="pt-tag pt-tag-manual" title="Creada a mano: no está en el padrón del MTC (su flota no viene del MTC)">
+      a mano
+    </span>
+  );
+}
+
+export const MANUAL_LEGEND = "Empresa creada a mano: no está en el padrón del MTC, así que su flota no viene del MTC. Unidades: las declaradas (o los vehículos cargados, si son más); llantas en piso: la suma de los vehículos cargados a mano.";

@@ -583,6 +583,10 @@ export const STATEMENTS = [
   `alter table sales add column if not exists monto_calculado boolean not null default false`,
   `alter table sales add column if not exists total_original numeric(14,2)`,
   `alter table sales add column if not exists precio_unitario_original numeric(12,2)`,
+  // Corrida J: empresas fuera del padrón. origen 'manual' = creada a mano (pasa a 'mtc' si su RUC llega en el padrón) y
+  // quién la creó. Los vehículos cargados a mano van en fleet_vehicles con origen 'manual' (sin cambio de esquema).
+  `alter table companies add column if not exists origen text not null default 'mtc'`,
+  `alter table companies add column if not exists created_by integer`,
 ];
 
 /** Desde aquí empiezan las sentencias del portal: antes de ejecutarlas se pasa la guardia (migrate-guard.ts). */

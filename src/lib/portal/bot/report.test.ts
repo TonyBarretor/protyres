@@ -348,12 +348,16 @@ describe("revisión B: reporte sobre una empresa de otro vendedor", () => {
     expect(acts[0]).toMatchObject({ tipo: "visita", opportunityId: null, userId: frankId });
   });
 
-  it("empresa sin dueño: no crea oportunidad y pide asignársela", async () => {
+  // corrida J: antes de guardar se ofrece *Asignármela y guardar todo* / *Guardar solo la nota*; con la nota, lo de antes
+  it("empresa sin dueño: ofrece asignársela o guardar solo la nota; con solo la nota no crea oportunidad", async () => {
     const c = await portal.upsertCompanies([{ ruc: "20999000088", razonSocial: "TRANSPORTES OMEGA SUR S.A.C.", sector: "carga", departamento: "LIMA", unidades: 30, llantasPiso: 300 }]);
     const id = c.ids["20999000088"];
     await bot.handle(text("Visité Transportes Omega Sur, todo bien"));
     expect(last()).toContain("TRANSPORTES OMEGA SUR");
     await bot.handle(text("sí"));
+    expect(last()).toContain("no tiene dueño. ¿Qué guardo?");
+    expect(await portal.listActivities({ companyId: id })).toHaveLength(0);
+    await bot.handle(text("solo la nota"));
     expect(last()).toContain("La empresa no tiene dueño (*asignarme 20999000088* para tomarla): guardé la actividad sin mover su oportunidad.");
     expect(await portal.listOpportunities({ companyId: id })).toHaveLength(0);
     expect(await portal.listActivities({ companyId: id })).toHaveLength(1);

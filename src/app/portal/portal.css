@@ -254,6 +254,7 @@ body:has(.pt-shell) {
   white-space: nowrap;
 }
 .pt-tag-mtc { background: #eef0f3; color: #4a505a; }
+.pt-tag-manual { background: #fff4e5; color: #8a4b00; }
 .pt-tag-inf { background: #f3eefe; color: #5b3bb5; }
 .pt-tag-demo { background: var(--accent); color: var(--ink); }
 .pt-tag-client { background: #ecfdf3; color: var(--ok); }

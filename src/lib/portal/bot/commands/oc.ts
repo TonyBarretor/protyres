@@ -103,7 +103,7 @@ import type { Company, Opportunity } from "../../store/types";
 import { limaDateKey } from "../../ui/time";
 import { findCompanies, resolveCompany, shortName, splitCompany, unusedNote } from "../companies";
 import { companyProgressLine } from "../progress";
-import { registerCompanyAction, registerPausable, registerPendingDrop, registerPendingHandler, registerPortalCommand, replyButtons, type PortalContext } from "../registry";
+import { registerCompanyAction, registerPausable, registerPendingDrop, registerPendingHandler, registerPortalCommand, replyButtons, setQuoterGuard, type PortalContext } from "../registry";
 import { downloader, transcribeVoice } from "../report";
 import { clearLegacyParked, clearPending, parkedOf, pausedOf, removePaused, setPending, type PendingStep } from "../state";
 import { creditWarning } from "../../credit/warning";
@@ -319,6 +319,19 @@ async function endQuoterFlow(ctx: PortalContext): Promise<void> {
     ctx.log(`portal: no pude leer el estado del cotizador: ${(err as Error).message}`);
   }
 }
+
+/**
+ * Corrida J: antes de hacer preguntas del portal que se responden escritas (`nueva empresa`, *Buscar otra vez*): con el
+ * cotizador revisando una cotización ya guardada, ese paso se cierra (como al empezar `oc`); con una a medio armar, el
+ * texto que lo impide (null = se puede seguir).
+ */
+export async function freeQuoterForPortal(ctx: PortalContext, again: string): Promise<string | null> {
+  if (await quoterBusy(ctx)) return `Tienes una cotización/lista a medio armar; termínala o escribe *cancelar* y vuelve a mandar *${again}*.`;
+  await endQuoterFlow(ctx);
+  return null;
+}
+
+setQuoterGuard(freeQuoterForPortal);
 
 /** Cotización para la OC: la de la oportunidad abierta, la última enlazada a la empresa o la última del vendedor a ese cliente (sin usar en otra OC). */
 async function findOrderQuote(ctx: PortalContext, company: Company, opp: Opportunity | null): Promise<Quote | null> {
@@ -651,7 +664,8 @@ registerPortalCommand("oc", async (ctx, args) => {
     return;
   }
   const a: OcArgs = { numero: p.numero, media: mediaOf(ctx), ...(note ? { note } : {}) };
-  const company = await resolveCompany(ctx, p.empresa, "oc", a as unknown as Record<string, unknown>, { note });
+  // corrida J: si no está en el padrón, *Crear empresa nueva* / *Buscar otra vez* y la OC sigue con la empresa elegida
+  const company = await resolveCompany(ctx, p.empresa, "oc", a as unknown as Record<string, unknown>, { note, offerCreate: true });
   if (company) await startOrder(ctx, company, a);
 });
 

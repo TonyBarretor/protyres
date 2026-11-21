@@ -34,7 +34,7 @@ import { getPortalStore } from "../store";
 import { digits } from "../store/shared";
 import type { PortalConversation, PortalStore, PortalUser } from "../store/types";
 import { noticesMessage } from "../notify/notices";
-import { mentionsKnownCompany } from "./companies";
+import { capturesCommand, mentionsKnownCompany, offersNewCompany } from "./companies";
 import "./report";
 import { comingSoon } from "./commands";
 import { quoterBlocksResume } from "./commands/oc";
@@ -577,8 +577,12 @@ export async function routePortal(input: PortalRouteInput): Promise<boolean> {
   let intent: Intent = decision.intent;
 
   if (intent === "portal_command" && cmd) {
-    // un comando nuevo deja atrás la pregunta anterior: pasa a pausa (`oc` a la misma empresa la retoma él mismo)
-    if (pending) await leave(pending, "command");
+    // corrida J: `contacto …` en el resumen del alta de una empresa es el contacto de esa empresa
+    if (live && capturesCommand(live, cmd.name) && (await getPendingHandler(live.kind)!(ctx, live, text))) return finish(true, "3_respuesta", live.kind);
+    // un comando nuevo deja atrás la pregunta anterior: pasa a pausa (`oc` a la misma empresa la retoma él mismo). Corrida
+    // J: `nueva empresa` (o *Crear empresa nueva*) cuando la empresa no se encontró sigue ese flujo: el paso se queda
+    const continues = cmd.name === "nueva_empresa" && offersNewCompany(live);
+    if (pending && !continues) await leave(pending, "command");
     const handler = getPortalCommand(cmd.name);
     if (handler) await handler(ctx, cmd.args);
     else await input.reply(comingSoon(cmd.name));

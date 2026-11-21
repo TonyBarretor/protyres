@@ -6,6 +6,12 @@
  *    -> pregunta aparte "¿La cotización 032 es para *ZBUSS S.A.C.* …? Responde *enlazar*" y guarda la propuesta en el
  *    estado del portal (clave `linkQuote`, no `pending`: no pisa otra pregunta del bot y sobrevive al comando).
  *  - `enlazar` -> confirmQuoteLink. `reenviada 032` -> markQuoteForwarded. `enviar` (correo) -> onQuoteSentToPortal.
+ *  - Corrida J: si el cliente (con nombre o RUC) no está en el portal, se guarda la cotización sin empresa (companyId
+ *    null, `query` = lo que se buscó), sin decir nada (el cotizador no cambia): `enlazar` busca de nuevo y, si no
+ *    está, ofrece *Crear empresa nueva* / *Buscar otra vez* (bot/commands/cotizacion.ts); creada o elegida la empresa,
+ *    se enlaza.
+ *  - Corrida J: enlazar con una empresa SIN dueño se la asigna al vendedor (para que no salga en las "mejores" de otros);
+ *    la de otro vendedor no cambia de dueño (como antes).
  *    Enviada = oportunidad en "Cotización enviada" (solo hacia adelante) + actividad `cotizacion_enviada`.
  *  - Al enlazar (directo o con *enlazar*), si el crédito de la empresa está sin evaluar (o no tiene fila) o rechazado, el
  *    mismo mensaje del portal suma la línea "⚠️ Crédito de … sin evaluar" / "⛔ Crédito RECHAZADO …" (credit/warning.ts).
@@ -43,7 +49,9 @@ export const PORTAL_HOOK_TIMEOUT_MS = 4000;
 export interface LinkQuoteStep extends PendingStep {
   kind: "link_quote";
   quoteNumber: string;
-  companyId: number;
+  /** Corrida J: null = el cliente no está en el portal (se busca `query` al responder *enlazar*). */
+  companyId: number | null;
+  query?: string | null;
   razonSocial: string;
   ruc: string;
   total: number;
@@ -141,7 +149,7 @@ async function safely<T>(what: string, phone: string, opts: HookOptions, fn: (st
   }
 }
 
-async function getLinkStep(store: PortalStore, phone: string, now: Date): Promise<LinkQuoteStep | null> {
+export async function getLinkStep(store: PortalStore, phone: string, now: Date): Promise<LinkQuoteStep | null> {
   const conv = await store.getPortalConversation(phone);
   const step = conv?.state?.[LINK_STATE_KEY] as LinkQuoteStep | undefined;
   if (!step || typeof step !== "object" || step.kind !== "link_quote") return null;
@@ -216,8 +224,20 @@ interface LinkInput {
   via: string;
 }
 
-/** Oportunidad abierta del vendedor (o nueva, dueño = vendedor) con el número de cotización y la actividad `cotizacion`. */
-async function performLink(store: PortalStore, user: PortalUser, company: Company, input: LinkInput, now: Date): Promise<Opportunity> {
+/**
+ * Oportunidad abierta del vendedor (o nueva, dueño = vendedor) con el número de cotización y la actividad `cotizacion`.
+ * Corrida J: si la empresa no tiene dueño, queda asignada al vendedor (de forma atómica: si otro la tomó, no se pisa).
+ */
+async function performLink(store: PortalStore, user: PortalUser, company: Company, input: LinkInput, now: Date): Promise<{ opp: Opportunity; assigned: boolean }> {
+  let assigned = false;
+  if (company.ownerUserId === null && user.rol !== "tecnico") {
+    const claimed = await store.setOwner(company.id, user.id, { onlyIfOwner: null });
+    if (claimed) {
+      assigned = true;
+      // data.evento = "asignacion": hito de inicio para las métricas de tiempos (metrics/timeline.ts)
+      await store.addActivity({ companyId: company.id, userId: user.id, tipo: "nota", texto: `${user.nombre} se asignó la empresa (al enlazar la cotización ${input.quoteNumber}).`, canal: "whatsapp", occurredAt: now, data: { evento: "asignacion", ownerUserId: user.id, previousOwnerUserId: null } });
+    }
+  }
   let opp = await store.getOpenOpportunity(company.id, user.id);
   if (!opp) opp = await store.createOpportunity({ companyId: company.id, ownerUserId: user.id, quoteNumber: input.quoteNumber, montoEstimado: input.total, createdBy: user.id, at: now });
   else opp = (await store.updateOpportunity(opp.id, { quoteNumber: input.quoteNumber, ...(opp.montoEstimado === null ? { montoEstimado: input.total } : {}) })) ?? opp;
@@ -231,8 +251,11 @@ async function performLink(store: PortalStore, user: PortalUser, company: Compan
     data: { quoteNumber: input.quoteNumber, total: input.total, currency: input.currency, items: input.items, customerKey: input.customerKey, customerEmail: input.customerEmail, via: input.via },
     occurredAt: now,
   });
-  return opp;
+  return { opp, assigned };
 }
+
+/** " Quedó asignada a ti." cuando enlazar le dio dueño. */
+const assignedNote = (assigned: boolean) => (assigned ? " Quedó asignada a ti." : "");
 
 export type LinkOutcome = "linked" | "asked" | "already" | "none";
 
@@ -264,13 +287,22 @@ export async function linkQuoteToPortal(input: LinkQuoteInput): Promise<LinkOutc
     const before = byRuc ? null : await previouslyLinked(store, user.id, customer);
     const direct = byRuc ?? before;
     if (direct) {
-      const opp = await performLink(store, user, direct, { ...base, via: byRuc ? "ruc" : "cliente" }, now);
-      await input.reply(withCredit(`🔗 Cotización *${short}* enlazada a *${direct.razonSocial}* en el portal (${stageLabel(opp.etapa)}).`, await creditWarning(store, direct)));
+      const { opp, assigned } = await performLink(store, user, direct, { ...base, via: byRuc ? "ruc" : "cliente" }, now);
+      await input.reply(withCredit(`🔗 Cotización *${short}* enlazada a *${direct.razonSocial}* en el portal (${stageLabel(opp.etapa)}).${assignedNote(assigned)}`, await creditWarning(store, direct)));
       return "linked" as const;
     }
 
     const candidate = await companyByName(store, q.customer.company || q.customer.name);
-    if (!candidate) return "none" as const;
+    if (!candidate) {
+      // corrida J: el cliente no está en el portal; *Enlazar* lo busca otra vez u ofrece crearlo
+      const rucs = rucsIn(q.requestText, q.customer.ref);
+      const name = (q.customer.company || q.customer.name || "").trim();
+      const query = rucs.length === 1 ? rucs[0] : companyKey(name).length >= 3 ? name : null;
+      if (!query) return "none" as const;
+      // sin mensaje: el cotizador no cambia (golden); el vendedor escribe *enlazar* si quiere registrarlo
+      await setLinkStep(store, input.from, { kind: "link_quote", createdAt: now.toISOString(), ...base, via: "nueva", companyId: null, razonSocial: name, ruc: rucs[0] ?? "", query });
+      return "none" as const;
+    }
     const asked = await getLinkStep(store, input.from, now);
     if (asked?.quoteNumber === q.number && asked.companyId === candidate.id) return "asked" as const;
     const step: LinkQuoteStep = { kind: "link_quote", createdAt: now.toISOString(), ...base, via: "nombre", companyId: candidate.id, razonSocial: candidate.razonSocial, ruc: candidate.ruc };
@@ -298,16 +330,22 @@ export async function confirmQuoteLink(ctx: Ctx, args = ""): Promise<boolean> {
     await ctx.reply(`La cotización por enlazar es la *${shortQuoteNumber(step.quoteNumber)}* (${step.razonSocial}). Responde *enlazar* para esa.`);
     return false;
   }
-  const company = await ctx.store.getCompany(step.companyId);
-  await setLinkStep(ctx.store, ctx.from, null);
+  const company = step.companyId !== null ? await ctx.store.getCompany(step.companyId) : null;
   if (!company) {
+    await setLinkStep(ctx.store, ctx.from, null);
     await ctx.reply("Esa empresa ya no está en el portal; no enlacé la cotización.");
     return true;
   }
-  const opp = await performLink(ctx.store, ctx.user, company, { ...step, via: "nombre" }, ctx.now);
-  const progress = await companyProgressLine(ctx.store, company, 5); // línea de avance (corrida D): paso 5
-  await ctx.reply(withCredit(`🔗 Listo: cotización *${shortQuoteNumber(step.quoteNumber)}* enlazada a *${company.razonSocial}* (${stageLabel(opp.etapa)}).`, await creditWarning(ctx.store, company)) + (progress ? `\n${progress}` : ""));
+  await linkStepTo(ctx, step, company);
   return true;
+}
+
+/** Corrida J: enlaza la cotización guardada a esta empresa (la elegida, la encontrada o la recién creada). */
+export async function linkStepTo(ctx: Ctx, step: LinkQuoteStep, company: Company): Promise<void> {
+  await setLinkStep(ctx.store, ctx.from, null);
+  const { opp, assigned } = await performLink(ctx.store, ctx.user, company, { ...step, via: step.companyId === null ? "nueva" : "nombre" }, ctx.now);
+  const progress = await companyProgressLine(ctx.store, company, 5); // línea de avance (corrida D): paso 5
+  await ctx.reply(withCredit(`🔗 Listo: cotización *${shortQuoteNumber(step.quoteNumber)}* enlazada a *${company.razonSocial}* (${stageLabel(opp.etapa)}).${assignedNote(assigned)}`, await creditWarning(ctx.store, company)) + (progress ? `\n${progress}` : ""));
 }
 
 // ── enviada ──

@@ -152,6 +152,22 @@ export function getPausable(kind: string): Pausable | undefined {
   return pausables.get(kind);
 }
 
+/**
+ * Corrida J: antes de una pregunta del portal que se responde escrita (*Buscar otra vez*, `nueva empresa`): cierra el
+ * paso del cotizador que revisa una cotización ya guardada o devuelve el texto de por qué no se puede (null = se puede).
+ * Lo registra `oc` (commands/oc.ts, que lee el estado del cotizador); sin él, no hace nada.
+ */
+export type QuoterGuard = (ctx: PortalContext, again: string) => Promise<string | null>;
+let quoterGuard: QuoterGuard | null = null;
+
+export function setQuoterGuard(fn: QuoterGuard | null): void {
+  quoterGuard = fn;
+}
+
+export async function freeQuoter(ctx: PortalContext, again: string): Promise<string | null> {
+  return quoterGuard ? quoterGuard(ctx, again) : null;
+}
+
 export function registerCompanyAction(action: string, handler: CompanyActionHandler): void {
   companyActions.set(action, handler);
 }

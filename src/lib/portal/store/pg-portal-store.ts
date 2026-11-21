@@ -18,6 +18,7 @@ import type {
   AppointmentPatch,
   Company,
   CompanyInput,
+  CompanyOrigen,
   CompanyOriginCounts,
   CompanyOrderProfile,
   CompanyPatch,
@@ -35,6 +36,9 @@ import type {
   FleetVehicle,
   FleetVehicleInput,
   IsoDate,
+  ManualCompanyInput,
+  ManualVehicleInput,
+  ManualVehicleResult,
   CurrentLoginToken,
   LoginToken,
   MarcaCount,
@@ -120,6 +124,8 @@ function toCompany(r: Row): Company {
     scoreDetalle: jsonOf<ScoreDetail>(r.score_detalle),
     scoreAt: date(r.score_at),
     creditTermsDays: num(r.credit_terms_days),
+    origen: ((r.origen as CompanyOrigen | null) ?? "mtc") as CompanyOrigen,
+    createdBy: num(r.created_by),
     createdAt: date(r.created_at)!,
     updatedAt: date(r.updated_at)!,
   };
@@ -629,11 +635,26 @@ export class PgPortalStore implements PortalStore {
       else groups.set(sig, [rec]);
     }
     const sql = this.sql;
+    // corrida J: las creadas a mano que llegan en el padrón se fusionan (origen pasa a "mtc"; sector y departamento a mano
+    // se conservan si el padrón no los trae)
+    const merged: string[] = [];
+    const rucs = rows.map((c) => c.ruc);
+    for (let i = 0; i < rucs.length; i += BATCH) {
+      const found = await sql<{ ruc: string }[]>`select ruc from companies where origen = 'manual' and ruc in ${sql(rucs.slice(i, i + BATCH))}`;
+      for (const f of found) merged.push(String(f.ruc));
+    }
+    const keepManual = new Set(["sector", "departamento"]);
     for (const [sig, recs] of groups) {
       const cols = sig.split(",");
       const set = cols
         .filter((c) => c !== "ruc")
-        .reduce((acc, c) => sql`${acc}, ${sql(c)} = excluded.${sql(c)}`, sql`updated_at = now()`);
+        .reduce(
+          (acc, c) =>
+            keepManual.has(c)
+              ? sql`${acc}, ${sql(c)} = case when companies.origen = 'manual' and excluded.${sql(c)} is null then companies.${sql(c)} else excluded.${sql(c)} end`
+              : sql`${acc}, ${sql(c)} = excluded.${sql(c)}`,
+          sql`updated_at = now(), origen = 'mtc'`,
+        );
       for (let i = 0; i < recs.length; i += BATCH) {
         const out = await sql<{ id: number; ruc: string; inserted: boolean }[]>`
           insert into companies ${sql(recs.slice(i, i + BATCH), cols)}
@@ -646,7 +667,22 @@ export class PgPortalStore implements PortalStore {
         }
       }
     }
+    if (merged.length) res.merged = merged.sort();
     return res;
+  }
+
+  async createManualCompany(input: ManualCompanyInput): Promise<{ company: Company; created: boolean }> {
+    const ruc = digits(input.ruc);
+    if (!/^\d{11}$/.test(ruc)) throw new Error(`RUC inválido: ${input.ruc}`);
+    // una sola sentencia: dos altas del mismo RUC a la vez dejan una empresa
+    const [r] = await this.sql`
+      insert into companies (ruc, razon_social, sector, departamento, unidades, owner_user_id, origen, created_by)
+      values (${ruc}, ${input.razonSocial.trim()}, ${input.sector}, ${input.departamento}, ${Math.max(0, Math.round(input.unidades ?? 0))}, ${input.createdBy}, 'manual', ${input.createdBy})
+      on conflict (ruc) do nothing returning *`;
+    if (r) return { company: toCompany(r), created: true };
+    const existing = await this.getCompanyByRuc(ruc);
+    if (!existing) throw new Error(`No pude crear ni leer la empresa ${ruc}`);
+    return { company: existing, created: false };
   }
 
   async getCompany(id: number): Promise<Company | null> {
@@ -848,11 +884,12 @@ export class PgPortalStore implements PortalStore {
       keep.map((v) => ({ placa: normPlaca(v.placa), origen: v.origen })).filter((v) => v.placa),
       (v) => `${v.origen}|${v.placa}`,
     );
+    // corrida J: los vehículos cargados a mano (origen 'manual') nunca se podan
     const r = keys.length
       ? await sql`
-          delete from fleet_vehicles f where f.company_id in ${sql(ids)}
+          delete from fleet_vehicles f where f.company_id in ${sql(ids)} and f.origen <> 'manual'
           and not exists (select 1 from jsonb_to_recordset(${sql.json(keys)}::jsonb) as k(placa text, origen text) where k.placa = f.placa and k.origen = f.origen)`
-      : await sql`delete from fleet_vehicles where company_id in ${sql(ids)}`;
+      : await sql`delete from fleet_vehicles where company_id in ${sql(ids)} and origen <> 'manual'`;
     return r.count;
   }
 
@@ -860,8 +897,35 @@ export class PgPortalStore implements PortalStore {
     return this.pruneFleetWith(this.sql, companyIds, keep);
   }
 
+  async addManualVehicle(companyId: number, input: ManualVehicleInput): Promise<ManualVehicleResult> {
+    const placa = normPlaca(input.placa);
+    if (!placa) throw new Error("Falta la placa");
+    // una sola sentencia: si la placa ya está cargada a mano en otra empresa, no se mueve (el where del update no la toca)
+    const [r] = await this.sql`
+      insert into fleet_vehicles (company_id, placa, marca, clase, anio, ejes, llantas, origen, medida_probable, confianza)
+      values (${companyId}, ${placa}, ${input.marca}, ${input.clase}, ${input.anio ?? null}, ${input.ejes}, ${input.llantas}, 'manual', ${input.medida}, ${input.medida ? "alta" : null})
+      on conflict (placa, origen) do update set
+        marca = excluded.marca, clase = excluded.clase, anio = excluded.anio, ejes = excluded.ejes, llantas = excluded.llantas,
+        medida_probable = excluded.medida_probable, confianza = excluded.confianza
+      where fleet_vehicles.company_id = excluded.company_id
+      returning *, (xmax = 0) as inserted`;
+    if (r) return { ok: true, vehicle: toVehicle(r), updated: !r.inserted };
+    const [other] = await this.sql`select company_id from fleet_vehicles where placa = ${placa} and origen = 'manual'`;
+    return { ok: false, reason: "otra_empresa", companyId: Number(other?.company_id) };
+  }
+
+  async deleteManualVehicle(companyId: number, vehicleId: number): Promise<boolean> {
+    const r = await this.sql`delete from fleet_vehicles where id = ${vehicleId} and company_id = ${companyId} and origen = 'manual'`;
+    return r.count > 0;
+  }
+
   async listFleet(companyId: number): Promise<FleetVehicle[]> {
     const rows = await this.sql`select * from fleet_vehicles where company_id = ${companyId} order by placa`;
+    return rows.map(toVehicle);
+  }
+
+  async listManualVehicles(companyId: number): Promise<FleetVehicle[]> {
+    const rows = await this.sql`select * from fleet_vehicles where company_id = ${companyId} and origen = 'manual' order by placa`;
     return rows.map(toVehicle);
   }
 
@@ -869,7 +933,7 @@ export class PgPortalStore implements PortalStore {
     const rows = await this.sql`
       select upper(trim(marca)) as marca, clase, medida_probable as medida, confianza, count(*)::int as unidades,
         min(anio)::int as anio_min, max(anio)::int as anio_max, coalesce(sum(llantas), 0)::int as llantas, count(llantas)::int as con_llantas
-      from fleet_vehicles where company_id = ${companyId}
+      from fleet_vehicles where company_id = ${companyId} and origen <> 'manual'
       group by 1, clase, medida_probable, confianza`;
     const agg: FleetAggRow[] = rows.map((r) => ({
       marca: r.marca === null ? null : String(r.marca).replace(/\s+/g, " ") || null,

@@ -4,7 +4,8 @@
  * Reglas (conservadoras: ante la duda, el cotizador sigue como siempre):
  *  1. Mensaje reenviado -> passthrough (pedido o lista de un tercero: lo maneja el cotizador).
  *  2. Comando explícito del portal al inicio (`portal`, `empresa …`, `asignarme …`, `contacto …`, `hoy`, `ayuda portal`,
- *     `cita …`, `oc …`, `avance`, `prepropuesta …`, `aprende X = Y`, `mejores`, `ultima venta …`, `cliente final …`) -> portal_command, en
+ *     `cita …`, `oc …`, `avance`, `prepropuesta …`, `aprende X = Y`, `mejores`, `ultima venta …`, `cliente final …`,
+ *     `nueva empresa …`) -> portal_command, en
  *     cualquier paso del cotizador.
  *     Un número que no está en `users` solo entra con `portal` (que le dice que no está registrado).
  *  3. `cancelar` (y sinónimos) -> passthrough: el cotizador cancela; quien llama limpia además el paso del portal.
@@ -118,7 +119,7 @@ export interface ClassifyInput {
 
 // ── comandos explícitos del portal ──
 
-export type PortalCommandName = "portal" | "cerrar_portal" | "ayuda_portal" | "hoy" | "empresa" | "asignarme" | "contacto" | "cita" | "oc" | "avance" | "prepropuesta" | "aprende" | "enlazar" | "reenviada" | "estado" | "mejores" | "anular" | "descuentos" | "ultima_venta" | "cliente_final";
+export type PortalCommandName = "portal" | "cerrar_portal" | "ayuda_portal" | "hoy" | "empresa" | "asignarme" | "contacto" | "cita" | "oc" | "avance" | "prepropuesta" | "aprende" | "enlazar" | "reenviada" | "estado" | "mejores" | "anular" | "descuentos" | "ultima_venta" | "cliente_final" | "nueva_empresa";
 
 interface CommandSpec {
   name: PortalCommandName;
@@ -138,6 +139,9 @@ interface CommandSpec {
 const MEJORES_RE =
   /^(?:(?:dame|muestrame|ver)\s+)?(?:(?:mis|las)\s+)?mejores(?:\s+(?:flotas|empresas))?(?:\s+para\s+(?:mi|trabajar|llamar))?$|^(?:cuales|que)\s+son\s+(?:mis|las)\s+mejores(?:\s+(?:flotas|empresas))?(?:\s+para\s+(?:mi|trabajar|llamar))?$|^(?:que|cuales)\s+(?:flotas|empresas)\s+me\s+convienen(?:\s+mas)?$/;
 
+/** "nueva empresa …", "crear empresa …", "agregar empresa …", "registrar empresa …"; "empresa nueva" solo (sin más). */
+const NUEVA_EMPRESA_RE = /^(?:(?:nueva|crear(?:\s+una)?(?:\s+nueva)?|agregar(?:\s+una)?(?:\s+nueva)?|registrar(?:\s+una)?(?:\s+nueva)?)\s+empresa(?:\s+nueva)?(?:\s+\S.*)?|empresa\s+nueva)$/;
+
 const COMMANDS: CommandSpec[] = [
   { name: "portal", re: /^portal$/ },
   // hotfix login 2: cierra las sesiones del portal en todos los teléfonos y anula los enlaces (teléfono perdido, enlace
@@ -145,6 +149,8 @@ const COMMANDS: CommandSpec[] = [
   { name: "cerrar_portal", re: /^(?:cerrar|cierra|cierrame)\s+(?:(?:la\s+|mi\s+)?sesion\s+(?:del?\s+|en\s+el\s+)?)?portal$/ },
   { name: "ayuda_portal", re: /^(?:ayuda|help|comandos)\s+portal$|^portal\s+(?:ayuda|help|comandos)$/ },
   { name: "hoy", re: /^hoy$/ },
+  // corrida J: alta de una empresa que no está en el padrón (con los datos detrás o sin ellos); antes que `empresa`
+  { name: "nueva_empresa", re: NUEVA_EMPRESA_RE },
   { name: "empresa", re: /^empresa\s+\S/ },
   { name: "asignarme", re: /^(?:asignarme|asigname|asignar)\s+\S/ },
   { name: "contacto", re: /^contacto\s+\S/ },
@@ -172,6 +178,7 @@ const RAW_HEAD: Record<PortalCommandName, RegExp> = {
   cerrar_portal: /^[\s\S]*$/,
   ayuda_portal: /^(?:ayuda|help|comandos)\s+portal\b|^portal\s+(?:ayuda|help|comandos)\b/i,
   hoy: /^hoy\b/i,
+  nueva_empresa: /^(?:(?:nueva|crear(?:\s+una)?(?:\s+nueva)?|agregar(?:\s+una)?(?:\s+nueva)?|registrar(?:\s+una)?(?:\s+nueva)?)\s+empresa(?:\s+nueva)?|empresa\s+nueva)(?![\p{L}\d])[\s,.:;-]*/iu,
   empresa: /^empresa\b/i,
   asignarme: /^(?:asignarme|asígnarme|asignar|asígname|asigname)\b/i,
   contacto: /^contacto\b/i,
@@ -219,6 +226,7 @@ export function parsePortalCommand(text: string, opts: { withMedia?: boolean } =
     const head = RAW_HEAD[c.name].exec(raw);
     const args = head ? raw.slice(head[0].length).trim() : raw.replace(/^\S+\s*/, "");
     // "empresa: ACME", "contacto: Juan", "contacto de: Juan" -> campo del cotizador (como su TERM_LINE: "clave:" o "clave de:")
+    // (`nueva empresa: …` sí es el comando: RAW_HEAD ya se comió los dos puntos)
     if (FIELD_TAIL.test(args)) return null;
     if (c.name === "aprende" && !/\S\s*=\s*\S/.test(args)) return null;
     return { name: c.name, args };
