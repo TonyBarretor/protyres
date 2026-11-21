@@ -23,7 +23,7 @@
  *     aro con ".5" que no se dijo, o ancho ±10 mm con el mismo perfil y aro). Nunca elige: quien llama pregunta.
  */
 import { fixCatalogTerms, jaroWinkler, matchSpokenName } from "./fuzzy";
-import { groupItems, joinUbDigits, markUbs, unglueNumbers } from "./items";
+import { groupItems, joinUbDigits, markUbs, splitPly, unglueNumbers } from "./items";
 import { resolveSpokenSizes, type AmbiguousSize, type SizeResolution } from "./sizes";
 import { fold } from "../../tyre/brands";
 import { findTyreSizes, parseTyreSize, sizeLoose } from "../../tyre/spec";
@@ -260,9 +260,31 @@ export function normalizeSpokenSizes(text: string): string {
 const FILLERS = /(?<![\p{L}\d])(?:e+h+|e+m+|m{2,}|este|o sea|bueno|pues|oye|mira|ya|okey|ok|gracias|por favor|porfa)(?![\p{L}\d])[,.]?/giu;
 /** Palabra explícita de cotización al inicio (se quita: el texto ya va al cotizador). */
 // corrida H: la palabra entera ("cotiza" ya no se come el inicio de "cotización": quedaba "ción" en la llanta) y "hazme la cotización"
-const QUOTE_HEAD = /^\s*(?:(?:hola|buenas?(?:\s+(?:tardes|d[ií]as|noches))?)[,\s]+)?(?:me\s+(?:puedes\s+|podr[ií]as\s+)?)?(?:c[oó]t[ií]za(?:me|nos|le)?|c[oó]t[ií]zo|cotizar|me\s+cotizas|(?:necesito|quiero|hazme|haz|dame|mándame|mandame)\s+(?:una\s+|la\s+)?cotizaci[oó]n|cotizaci[oó]n)(?![\p{L}])\s*[:,]?\s*(?:de|para|por)?(?![\p{L}])\s*[:,]?\s*/iu;
+// corrida I: el "para" que sigue se queda ("Cotizar para ZBUSS, …": sin él, el cliente quedaba pegado a la llanta)
+const QUOTE_HEAD = /^\s*(?:(?:hola|buenas?(?:\s+(?:tardes|d[ií]as|noches))?)[,\s]+)?(?:me\s+(?:puedes\s+|podr[ií]as\s+)?)?(?:c[oó]t[ií]za(?:me|nos|le)?|c[oó]t[ií]zo|cotizar|me\s+cotizas|(?:necesito|quiero|hazme|haz|dame|mándame|mandame)\s+(?:una\s+|la\s+)?cotizaci[oó]n|cotizaci[oó]n)(?![\p{L}])\s*[:,]?\s*(?:de|por)?(?![\p{L}])\s*[:,]?\s*/iu;
 
 const PCT = String.raw`(\d{1,2}(?:\.\d)?)\s*(?:%|por\s*ciento)?`;
+/** IGV dicho u oído ("IGV", "IGB", "IPV", "i g v") o "impuestos". */
+const IGV_WORD = String.raw`(?:i\.?\s?[gpbvj]\.?\s?[vb]\.?|impuestos?)(?![\p{L}])`;
+/** "… 18 %", "… del 18 por ciento" detrás del IGV. */
+const IGV_PCT = String.raw`(?:\s*,?\s*(?:del?\s+)?(?:i\.?\s?[gpbvj]\.?\s?[vb]\.?\s+)?18(?:\s*%|\s+por\s*ciento)?)?`;
+
+/**
+ * Corrida I: el dictado en forma de ficha ("cliente Fenixway, modelo valor 96, 11 R 22.5 18 PR, por 4 unidades. Precio,
+ * 298 dólares") -> lo que el resto ya lee: "por 4 unidades"/"cantidad 4" -> "x4"; "precio, 298"/"el precio es 298" ->
+ * "precio 298"; "298 dólares" -> "precio 298"; las etiquetas "modelo", "marca", "medida", "diseño" se quitan. La moneda
+ * dicha (soles o dólares) se devuelve para avisar si no es la de la cotización.
+ */
+export function fichaWords(text: string): { text: string; currency: "PEN" | "USD" | null } {
+  const currency = /(?<![\p{L}])(?:nuevos\s+)?soles(?![\p{L}])|(?<![\p{L}])s\/\.?\s*\d/iu.test(text) ? "PEN" : /(?<![\p{L}])(?:d[oó]lares|usd)(?![\p{L}])|us\$|\$\s*\d/iu.test(text) ? "USD" : null;
+  const t = text
+    .replace(/(?<![\p{L}])(?:por|cantidad(?:\s+de)?)\s*[:,]?\s*(\d{1,3})(?:\s+(?:unidades|unidad|llantas?|neum[aá]ticos?|unid|und))?(?![\d.,]?\d|\s*(?:d[ií]as|%|por\s*ciento))(?![\p{L}])/giu, " x$1 ")
+    .replace(/(?<![\p{L}])(?:el\s+)?precio(?:\s+unitario)?(?:\s+(?:es|de))?\s*[,:.]?\s*(?=(?:us\$|\$|s\/\.?|usd)?\s*\d)/giu, "precio ")
+    .replace(/(?<![\p{L}\d.,])(?<!(?:precio|a|en|al|de)\s)(\d{2,6}(?:[.,]\d{1,2})?)\s*(?:d[oó]lares|nuevos\s+soles|soles|usd)(?![\p{L}])/giu, "precio $1")
+    // la etiqueta deja una pausa: "para ZBUSS marca Fenixway" -> "para ZBUSS, Fenixway" (el cliente termina ahí)
+    .replace(/(?<![\p{L}])(?:(?:el|la)\s+)?(?:modelo|marca|medida|dise[nñ]o)\s*[:,.]?\s*(?=[\p{L}\d§])/giu, ", ");
+  return { text: t, currency };
+}
 const TERM_PATTERNS: { re: RegExp; out: (m: RegExpMatchArray) => string }[] = [
   { re: /(?:,\s*)?(?:\b(?:con\s+)?(?:un\s+)?(?:plazo|cr[eé]dito)\s+(?:de\s+|a\s+)?|\ba\s+)(\d{1,3})\s+d[ií]as(?:\s+de\s+(?:plazo|cr[eé]dito))?\b/i, out: (m) => `plazo: ${m[1]} días` },
   { re: /(?:,\s*)?\b(\d{1,3})\s+d[ií]as\s+de\s+(?:plazo|cr[eé]dito)\b/i, out: (m) => `plazo: ${m[1]} días` },
@@ -272,9 +294,15 @@ const TERM_PATTERNS: { re: RegExp; out: (m: RegExpMatchArray) => string }[] = [
   { re: /(?:,\s*)?\b(?:con\s+)?(?:un\s+)?(\d{1,2}(?:\.\d)?)\s*(?:%|por\s*ciento)\s+de\s+margen\b/i, out: (m) => `margen ${m[1]}%` },
   { re: new RegExp(String.raw`(?:,\s*)?\b(?:con\s+)?(?:un\s+)?(?:descuento|dscto|dcto)\s+(?:del?\s+(?:un\s+)?)?${PCT}`, "i"), out: (m) => `dscto ${m[1]}%` },
   { re: /(?:,\s*)?\b(?:con\s+)?(?:un\s+)?(\d{1,2}(?:\.\d)?)\s*(?:%|por\s*ciento)\s+de\s+(?:descuento|dscto)\b/i, out: (m) => `dscto ${m[1]}%` },
-  // "sin IPV" (Deepgram, 2026-11-16): IGV con la consonante del medio mal oída
-  { re: /(?:,\s*)?\b(con|sin)\s+i\.?\s?[gpbv]\.?\s?v\b\.?/i, out: (m) => `${m[1].toLowerCase()} igv` },
+  // "sin IPV" (Deepgram, 2026-11-16): IGV con la consonante del medio mal oída. Corrida I: "incluido impuestos", "IGV
+  // incluido", "más IGV", "IGB 18 por 100" (Deepgram, producción 17/11) y variantes: la opción de IGV del cotizador
+  { re: new RegExp(String.raw`(?:,\s*)?(?<![\p{L}\d])(?:incluid[oa]s?|incluye(?:ndo)?|inclu[ií]do|con|inc\.?)\s+(?:el\s+|los\s+)?${IGV_WORD}${IGV_PCT}`, "iu"), out: () => "con igv" },
+  { re: new RegExp(String.raw`(?:,\s*)?(?<![\p{L}\d])${IGV_WORD}${IGV_PCT}\s+incluid[oa]s?(?![\p{L}])`, "iu"), out: () => "con igv" },
+  { re: new RegExp(String.raw`(?:,\s*)?(?<![\p{L}\d])(?:sin|m[aá]s|\+|no\s+incluye|aparte\s+(?:el\s+)?)\s*(?:el\s+|los\s+)?${IGV_WORD}${IGV_PCT}`, "iu"), out: () => "sin igv" },
+  { re: new RegExp(String.raw`(?:,\s*)?(?<![\p{L}\d])${IGV_WORD}${IGV_PCT}\s+aparte(?![\p{L}])`, "iu"), out: () => "sin igv" },
 ];
+/** El IGV dicho sin decir si va incluido ("IGV 18 %", "impuestos"): se quita del pedido y se avisa. */
+const IGV_BARE = new RegExp(String.raw`(?:,\s*)?(?<![\p{L}\d])${IGV_WORD}${IGV_PCT}(?![\p{L}])`, "giu");
 
 /** Precio dictado: "a 254", "precio 254", "a 254 dólares", "a US$ 254". `§n§` son medidas ya apartadas. */
 const PRICE_RE = /(?:\b(?:a|en|precio(?:\s+de)?|a\s+precio\s+de|al\s+precio\s+de)\s+)(?:us\$|\$|s\/\.?|usd)?\s*(\d{2,6}(?:\.\d{1,2})?)(?:\s*(?:d[oó]lares|soles|usd))?(?![\d./§%]|\s*(?:d[ií]as|%|por\s*ciento))/i;
@@ -311,6 +339,20 @@ export interface DictatedQuote {
   inherited: { item: number; size: string }[];
   /** Lo que no se pudo separar con seguridad (corrida H, punto 5): se muestra lo entendido y se pregunta. */
   doubts: string[];
+  /**
+   * Corrida I: se juntó en UNA llanta algo que podía ser otra (dos productos, dos cantidades, dos precios tras una coma).
+   * `why`: por qué; `alt`: el texto separando por cada coma (la lectura de la corrida H), para el botón "Son varias" ("" si
+   * esa lectura no da más llantas: entonces "Son varias" pide dictarlas de nuevo).
+   */
+  single?: { why: string[]; alt: string };
+  /** Corrida I: lo dicho como "cliente …" es una marca del catálogo ("cliente Fenixway"): va como marca y se pregunta el cliente. */
+  brandAsCustomer?: string;
+  /** Corrida I: la moneda dicha ("soles", "dólares"); null si no se dijo. Se avisa si no es la de la cotización. */
+  currency: "PEN" | "USD" | null;
+  /** Corrida I: el IGV dicho sin decir si va incluido ("IGV 18 %"): se avisa. */
+  taxMention?: string;
+  /** Corrida I: lonas dichas que no están en el catálogo para esa medida (no van en la línea; se avisa con las que hay). */
+  plyIssues: { item: number; ply: number; size: string; available: number[] }[];
 }
 
 export interface DictationCatalog {
@@ -324,6 +366,8 @@ export interface DictationCatalog {
   profiles?: DictationProfile[];
   /** Qué formas de decir la UB se leen sin un cliente que la pida (voice/items.ts markUbs); por defecto 1 ("UB", "u be" mal oída). */
   ubLevel?: 0 | 1;
+  /** Lonas (PR) de cada medida en el catálogo (corrida I): las dictadas se validan contra estas. */
+  plies?: Record<string, number[]>;
 }
 
 /** Un cliente con perfil, para reconocerlo en lo dictado. */
@@ -438,12 +482,25 @@ export function fixQuoteVerb(text: string): string {
   return (text ?? "").replace(/^(\s*)(\p{L}+)(?=[\s,:])/u, (all, sp: string, w: string) => (isQuoteVerb(w) && !QUOTE_VERBS.includes(fold(w)) ? `${sp}Cotiza` : all));
 }
 
+/** "TRD 0 2" -> "TRD02": un diseño de letras y cifras del catálogo con sus cifras dictadas una a una (corrida I, "TRD cero dos"). */
+export function joinDesignCodes(text: string, designs: { model: string }[]): string {
+  let t = text;
+  for (const m of new Set(designs.map((d) => d.model.trim()).filter((x) => /^[A-Za-z]{2,}\d{2,}$/.test(x)))) {
+    // solo cifras separadas ("TRD 0 2"); "CM 958" (letras y cifras aparte) ya lo lee withBrand y se deja como se dijo
+    const letters = m.match(/^[A-Za-z]+/)![0];
+    const digits = m.slice(letters.length);
+    const spaced = new RegExp(String.raw`(?<![\p{L}\d])${letters}\s?${[...digits].join(String.raw`[\s-]?`)}(?![\p{L}\d])`, "giu");
+    t = t.replace(spaced, (all) => (/\d[\s-]+\d/.test(all) ? m : all));
+  }
+  return t;
+}
+
 /** "cotízame ocho Flama 77 en 295 80 22.5 a 254 para ZBUSS, a 45 días" -> líneas para el cotizador (ver la cabecera). */
-export function normalizeDictation(transcript: string, catalog: DictationCatalog = {}): DictatedQuote {
+export function normalizeDictation(transcript: string, catalog: DictationCatalog = {}, opts: { legacy?: boolean } = {}): DictatedQuote {
   // marcas y diseños mal oídos, por parecido contra el catálogo (antes de normalizar: compara palabras como se dijeron)
   const fixed = catalog.designs?.length || catalog.brands?.length ? fixCatalogTerms(transcript, { brands: catalog.brands ?? [], designs: catalog.designs ?? [] }) : { text: transcript, changes: [] };
   // números que Deepgram pegó ("17.54 valor 89", "valor 99295, 80"): después de pasar las palabras a cifras
-  const spoken = normalizeSpokenDetailed(joinUbDigits(unglueNumbers(spokenToDigits(fixed.text.replace(/[“”"']/g, "")), catalog.designs)), catalog.sizes);
+  const spoken = normalizeSpokenDetailed(joinUbDigits(unglueNumbers(splitPly(spokenToDigits(fixed.text.replace(/[“”"']/g, ""))), catalog.designs)), catalog.sizes);
   // "Cotícame", "Contícame", "Cotita" (Deepgram, 2026-11-16): el verbo de cotizar al inicio, por parecido
   let t = spoken.text.replace(QUOTE_HEAD, "").replace(/^\s*(\p{L}+)[\s,:]+/u, (all, w: string) => (isQuoteVerb(w) ? "" : all));
   // un punto pegado a la cifra ("… 22.5. Otra, …"): findTyreSizes no lee la medida si le sigue un punto
@@ -452,7 +509,7 @@ export function normalizeDictation(transcript: string, catalog: DictationCatalog
   const profiles = catalog.profiles ?? [];
   let profile: DictatedQuote["profile"];
   let prof: DictationProfile | undefined;
-  const lead = profiles.length ? profileAt(t.split(/[:,.;]|\s(?=\d)/)[0] ?? "", profiles) : null;
+  const lead = profiles.length ? profileAt(t.replace(/^\s*para\s+/i, "").split(/[:,.;]|\s(?=\d)/)[0] ?? "", profiles) : null;
   if (lead) {
     prof = lead.profile;
     const after = t.trim().slice(t.trim().toLowerCase().indexOf(lead.heard.toLowerCase()) + lead.heard.length);
@@ -472,10 +529,22 @@ export function normalizeDictation(transcript: string, catalog: DictationCatalog
     for (let guard = 0; guard < 3; guard++) {
       const m = t.match(p.re);
       if (!m) break;
-      terms.push(p.out(m));
+      if (!terms.includes(p.out(m))) terms.push(p.out(m));
       t = `${t.slice(0, m.index)} ${t.slice((m.index ?? 0) + m[0].length)}`;
     }
   }
+  // "IGV 18 %" sin decir si va incluido: se quita (no es parte de la llanta) y, si no se dijo con/sin, se avisa
+  let taxMention: string | undefined;
+  t = t.replace(IGV_BARE, (all) => {
+    if (!terms.some((x) => /igv/.test(x))) taxMention ??= clean(all);
+    return " ";
+  });
+  // códigos de diseño dictados letra por letra o cifra por cifra ("TRD 0 2" = TRD02, "LL F02" = LLF02): el del catálogo
+  t = joinDesignCodes(t, catalog.designs ?? []);
+  // la ficha: "por 4 unidades" -> x4, "precio, 298 dólares" -> precio 298, sin "modelo"/"marca"/"medida"
+  const ficha = fichaWords(t);
+  // un solo espacio: las posiciones de findTyreSizes (texto normalizado) son las de t
+  t = ficha.text.replace(/\s+/g, " ").replace(/(?:\s*[,.;:]\s*){2,}/g, (m) => (/[.]/.test(m) ? ". " : ", ")).replace(/^[\s,]+/, "").trim();
   // medidas apartadas (§n§) para que sus cifras no se lean como cantidad o precio
   const sizes: string[] = [];
   // findTyreSizes trabaja sobre el texto normalizado (mayúsculas, sin comillas, espacios simples): mismas posiciones que t
@@ -502,6 +571,19 @@ export function normalizeDictation(transcript: string, catalog: DictationCatalog
   // UBs apartadas (¤n¤): con un cliente que la pide, también un número suelto de 4 cifras
   const ub = markUbs(t, prof?.ub ? 2 : (catalog.ubLevel ?? 1));
   t = clean(ub.text);
+  // "cliente Fenixway": una marca del catálogo dicha como cliente va como marca (y se pregunta el cliente)
+  let brandAsCustomer: string | undefined;
+  t = t.replace(/(^|[\s,])(?:cliente|para)\s+(?:la\s+empresa\s+|el\s+cliente\s+)?(\p{L}[\p{L}\d-]*(?:\s+\p{L}[\p{L}\d-]*)?)/iu, (all, pre: string, name: string) => {
+    const words = name.split(/\s+/);
+    for (const n of [words.join(" "), words[0]]) {
+      const b = (catalog.brands ?? []).find((x) => fold(x) === fold(n));
+      if (b) {
+        brandAsCustomer = b;
+        return `${pre}${name}`;
+      }
+    }
+    return all;
+  });
   // cliente
   let customer = "";
   const cm = t.match(CUSTOMER_RE);
@@ -532,7 +614,14 @@ export function normalizeDictation(transcript: string, catalog: DictationCatalog
     }
   }
   // llantas: una por grupo (voice/items.ts)
-  const grouping = groupItems(t, known);
+  const first = (x: string) => fold(x).split(" ")[0];
+  const productOf = (w: string) => {
+    if ((catalog.brands ?? []).some((b) => first(b) === w)) return { kind: "brand" as const, brands: [w] };
+    const ds = (catalog.designs ?? []).filter((d) => first(d.model) === w);
+    return ds.length ? { kind: "design" as const, brands: [...new Set(ds.map((d) => first(d.brand)))] } : null;
+  };
+  const grouping = groupItems(t, known, { legacy: opts.legacy, sizeOf: (k) => sizes[k] ?? String(k), productOf });
+  const plyIssues: DictatedQuote["plyIssues"] = [];
   const ubs: (string | undefined)[] = [];
   const ubIssues: { item: number; heard?: string }[] = [];
   const inherited: { item: number; size: string }[] = [];
@@ -566,6 +655,15 @@ export function normalizeDictation(transcript: string, catalog: DictationCatalog
         break;
       }
     }
+    // lonas ("18PR", ya juntas por splitPly): aparte, para no leerlas como una cifra suelta ni como parte del diseño
+    let ply: number | null = null;
+    const plm = rest.match(/(?<![\d.])(\d{1,2})PR(?![\p{L}\d])/iu);
+    if (plm) {
+      ply = parseInt(plm[1], 10);
+      rest = `${rest.slice(0, plm.index)} ${rest.slice((plm.index ?? 0) + plm[0].length)}`;
+    }
+    // otra cantidad en la misma llanta ("por 4 unidades, precio 298, por 6 unidades"): no va a la descripción (se pregunta)
+    rest = rest.replace(/(?<![\p{L}])x\s*\d{1,3}(?![\d.])/giu, " ");
     let marks = [...rest.matchAll(/§(\d+)§/g)].map((m) => sizes[parseInt(m[1], 10)]);
     if (marks.length > 1) doubts.push(`la llanta ${i + 1} («${display(g)}») tiene dos medidas`);
     rest = rest.replace(/§\d+§/g, " ").replace(/(?<![\p{L}\d])(?:en|de|del|la|las|el|los|medida|llantas?|neum[aá]ticos?|unidades|aro|para)(?![\p{L}\d])/giu, " ");
@@ -578,9 +676,15 @@ export function normalizeDictation(transcript: string, catalog: DictationCatalog
       inherited.push({ item: i, size: prevSize });
     }
     if (marks.length) prevSize = marks[marks.length - 1];
+    // las lonas contra las del catálogo para esa medida (si el catálogo las trae): si no existen, no van y se avisa
+    const avail = ply && marks.length ? catalog.plies?.[marks[0]] : undefined;
+    if (ply && avail?.length && !avail.includes(ply)) {
+      plyIssues.push({ item: i, ply, size: marks[0], available: [...avail].sort((a, b) => a - b) });
+      ply = null;
+    }
     const desc = withBrand(clean(rest), catalog);
     meta.push({ desc: clean(rest), qty: !!qty, ownSize, other: !!(price || u) });
-    return clean([desc, marks.join(" "), qty ? `x${qty}` : "", price ? `precio ${price}` : "", u?.valid ? `ub ${u.value}` : ""].filter(Boolean).join(" "));
+    return clean([desc, marks.join(" "), ply ? `${ply}PR` : "", qty ? `x${qty}` : "", price ? `precio ${price}` : "", u?.valid ? `ub ${u.value}` : ""].filter(Boolean).join(" "));
   });
   // varias llantas y alguna sin cantidad cuando las otras la dicen: Deepgram suele comerse el número ("…a 198, Westlake AZ670")
   if (meta.length > 1 && meta.some((m) => m.qty)) meta.forEach((m, i) => !m.qty && (m.ownSize || m.desc) && doubts.push(`la llanta ${i + 1} («${clean(items[i])}») no dice cantidad`));
@@ -599,6 +703,12 @@ export function normalizeDictation(transcript: string, catalog: DictationCatalog
   const header = profile ? [`${profile.key}${profile.branch ? ` ${profile.branch}` : ""}`] : [];
   const lines = [...header, ...items.filter(Boolean), ...(customer ? [`para ${customer}`] : []), ...terms];
   const sizeFixes = spoken.sizes.resolved.filter((r) => !r.plain).map((r) => ({ from: r.from, to: displaySize(r.to) }));
+  // juntado en una llanta con duda: la alternativa separando por cada coma (solo si de verdad da más de una llanta)
+  let single: DictatedQuote["single"];
+  if (!opts.legacy && grouping.single?.length) {
+    const alt = normalizeDictation(transcript, catalog, { legacy: true });
+    single = { why: grouping.single, alt: alt.items.length > items.filter(Boolean).length ? alt.text : "" };
+  }
   return {
     text: lines.join("\n"),
     sizes,
@@ -612,6 +722,11 @@ export function normalizeDictation(transcript: string, catalog: DictationCatalog
     ubIssues,
     inherited,
     doubts,
+    ...(single ? { single } : {}),
+    ...(brandAsCustomer && !customer && !profile ? { brandAsCustomer } : {}),
+    currency: ficha.currency,
+    ...(taxMention ? { taxMention } : {}),
+    plyIssues,
   };
 }
 

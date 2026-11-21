@@ -19,5 +19,7 @@ export const TEST_CATALOG: DictationCatalog = {
   designs: TEST_DESIGNS,
   brands: ["Fenixway", "Westlake", "Double Coin", "Doublestar", "Triangle", "Linglong"],
   sizes: ["295/80R22.5", "315/80R22.5", "275/80R22.5", "11R22.5", "12R22.5", "215/75R17.5", "235/75R17.5", "385/65R22.5", "12R20", "215/75R15"],
+  // corrida I: las lonas de cada medida en las listas (las dictadas se validan contra estas)
+  plies: { "295/80R22.5": [16, 18], "315/80R22.5": [18, 20], "11R22.5": [16, 18], "12R22.5": [18], "12R20": [18], "275/80R22.5": [16], "385/65R22.5": [20] },
   profiles: [{ key: "prosegur", name: "Prosegur", names: ["prosegur", "prosegur sa", "prosegur s.a.", "Prosegur", "PROSEGUR SA"], units: ["Juliaca", "Ayacucho"], ub: true }],
 };

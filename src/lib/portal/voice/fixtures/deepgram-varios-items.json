@@ -832,13 +832,12 @@
    "said": "Cotízame para Prosegur Arequipa: dos Flama 77 para la UB 3104 y dos Valor 99 para la UB 3120.",
    "heard": "Cotízame para asegurar. 2 Flama 77 para la U 3104 y 2 Valor 99 para la U 3120.",
    "esperado": {
-    "texto": "Fenixway asegurar 2 Flama 77 ub 3104\nFenixway Valor 99 x2 ub 3120",
+    "texto": "Fenixway Flama 77 x2 ub 3104\nFenixway Valor 99 x2 ub 3120\npara Asegurar",
     "pregunta": [
-     "la llanta 1 («Fenixway asegurar 2 Flama 77 ub 3104») no dice cantidad",
-     "la llanta 1 («Fenixway asegurar 2 Flama 77 ub 3104») no tiene medida"
+     "la llanta 1 («Fenixway Flama 77 x2 ub 3104») no tiene medida"
     ]
    },
-   "nota": "transcripción: «Prosegur Arequipa» llegó como «asegurar»: no es el cliente con contrato; pregunta"
+   "nota": "transcripción: «Prosegur Arequipa» llegó como «asegurar»: no es el cliente con contrato; pregunta. Corrida I: «cotízame para …» ya no se come el «para»: «asegurar» va como cliente (el bot lo compara con los conocidos) y no dentro de la llanta"
   },
   {
    "id": "p11-sin-keyterms",

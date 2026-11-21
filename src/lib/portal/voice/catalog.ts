@@ -20,9 +20,11 @@ export interface VoiceCatalog {
   customers?: string[];
   /** Clientes con perfil (config/customers.json) y las sucursales de sus cotizaciones (corrida H: Prosegur por voz). */
   profiles?: DictationProfile[];
+  /** Lonas (PR) de cada medida en las listas (corrida I: las dictadas se validan contra estas). Solo medidas con dato. */
+  plies?: Record<string, number[]>;
 }
 
-type Row = Pick<PriceRow, "brand" | "model" | "size" | "isTyre" | "kind">;
+type Row = Pick<PriceRow, "brand" | "model" | "size" | "isTyre" | "kind"> & Partial<Pick<PriceRow, "ply">>;
 
 function ranked<T>(rows: Row[], key: (r: Row) => T | null, id: (t: T) => string): T[] {
   const score = new Map<string, { item: T; own: number; n: number; first: number }>();
@@ -47,7 +49,15 @@ export function voiceCatalogFromRows(rows: Row[]): VoiceCatalog {
     brands: ranked(tyres, (r) => (r.brand?.trim() ? r.brand.trim() : null), low),
     designs: ranked(tyres, (r) => (r.brand?.trim() && r.model?.trim() ? { brand: r.brand.trim(), model: r.model.trim() } : null), (d) => `${low(d.brand)}|${low(d.model)}`),
     sizes: ranked(tyres, (r) => (r.size?.trim() ? r.size.trim() : null), (s) => s),
+    plies: pliesOf(tyres),
   };
+}
+
+/** Las lonas de cada medida (solo las filas que las traen). */
+function pliesOf(rows: Row[]): Record<string, number[]> {
+  const out: Record<string, Set<number>> = {};
+  for (const r of rows) if (r.size?.trim() && typeof r.ply === "number" && r.ply > 0) (out[r.size.trim()] ??= new Set()).add(r.ply);
+  return Object.fromEntries(Object.entries(out).map(([k, v]) => [k, [...v].sort((a, b) => a - b)]));
 }
 
 let cache: { at: number; store: PriceStore; catalog: VoiceCatalog } | null = null;

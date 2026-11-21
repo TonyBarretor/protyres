@@ -76,7 +76,7 @@
     "maxVoiceSeconds": 180,
     "maxUserChars": 2000,
     "maxPriceListChars": 60000,
-    "maxTokens": { "reporte": 1500, "cotizador_pedido": 2048, "cotizador_imagen": 2048, "lista_precios": 8192 },
+    "maxTokens": { "reporte": 1500, "cotizador_pedido": 2048, "cotizador_imagen": 2048, "lista_precios": 8192, "correccion_libre": 600 },
     "burstPerMinute": 30,
     "maxMessageAgeMinutes": 10,
     "prices": {

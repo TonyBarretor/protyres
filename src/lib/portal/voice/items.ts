@@ -49,6 +49,20 @@ export function unglueNumbers(text: string, designs: { model: string }[] = []): 
   return t;
 }
 
+// ── lonas (corrida I) ──
+
+const PLY_WORD = String.raw`(?:p\.?\s?r\.?|ply|lonas|capas)(?![\p{L}])`;
+
+/**
+ * Lonas dictadas -> "18PR": "18 PR", "18 p r", "18 lonas" ("dieciocho lonas" ya en cifras) y pegadas al aro por Deepgram
+ * ("22.518 p r" -> "22.5 18PR"). Antes de leer la medida: si no, "22.518" no es un aro.
+ */
+export function splitPly(text: string): string {
+  return (text ?? "")
+    .replace(new RegExp(String.raw`(?<![\d.,])(1[3-9]|2[0-4])([.,]5)(\d{1,2})\s*${PLY_WORD}`, "giu"), (_, rim: string, half: string, ply: string) => `${rim}${half} ${ply}PR`)
+    .replace(new RegExp(String.raw`(?<![\d.,])(\d{1,2})\s*${PLY_WORD}`, "giu"), (all, ply: string) => (parseInt(ply, 10) >= 4 && parseInt(ply, 10) <= 32 ? `${ply}PR` : all));
+}
+
 // ── UB ──
 
 /**
@@ -152,7 +166,8 @@ function startsItem(toks: Tok[], i: number): boolean {
   const next = toks[i + 1];
   if (!next) return false;
   if (next.kind === "size") return true;
-  return next.kind === "word" && !/^(?:d[ií]as|por|%|d[oó]lares|soles|usd)$/i.test(next.s);
+  // "18PR" (las lonas) no es una cantidad
+  return next.kind === "word" && !/^(?:d[ií]as|por|%|d[oó]lares|soles|usd|pr)$/i.test(next.s);
 }
 
 interface Features {
@@ -174,9 +189,10 @@ function features(c: string, known?: KnownWord): Features {
   const sizes = (c.match(/§\d+§/g) ?? []).length;
   const ubs = (c.match(/¤\d+¤/g) ?? []).length;
   const price = PRICE_RE.test(c);
-  const rest = c.replace(PRICE_RE, " ").replace(/§\d+§|¤\d+¤/g, " ");
+  const rest = c.replace(PRICE_RE, " ").replace(/§\d+§|¤\d+¤/g, " ").replace(/(?<![\d.])\d{1,2}PR(?![\p{L}\d])/giu, " ");
   const qtyLead = new RegExp(String.raw`^\s*(?:x\s*)?\d{1,3}(?![\d.])(?:\s*${QTY_UNIT})?(?:\s|$)`, "iu").test(c);
-  const words = rest.replace(NOT_DESC, " ").replace(/\d+(?:\.\d+)?/g, " ");
+  // "x4" (la cantidad ya escrita, p. ej. de "por 4 unidades") no describe la llanta
+  const words = rest.replace(/(?<![\p{L}])x\s*\d{1,3}(?![\d.])/giu, " ").replace(NOT_DESC, " ").replace(/\d+(?:\.\d+)?/g, " ");
   // con una UB, palabras sueltas que no son del catálogo son ruido de la transcripción ("un llegado 1231")
   const desc = /\p{L}/u.test(words) && !(ubs && !sizes && known && !fold(words).split(" ").some((w) => w && known(w)));
   const bareNumber = !sizes && !ubs && !price && !desc && /\d/.test(rest);
@@ -197,6 +213,8 @@ function splitInside(c: string, known?: KnownWord): string[] {
     if (!startsItem(toks, i)) continue;
     const before = c.slice(from, toks[i].at);
     const f = features(before, known);
+    // "… §0§ 8 unidades precio 262" (Deepgram pegó la cantidad al aro): "8 unidades" es de esta llanta si aún no tiene
+    if (!f.qtyLead && toks[i + 1] && new RegExp(String.raw`^${QTY_UNIT}$`, "iu").test(toks[i + 1].s)) continue;
     // la llanta de antes ya está completa (tiene medida o UB), o tiene descripción y lo que sigue también
     const after = features(c.slice(toks[i].at), known);
     if (f.sizes || f.ubs || (f.desc && after.desc && (f.qtyLead || f.price))) {
@@ -224,16 +242,58 @@ export interface Grouping {
   groups: string[];
   /** Lo que no se pudo poner en una llanta con seguridad. */
   doubts: string[];
+  /** Corrida I: se juntó en una llanta algo que podía ser otra (por qué): se pregunta "¿una sola o varias?". */
+  single?: string[];
+}
+
+/**
+ * Los trozos del pedido con lo que los separa: "fuerte" (una palabra de enlace: "y", "además", "también", "otra"…, o el
+ * corte antes de una cantidad que empieza otra llanta) o "débil" (coma, punto y coma, dos puntos, punto: pausas del
+ * dictado, que en forma de ficha van entre los datos de UNA llanta).
+ */
+function chunksOf(t: string, known?: KnownWord): { c: string; strong: boolean }[] {
+  const out: { c: string; strong: boolean }[] = [];
+  let last = 0;
+  let strong = true;
+  const push = (s: string, st: boolean) => {
+    const parts = splitInside(s.trim(), known);
+    parts.forEach((p, i) => p && /[\p{L}\d§¤]/u.test(p) && out.push({ c: p, strong: i > 0 || st }));
+  };
+  for (const m of t.matchAll(SEPARATORS)) {
+    const piece = t.slice(last, m.index);
+    if (piece.trim() && /[\p{L}\d§¤]/u.test(piece)) {
+      push(piece, strong);
+      strong = false;
+    }
+    if (/\p{L}/u.test(m[0])) strong = true;
+    last = (m.index ?? 0) + m[0].length;
+  }
+  if (t.slice(last).trim()) push(t.slice(last), strong);
+  return out;
+}
+
+export interface GroupOptions {
+  /**
+   * Corrida I: una coma o un punto no separan llantas (la ficha "Fenixway, modelo valor 96, 11 R 22.5, 18 PR, por 4
+   * unidades. Precio, 298" es UNA llanta). Una llanta nueva empieza con otra cantidad con su producto, otra medida
+   * distinta o una palabra de enlace; ante la duda, una sola llanta y `single` dice por qué. Sin esto (`legacy`), cada
+   * trozo con descripción, medida o cantidad es otra llanta (la lectura de la corrida H, la alternativa "Son varias").
+   */
+  legacy?: boolean;
+  /** La medida canónica de la marca §n§ (para saber si una medida es "otra"); sin esto, cada marca es una medida distinta. */
+  sizeOf?: (id: number) => string;
+  /**
+   * La palabra (plegada) del catálogo: marca, o diseño con las marcas que lo tienen (primera palabra, plegada). Para saber
+   * si lo que sigue a una coma es otro producto: "Fenixway, valor 96" es uno; "Westlake CM 958 …, Valor 99" son dos.
+   */
+  productOf?: (foldedWord: string) => { kind: "brand" | "design"; brands: string[] } | null;
 }
 
 /** Las llantas del pedido, una por grupo (ver la cabecera). */
-export function groupItems(t: string, known?: KnownWord): Grouping {
+export function groupItems(t: string, known?: KnownWord, opts: GroupOptions = {}): Grouping {
   const doubts: string[] = [];
-  const chunks = t
-    .split(SEPARATORS)
-    .map((s) => s.trim())
-    .filter((s) => s && /[\p{L}\d§¤]/u.test(s))
-    .flatMap((c) => splitInside(c, known));
+  const singleWhy: string[] = [];
+  const chunks = chunksOf(t, known);
   interface Cur {
     parts: string[];
     f: Features;
@@ -250,9 +310,62 @@ export function groupItems(t: string, known?: KnownWord): Grouping {
   });
   const cur = () => items[items.length - 1];
   const hasQty = (x: Cur) => x.f.qtyLead;
-  for (const c of chunks) {
+  const sizeIds = (s: string) => [...s.matchAll(/§(\d+)§/g)].map((m) => (opts.sizeOf ? opts.sizeOf(parseInt(m[1], 10)) : m[1]));
+  // los productos del catálogo nombrados en un trozo: diseños con su número ("valor 99") y marcas ("fenixway")
+  const productsIn = (s: string): { designs: string[]; brands: string[] } => {
+    const out = { designs: [] as string[], brands: [] as string[] };
+    if (!known) return out;
+    const ws = fold(s.replace(PRICE_RE, " ").replace(/§\d+§|¤\d+¤/g, " ")).split(" ").filter(Boolean);
+    ws.forEach((w, i) => {
+      if (!/^\p{L}/u.test(w) || !known(w)) return;
+      if (opts.productOf?.(w)?.kind === "brand") out.brands.push(w);
+      else out.designs.push(/^\d+$/.test(ws[i + 1] ?? "") ? `${w} ${ws[i + 1]}` : w);
+    });
+    return out;
+  };
+  const brandsOf = (p: { designs: string[]; brands: string[] }) => new Set([...p.brands, ...p.designs.flatMap((d) => opts.productOf?.(d.split(" ")[0])?.brands ?? [])]);
+  // ¿otro producto? dos diseños distintos, o marcas que no casan (una marca y su diseño tras una coma son el mismo)
+  const otherOf = (a: { designs: string[]; brands: string[] }, b: { designs: string[]; brands: string[] }) => {
+    if ((!a.designs.length && !a.brands.length) || (!b.designs.length && !b.brands.length)) return false;
+    if (!opts.productOf) return [...a.designs, ...a.brands].some((w) => ![...b.designs, ...b.brands].includes(w));
+    if (a.designs.length && b.designs.length && a.designs.some((d) => !b.designs.includes(d))) return true;
+    const ab = brandsOf(a);
+    const bb = brandsOf(b);
+    return ab.size > 0 && bb.size > 0 && ![...ab].some((x) => bb.has(x));
+  };
+  const descWords = (x: string) => fold(x.replace(PRICE_RE, " ").replace(/§\d+§|¤\d+¤/g, " ").replace(NOT_DESC, " ")).split(" ").filter((w) => w && !/^\d+(?:\.\d+)?$/.test(w));
+  for (let ci = 0; ci < chunks.length; ci++) {
+    const { c, strong } = chunks[ci];
     const f = features(c, known);
     const last = cur();
+    if (!opts.legacy && !strong && last && !pending.length) {
+      // después de una coma o un punto: la misma llanta, salvo otra cantidad con su producto u otra medida distinta
+      const lastText = last.parts.join(" ");
+      const lastSizes = sizeIds(lastText);
+      const otherSize = f.sizes > 0 && lastSizes.length > 0 && sizeIds(c).some((x) => !lastSizes.includes(x));
+      const otherQty = f.qtyLead && (f.desc || f.sizes > 0) && hasQty(last);
+      const ubOnly = !f.desc && !f.sizes && !f.qtyLead && f.ubs > 0;
+      const bareQty = (f.bareNumber || (f.qtyLead && !f.desc && !f.sizes)) && !f.ubs;
+      // una cantidad sola cuando la llanta ya tiene: de la siguiente si lo que sigue es un producto sin cantidad
+      // ("1231, 4, valor 99"); si no, la misma llanta con dos cantidades (se pregunta)
+      const next = chunks[ci + 1] ? features(chunks[ci + 1].c, known) : null;
+      const qtyForNext = bareQty && hasQty(last) && !!next && (next.desc || next.sizes > 0) && !next.qtyLead;
+      const cp = productsIn(c);
+      const lp = productsIn(lastText);
+      // otro producto después de una llanta que ya tiene medida ("8 Westlake CM 958 en 11R22.5 a 198, Valor 99 en …"): la siguiente
+      const descDiffers = f.desc && last.f.desc && descWords(c).some((w) => !descWords(lastText).includes(w));
+      const differs = known ? otherOf(cp, lp) : descDiffers;
+      // con medida ya dicha, otra descripción con algo del catálogo ("…, Westlake a z 670, en …") también es la siguiente
+      const otherProduct = lastSizes.length > 0 && (differs || (!!known && descDiffers && (cp.designs.length > 0 || cp.brands.length > 0)));
+      if (!otherSize && !otherQty && !ubOnly && !otherProduct && !qtyForNext) {
+        if (f.qtyLead && hasQty(last)) singleWhy.push(`dos cantidades («${c.trim()}»)`);
+        else if (f.price && last.f.price) singleWhy.push(`dos precios («${c.trim()}»)`);
+        else if (differs) singleWhy.push(`dos productos («${c.trim()}»)`);
+        last.parts.push(c);
+        last.f = merge(last.f, f);
+        continue;
+      }
+    }
     if (!f.desc && !f.sizes && !f.qtyLead && f.price && !f.ubs) {
       // "…, a 254": el precio va con la llanta de antes
       if (last) {
@@ -309,7 +422,7 @@ export function groupItems(t: string, known?: KnownWord): Grouping {
     } else if (!last) items.push({ parts: pending, f: pf });
     else doubts.push(`no sé a qué llanta va «${pending.join(", ")}»`);
   }
-  return { groups: items.map((x) => x.parts.join(" ").replace(/\s+/g, " ").trim()), doubts };
+  return { groups: items.map((x) => x.parts.join(" ").replace(/\s+/g, " ").trim()), doubts, ...(singleWhy.length ? { single: singleWhy } : {}) };
 }
 
 // ── correcciones dirigidas ──

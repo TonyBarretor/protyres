@@ -1,0 +1,356 @@
+{
+ "descripcion": "Corrida I: dictado de una llanta en forma de ficha. «prod-17-11» es la transcripción literal de producción (17/11: el bot la partió en tres llantas). f01–f30: transcripciones reales de Deepgram (nova-3/es, smart_format, keyterms del catálogo de prueba) de 30 variantes grabadas con voces de macOS (say) el 2026-11-17. «said» = lo dictado; «heard» = lo que devolvió Deepgram; «esperado» = lo que entiende normalizeDictation con fixtures/test-catalog.ts. Los errores de pura transcripción tienen su «nota» y no se fuerzan.",
+ "casos": [
+  {
+   "id": "prod-17-11",
+   "voice": "vendedor real (producción, 17/11)",
+   "heard": "Cotizar cliente Fenixway, modelo valor 96, 11 r, 22.518 p r, por 4 unidades. Precio, 298 dólares, incluido impuestos, IGB 18 por 100.",
+   "esperado": {
+    "texto": "Fenixway valor 96 11R22.5 18PR x4 precio 298\ncon igv",
+    "marcaComoCliente": "Fenixway",
+    "moneda": "USD"
+   }
+  },
+  {
+   "id": "f01",
+   "voice": "Paulina",
+   "said": "Cotizar cliente Fenixway, modelo valor 96, 11 R 22.5, 18 PR, por 4 unidades. Precio, 298 dólares, incluido impuestos, IGV 18 por ciento.",
+   "heard": "Cotizar cliente Fenixway, modelo valor 96, 11 r 22.518 p r, por 4 unidades. Precio: 298 dólares, incluido impuestos, IGB 18 por 100.",
+   "esperado": {
+    "texto": "Fenixway valor 96 11R22.5 18PR x4 precio 298\ncon igv",
+    "marcaComoCliente": "Fenixway",
+    "moneda": "USD"
+   }
+  },
+  {
+   "id": "f02",
+   "voice": "Mónica",
+   "said": "Cotizar. Cliente Transportes Beta. Marca Fenixway, modelo Flama 77, medida 295 80 R 22.5, cantidad 8, precio 254 dólares más IGV.",
+   "heard": "Cotizar. Cliente Transportes Beta, marca Fenix WAI, modelo Flama 77, medida 295, 80 r 22.5, cantidad 8, precio 254 dólares más IGV.",
+   "esperado": {
+    "texto": "Fenixway Flama 77 295/80R22.5 x8 precio 254\npara Transportes Beta\nsin igv",
+    "moneda": "USD"
+   }
+  },
+  {
+   "id": "f03",
+   "voice": "Eddy (Spanish (Mexico))",
+   "said": "Cotízame para Zeta Bus: marca Westlake, modelo CM 958, medida 11 R 22.5, 16 lonas, 6 unidades, precio 198 dólares sin IGV.",
+   "heard": "Cotízame para AZBUSS. Marca Westlake, modelo CM 958, medida 11 r 22.516 lonas, 6 unidades, precio 198 dólares sin IGV.",
+   "nota": "transcripción: «Zeta Bus» llegó como «AZBUSS» (el bot lo compara con los clientes conocidos)",
+   "esperado": {
+    "texto": "Westlake CM 958 11R22.5 16PR x6 precio 198\npara AZBUSS\nsin igv",
+    "moneda": "USD"
+   }
+  },
+  {
+   "id": "f04",
+   "voice": "Reed (Spanish (Spain))",
+   "said": "Cliente Transportes Gamma. Modelo Valor 99. Medida 295 80 22.5. Cantidad 12. Precio 265 incluido IGV.",
+   "heard": "Cliente Transportes Gamma. Modelo valor 99. Medida 295, 80 22.5. Cantidad 12. Precio 265, incluido IGB.",
+   "esperado": {
+    "texto": "Fenixway valor 99 295/80R22.5 x12 precio 265\npara Transportes Gamma\ncon igv"
+   }
+  },
+  {
+   "id": "f05",
+   "voice": "Flo (Spanish (Mexico))",
+   "said": "Cotizar, modelo Flama 89, medida 315 80 R 22.5, 18 PR, por 10 unidades, precio 270 dólares, con IGV, para Transportes Delta, a 30 días.",
+   "heard": "Modelo Flama 89, medida 315 80 r 22.518 p r, por 10 unidades, precio 270 dólares, con IGB para transporte Delta a 30 días.",
+   "esperado": {
+    "texto": "Fenixway Flama 89 315/80R22.5 18PR x10 precio 270\npara transporte Delta\nplazo: 30 días\ncon igv",
+    "moneda": "USD"
+   }
+  },
+  {
+   "id": "f06",
+   "voice": "Grandpa (Spanish (Spain))",
+   "said": "Cotiza cliente Fenixway, modelo Flama 77, 275 80 R 22.5, por 6 unidades, precio 240 dólares, IGV incluido.",
+   "heard": "Cotiza cliente Fenixway, modelo Flama 77, 275, 80 r 22.5, por 6 unidades, precio 240 dólares, IGV incluido.",
+   "esperado": {
+    "texto": "Fenixway Flama 77 275/80R22.5 x6 precio 240\ncon igv",
+    "marcaComoCliente": "Fenixway",
+    "moneda": "USD"
+   }
+  },
+  {
+   "id": "f07",
+   "voice": "Sandy (Spanish (Mexico))",
+   "said": "Cotizar para la empresa ZBUSS. Marca Double Coin, modelo RR 202, 12 R 22.5, dieciocho lonas, cantidad 4, precio 310 dólares, más IGV.",
+   "heard": "Cotizar para la empresa ZBUSS. Marca doble coil, modelo 202, 12 r 22.518 lonas, cantidad 4, precio 310 dólares, más IG 1.",
+   "nota": "transcripción: «Double Coin» llegó como «doble coil» y «más IGV» como «más IG 1»: no se fuerza; pregunta",
+   "esperado": {
+    "texto": "doble coil 202 IG 1 12R22.5 18PR x4 precio 310\npara ZBUSS",
+    "unaSola": [
+     "dos cantidades («x4»)"
+    ],
+    "moneda": "USD"
+   }
+  },
+  {
+   "id": "f08",
+   "voice": "Rocko (Spanish (Spain))",
+   "said": "Cotizar cliente Transportes Beta, modelo Valor 89, 11 R 22.5, 16 PR, por 8 unidades. Precio 255 soles, incluido impuestos.",
+   "heard": "Cotizar cliente Transportes Beta, modelo valor 89, 11 r 22.516 pr, por 8 unidades. Precio, 255 soles, incluido impuestos.",
+   "esperado": {
+    "texto": "Fenixway valor 89 11R22.5 16PR x8 precio 255\npara Transportes Beta\ncon igv",
+    "moneda": "PEN"
+   }
+  },
+  {
+   "id": "f09",
+   "voice": "Shelley (Spanish (Mexico))",
+   "said": "Cotízame. Modelo Valor 96. Medida 11 R 22.5. 18 p r. Cuatro unidades. Precio 298 dólares. Incluido impuestos.",
+   "heard": "Cotízame. Modelo valor 96. Medida 11 r, 22.518 p r 4 unidades. Precio, 298 dólares, incluido impuestos.",
+   "esperado": {
+    "texto": "Fenixway valor 96 11R22.5 18PR x4 precio 298\ncon igv",
+    "moneda": "USD"
+   }
+  },
+  {
+   "id": "f10",
+   "voice": "Grandma (Spanish (Spain))",
+   "said": "Cotizar cliente Westlake, modelo CB 972, medida 12 R 22.5, por 2 unidades, precio 300 dólares, sin impuestos.",
+   "heard": "Cotizar cliente Westlake, modelo CB900 72, medida 12 r 22.5, por 2 unidades, precio 300 dólares, sin impuestos.",
+   "nota": "transcripción: «CB 972» llegó como «CB900 72»",
+   "esperado": {
+    "texto": "Westlake CB900 72 12R22.5 x2 precio 300\nsin igv",
+    "marcaComoCliente": "Westlake",
+    "moneda": "USD"
+   }
+  },
+  {
+   "id": "f11",
+   "voice": "Paulina",
+   "said": "Cotizar para Transportes Gamma, marca Linglong, modelo LLF 02, medida 215 75 R 17.5, por 6 unidades, precio 150 dólares, impuestos incluidos.",
+   "heard": "Cotizar para Transportes Gamma, marca Linglong, modelo LL F02, medida 20000575 317.5, por 6 unidades, precio 150 dólares, impuestos incluidos.",
+   "nota": "transcripción: la medida «215 75 R 17.5» llegó como «20000575 317.5»: pregunta",
+   "esperado": {
+    "texto": "Linglong LL F02 20000575 317.5 x6 precio 150\npara Transportes Gamma\ncon igv",
+    "pregunta": [
+     "no sé qué es «317.5» en la llanta 1 («Linglong LL F02 20000575 317.5 x6 precio 150 dólares»)"
+    ],
+    "moneda": "USD"
+   }
+  },
+  {
+   "id": "f12",
+   "voice": "Mónica",
+   "said": "Cotizar. Cliente ZBUSS. Modelo Valor 99, medida 295 80 R 22.5, por 8 unidades, precio 260. Además, modelo Flama 89, medida 11 R 22.5, por 4 unidades, precio 250. Con IGV.",
+   "heard": "Cotizar. Cliente ZBUSS. Modelo valor 99, medida 295, 80 r 22.5, por 8 unidades, precio 260. Además, modelo Flama 89, medida 11 r 22.5, por 4 unidades, precio 250, con IGV.",
+   "esperado": {
+    "texto": "Fenixway valor 99 295/80R22.5 x8 precio 260\nFenixway Flama 89 11R22.5 x4 precio 250\npara ZBUSS\ncon igv"
+   }
+  },
+  {
+   "id": "f13",
+   "voice": "Eddy (Spanish (Spain))",
+   "said": "Cotizar cliente Transportes Delta, Fenixway Valor 99, 295 80 R 22.5, 8 unidades, precio 262 dólares, y 4 Flama 77 en 275 80 R 22.5 a 240, más IGV.",
+   "heard": "Cotizar cliente Transportes Delta, Fenixway Valor 99, 295, 80 r 22.58 unidades, precio 262 dólares, y 4 Flama 77 en 275, 80 r 22.5 a 240, más IGV.",
+   "esperado": {
+    "texto": "Fenixway Valor 99 295/80R22.5 x8 precio 262\nFenixway Flama 77 275/80R22.5 x4 precio 240\npara Transportes Delta\nsin igv",
+    "moneda": "USD"
+   }
+  },
+  {
+   "id": "f14",
+   "voice": "Reed (Spanish (Mexico))",
+   "said": "Cotizar, cliente Transportes Beta, modelo Valor 96, 11 R 22.5, por 4 unidades, precio 298 dólares, IGV 18 por ciento.",
+   "heard": "Cotizar, cliente Transportes Beta, modelo valor 96, 11 r 22.5, por 4 unidades, precio 298 dólares, IGV 18 por 100.",
+   "esperado": {
+    "texto": "Fenixway valor 96 11R22.5 x4 precio 298\npara Transportes Beta",
+    "moneda": "USD",
+    "igvSinDecir": "IGV 18 %"
+   }
+  },
+  {
+   "id": "f15",
+   "voice": "Flo (Spanish (Spain))",
+   "said": "Cotízame Westlake CM 986, 12 R 20, 18 lonas, por 6 unidades, a 285 dólares, con IGV, para Transportes Gamma, crédito a 45 días.",
+   "heard": "CM900 86, 12 r 20, 18 lonas, por 6 unidades, a 285 dólares, con IGV, para Transportes Gamma, crédito a 45 días.",
+   "nota": "transcripción: Deepgram se comió «Cotízame Westlake» y oyó «CM900 86» por «CM 986»",
+   "esperado": {
+    "texto": "CM900 86 12R20 18PR x6 precio 285\npara Transportes Gamma\nplazo: 45 días\ncon igv",
+    "moneda": "USD"
+   }
+  },
+  {
+   "id": "f16",
+   "voice": "Grandpa (Spanish (Mexico))",
+   "said": "Cotizar para ZBUSS, marca Fenixway, modelo Fuerte 89, medida 12 R 22.5, por 4 unidades, precio 290 dólares, IGV incluido, a 60 días.",
+   "heard": "Cotizar para ZBUSS marca Fenixway, modelo fuerte 89, medida 12 r 22.5, por 4 unidades, precio 290 dólares, IGV incluido, a 60 días.",
+   "esperado": {
+    "texto": "Fenixway fuerte 89 12R22.5 x4 precio 290\npara ZBUSS\nplazo: 60 días\ncon igv",
+    "moneda": "USD"
+   }
+  },
+  {
+   "id": "f17",
+   "voice": "Sandy (Spanish (Spain))",
+   "said": "Cotizar cliente Transportes Delta. Modelo Valor 85, 295 80 R 22.5, cantidad 10. Precio, 250 dólares. Incluido impuestos.",
+   "heard": "Cotizar cliente Transportes Delta. Modelo valor 85, 295, 80 r 22.5, cantidad 10. Precio, 250 dólares, incluido impuestos.",
+   "esperado": {
+    "texto": "Fenixway valor 85 295/80R22.5 x10 precio 250\npara Transportes Delta\ncon igv",
+    "moneda": "USD"
+   }
+  },
+  {
+   "id": "f18",
+   "voice": "Rocko (Spanish (Mexico))",
+   "said": "Cotizar. Cliente Transportes Beta. Modelo Valor 99, 295 80 R 22.5, por 8 unidades. Modelo Flama 89, 11 R 22.5, por 4 unidades.",
+   "heard": "Cotizar. Cliente Transportes Beta. Modelo valor 99, 295, 80 R 22.5, por 8 unidades. Modelo Flama 89, 11 R 22.5, por 4 unidades.",
+   "esperado": {
+    "texto": "Fenixway valor 99 295/80R22.5 x8\nFenixway Flama 89 11R22.5 x4\npara Transportes Beta"
+   }
+  },
+  {
+   "id": "f19",
+   "voice": "Shelley (Spanish (Spain))",
+   "said": "Cotizar cliente ZBUSS, modelo Valor 99, Flama 77, 295 80 R 22.5, por 8 unidades.",
+   "heard": "Cotizar cliente ZBUSS, modelo valor 99, Flama 67, 295, 80 airbrush 22.5, por 8 unidades.",
+   "nota": "transcripción: «77, 295 80 R» llegó como «67, 295, 80 airbrush»: pregunta",
+   "esperado": {
+    "texto": "Fenixway valor 99 Flama 67 295\n80 airbrush 22.5 x8\npara ZBUSS",
+    "pregunta": [
+     "no sé qué es «295» en la llanta 1 («valor 99 Flama 67 295»)",
+     "no sé qué es «80» en la llanta 2 («80 airbrush 22.5 8 unidades»)",
+     "la llanta 1 («Fenixway valor 99 Flama 67 295») no dice cantidad",
+     "la llanta 1 («Fenixway valor 99 Flama 67 295») no tiene medida"
+    ],
+    "unaSola": [
+     "dos productos («Flama 67»)"
+    ]
+   }
+  },
+  {
+   "id": "f20",
+   "voice": "Grandma (Spanish (Mexico))",
+   "said": "Cotizar para Transportes Gamma, Fenixway Valor 96, 11 R 22.5, por 4 unidades, precio 298, por 6 unidades.",
+   "heard": "Cotizar para Transportes Gamma, Fenixway Valor 96, 11 r 22.5, por 4 unidades, precio 298, por 6 unidades.",
+   "esperado": {
+    "texto": "Fenixway Valor 96 11R22.5 x4 precio 298\npara Transportes Gamma",
+    "unaSola": [
+     "dos cantidades («x6»)"
+    ]
+   }
+  },
+  {
+   "id": "f21",
+   "voice": "Paulina",
+   "said": "Cotiza cliente Doublestar, modelo DSR 168, 295 80 R 22.5, 16 PR, por 4 unidades, precio 245 dólares, con IGV.",
+   "heard": "Cotiza a cliente Doublestar modelo DSR168 -doscientos 95 -ochenta R22 0.5 -16PR por 4 unidades, precio 245 dólares, con IGB",
+   "nota": "transcripción: la medida llegó como «-doscientos 95 -ochenta R22 0.5»: no se lee; pregunta",
+   "esperado": {
+    "texto": "a Doublestar DSR168-200 95-80R22 0.5- 16PR x4 precio 245\ncon igv",
+    "pregunta": [
+     "no sé qué es «80» en la llanta 1 («a Doublestar DSR168-200 95-80R22 0.5-16PR x4 precio 245 dólares»)"
+    ],
+    "marcaComoCliente": "Doublestar",
+    "moneda": "USD"
+   }
+  },
+  {
+   "id": "f22",
+   "voice": "Mónica",
+   "said": "Cotizar, cliente Transportes Beta, marca Triangle, modelo TRD 02, medida 315 80 R 22.5, 20 PR, cantidad 6, precio 280 dólares, sin IGV.",
+   "heard": "Cotizar. Cliente Transportes Beta, marca Triang Gold, modelo TRD 0 2, medida 315 80 r 22.520 PR, cantidad 6, precio 280 dólares, sin IGV.",
+   "nota": "transcripción: «Triangle» llegó como «Triang Gold» (Triangle por parecido; «Gold» queda en la descripción)",
+   "esperado": {
+    "texto": "Triangle Gold TRD02 315/80R22.5 20PR x6 precio 280\npara Transportes Beta\nsin igv",
+    "moneda": "USD"
+   }
+  },
+  {
+   "id": "f23",
+   "voice": "Eddy (Spanish (Mexico))",
+   "said": "Cotizar para la empresa Transportes Delta, Valor 99, medida 295 80 R 22.5, ocho unidades, precio 262 dólares más IGV, plazo 30 días.",
+   "heard": "Cotizar para la empresa Transporte Delta, valor 99, medida 295, 80 r 22.58 unidades, precio 262 dólares más IGB, plazo 30 días.",
+   "esperado": {
+    "texto": "Fenixway valor 99 295/80R22.5 x8 precio 262\npara Transporte Delta\nplazo: 30 días\nsin igv",
+    "moneda": "USD"
+   }
+  },
+  {
+   "id": "f24",
+   "voice": "Reed (Spanish (Spain))",
+   "said": "Cotizar cliente Transportes Gamma, modelo Valor 87, 235 75 R 17.5, por 6 unidades, precio 160 soles, con IGV.",
+   "heard": "Cotizar cliente transportes Gamma, modelo valor 87, 235, 75 r 17.5, por 6 unidades, precio 160 soles, con IGV.",
+   "esperado": {
+    "texto": "Fenixway valor 87 235/75R17.5 x6 precio 160\npara transportes Gamma\ncon igv",
+    "moneda": "PEN"
+   }
+  },
+  {
+   "id": "f25",
+   "voice": "Flo (Spanish (Mexico))",
+   "said": "Cotizar para ZBUSS. Fenixway Valor 96, 11 R 22.5, 18 PR, por 4 unidades, precio 298 dólares, incluido IGV. También Flama 77, 275 80 R 22.5, por 2 unidades, precio 240 dólares.",
+   "heard": "Cotizar para ZBUSS. Fenixway Valor 96, 11 r 22.518 p r, por 4 unidades, precio 298 dólares, incluido IGB. También Flama 77, 275, 80 r 22.5, por 12 unidades, precio 240 dólares.",
+   "esperado": {
+    "texto": "Fenixway Valor 96 11R22.5 18PR x4 precio 298\nFenixway Flama 77 275/80R22.5 x12 precio 240\npara ZBUSS\ncon igv",
+    "moneda": "USD"
+   }
+  },
+  {
+   "id": "f26",
+   "voice": "Grandpa (Spanish (Spain))",
+   "said": "Cotizar cliente Transportes Beta, Westlake AZ 670, 11 R 22.5, por 8 unidades, precio 185 dólares, más impuestos.",
+   "heard": "Cotizar cliente Transportes Beta, Westlake AZ 670, 11 r 22.5, por 8 unidades, precio 185 dólares, más impuestos.",
+   "esperado": {
+    "texto": "Westlake AZ 670 11R22.5 x8 precio 185\npara Transportes Beta\nsin igv",
+    "moneda": "USD"
+   }
+  },
+  {
+   "id": "f27",
+   "voice": "Sandy (Spanish (Mexico))",
+   "said": "Cotizar. Marca Fenixway. Modelo Flama 66. Medida 385 65 R 22.5. Cantidad 4. Precio 330 dólares. Cliente Transportes Delta.",
+   "heard": "Cotizar. Marca Fenixway, modelo Flama 66, medida 385, 65 r 22.5, cantidad 4, precio 330 dólares, cliente transporte Delta.",
+   "esperado": {
+    "texto": "Fenixway Flama 66 385/65R22.5 x4 precio 330\npara transporte Delta",
+    "moneda": "USD"
+   }
+  },
+  {
+   "id": "f28",
+   "voice": "Rocko (Spanish (Spain))",
+   "said": "Cotizar cliente Fenixway, modelo Valor 99, 295 80 R 22.5, 16 lonas, por 4 unidades, precio 265 dólares, incluido IGV.",
+   "heard": "Cotizar cliente Fenixway, modelo valor 99, 295, 80 r 22.516 lonas, por 4 unidades, precio 265 dólares, incluido IGB.",
+   "esperado": {
+    "texto": "Fenixway valor 99 295/80R22.5 16PR x4 precio 265\ncon igv",
+    "marcaComoCliente": "Fenixway",
+    "moneda": "USD"
+   }
+  },
+  {
+   "id": "f29",
+   "voice": "Shelley (Spanish (Mexico))",
+   "said": "Cotizar para ZBUSS, modelo Valor 96, 11 R 22.5, 22 PR, por 4 unidades, precio 298 dólares, con IGV.",
+   "heard": "Cotizar para ZBUSS, modelo valor 96, 11 r 22.522 p r, por 4 unidades, precio 298 dólares, con IGV.",
+   "esperado": {
+    "texto": "Fenixway valor 96 11R22.5 x4 precio 298\npara ZBUSS\ncon igv",
+    "moneda": "USD",
+    "lonas": [
+     {
+      "item": 0,
+      "ply": 22,
+      "size": "11R22.5",
+      "available": [
+       16,
+       18
+      ]
+     }
+    ]
+   }
+  },
+  {
+   "id": "f30",
+   "voice": "Grandma (Spanish (Spain))",
+   "said": "Cotizar para Transportes Gamma, modelo Valor 99, medida 295 80 R 22.5, por 8 unidades, precio 262 dólares. Y modelo Valor 89, medida 11 R 22.5, por 6 unidades, precio 255 dólares. Sin IGV, a 45 días.",
+   "heard": "Para transportes Gamma, modelo valor 99, medida 295, 80 r 22.5, por 8 unidades, precio 262 dólares. El modelo valor 89, medida 11 r 22.5 por 6 unidades, precio 255 dólares. A 45 días.",
+   "esperado": {
+    "texto": "Fenixway valor 99 295/80R22.5 x8 precio 262\nFenixway valor 89 11R22.5 x6 precio 255\npara transportes Gamma\nplazo: 45 días",
+    "moneda": "USD"
+   }
+  }
+ ]
+}
