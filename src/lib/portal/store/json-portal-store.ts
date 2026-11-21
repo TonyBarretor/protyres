@@ -7,7 +7,36 @@
 import fs from "node:fs";
 import path from "node:path";
 import { CLOSED_STAGES, isClosedStage, stageProbability } from "../stages";
-import { companyNameKey, dedupeBy, defaultSince, digits, docClienteOf, groupFleet, nameMatches, normDocumento, normEmail, normMarca, pageOf, saleActive, saleCountRuc, saleCountsUnits, saleUnits, searchRucPrefix, searchTerms, toIsoDate, topMedidas, type FleetAggRow } from "./shared";
+import {
+  btrim,
+  companyNameKey,
+  dedupeBy,
+  defaultSince,
+  digits,
+  docClienteOf,
+  fromTenThousandths,
+  groupFleet,
+  nameMatches,
+  normDocumento,
+  normEmail,
+  normMarca,
+  pageOf,
+  saleActive,
+  saleCountRuc,
+  saleCountsUnits,
+  salesFold,
+  salesHaystack,
+  salesSearchWords,
+  salesTotals,
+  saleUnits,
+  searchRucPrefix,
+  searchTerms,
+  toIsoDate,
+  topMedidas,
+  toTenThousandths,
+  weightedMarginPct,
+  type FleetAggRow,
+} from "./shared";
 import type {
   Activity,
   ActivityFilter,
@@ -54,6 +83,10 @@ import type {
   SaleDetail,
   SaleDetailInput,
   SalesClientRow,
+  SalesClientSort,
+  SalesListClientRow,
+  SalesListFilter,
+  SalesListSummary,
   SalesQuery,
   SalesUpload,
   SalesUploadInput,
@@ -908,6 +941,117 @@ export class JsonPortalStore implements PortalStore {
       if (s.razonSocial && ruc === s.ruc && (!r.razonSocial || s.razonSocial > r.razonSocial)) r.razonSocial = s.razonSocial;
     }
     return [...by.values()];
+  }
+
+  /** Líneas del filtro de la pantalla de ventas (sin orden). Misma regla que salesListWhere en el store de Postgres. */
+  private salesListMatches(f: SalesListFilter): Sale[] {
+    const words = salesSearchWords(f.q);
+    const docRucs = f.docRucs ? new Set(f.docRucs.map(digits)) : null;
+    const marca = f.marca?.trim().toUpperCase() || null;
+    return this.sales.filter((s) => {
+      const d = s.detalle;
+      if (s.isDemo !== !!f.demo || d?.excluida) return false;
+      if (f.medida && s.medida !== f.medida) return false;
+      if (marca && btrim(s.marca ?? "").toUpperCase() !== marca) return false;
+      if (f.tipoLinea && (d?.tipoLinea ?? "neumatico") !== f.tipoLinea) return false;
+      if (f.vendedor && s.vendedor !== f.vendedor) return false;
+      if (f.desde && s.fecha < f.desde) return false;
+      if (f.hasta && s.fecha > f.hasta) return false;
+      if (docRucs && !docRucs.has(s.ruc)) return false;
+      if (f.sinClienteFinal && d?.clienteFinalRuc) return false;
+      if (words.length) {
+        const cf = d?.clienteFinalCompanyId ? (this.companies.get(d.clienteFinalCompanyId)?.razonSocial ?? null) : null;
+        const hay = salesHaystack(s, cf);
+        if (!words.every((w) => hay.includes(w.word) || hay.includes(w.doc))) return false;
+      }
+      return true;
+    });
+  }
+
+  async listSalesLines(f: SalesListFilter, page: { limit: number; offset: number }): Promise<Sale[]> {
+    const out = this.salesListMatches(f).sort((a, b) => b.fecha.localeCompare(a.fecha) || b.id - a.id);
+    return out.slice(page.offset, page.offset + page.limit).map(copySale);
+  }
+
+  async salesListSummary(f: SalesListFilter): Promise<SalesListSummary> {
+    const lines = this.salesListMatches(f);
+    const t = salesTotals(lines);
+    const clientes = new Set(lines.map(saleCountRuc)).size;
+    return {
+      lineas: t.lineas,
+      neumaticos: t.neumaticos,
+      totalPen: fromTenThousandths(t.pen),
+      totalUsd: fromTenThousandths(t.usd),
+      margenPct: weightedMarginPct(t.mVenta, t.mCosto),
+      clientes,
+      notasCredito: t.nc,
+      notasCreditoPen: fromTenThousandths(t.ncPen),
+    };
+  }
+
+  async salesListByClient(f: SalesListFilter, opts: { sort: SalesClientSort; dir: "asc" | "desc"; limit: number; offset: number }): Promise<{ rows: SalesListClientRow[]; total: number }> {
+    const groups = new Map<string, Sale[]>();
+    for (const s of this.salesListMatches(f)) {
+      const ruc = saleCountRuc(s);
+      const g = groups.get(ruc);
+      if (g) g.push(s);
+      else groups.set(ruc, [s]);
+    }
+    const rows = [...groups].map(([ruc, lines]) => {
+      const t = salesTotals(lines);
+      const companyId = this.companyByRuc.get(ruc) ?? null;
+      let docName: string | null = null;
+      for (const s of lines) if (s.razonSocial && !s.detalle?.clienteFinalRuc && (!docName || s.razonSocial > docName)) docName = s.razonSocial;
+      const row: SalesListClientRow = {
+        ruc,
+        companyId,
+        razonSocial: (companyId !== null ? this.companies.get(companyId)?.razonSocial : null) ?? docName,
+        neumaticos: t.neumaticos,
+        totalPen: fromTenThousandths(t.pen),
+        totalUsd: fromTenThousandths(t.usd),
+        margenPct: weightedMarginPct(t.mVenta, t.mCosto),
+        ultimaFecha: lines.reduce((m, s) => (s.fecha > m ? s.fecha : m), lines[0].fecha),
+        lineas: t.lineas,
+      };
+      // misma clave que en Postgres: round(ratio, 10)
+      return { row, pen: t.pen, margin: t.mVenta > 0 ? Math.round(((t.mVenta - t.mCosto) / t.mVenta) * 1e10) / 1e10 : null };
+    });
+    const sign = opts.dir === "asc" ? 1 : -1;
+    const nameKey = (r: SalesListClientRow) => salesFold(r.razonSocial ?? r.ruc);
+    const cmp = (a: (typeof rows)[number], b: (typeof rows)[number]): number => {
+      switch (opts.sort) {
+        case "neumaticos":
+          return sign * (a.row.neumaticos - b.row.neumaticos);
+        case "total":
+          return sign * (a.pen - b.pen);
+        case "ultima":
+          return sign * a.row.ultimaFecha.localeCompare(b.row.ultimaFecha);
+        case "cliente": {
+          const x = nameKey(a.row);
+          const y = nameKey(b.row);
+          return sign * (x < y ? -1 : x > y ? 1 : 0);
+        }
+        case "margen":
+          // sin margen, al final en los dos sentidos
+          if (a.margin === null || b.margin === null) return a.margin === b.margin ? 0 : a.margin === null ? 1 : -1;
+          return sign * (a.margin - b.margin);
+      }
+    };
+    rows.sort((a, b) => cmp(a, b) || (a.row.ruc < b.row.ruc ? -1 : a.row.ruc > b.row.ruc ? 1 : 0));
+    return { rows: rows.slice(opts.offset, opts.offset + opts.limit).map((r) => r.row), total: rows.length };
+  }
+
+  async salesFilterOptions(demo: boolean): Promise<{ marcas: string[]; vendedores: string[] }> {
+    const marcas = new Set<string>();
+    const vendedores = new Set<string>();
+    for (const s of this.sales) {
+      if (s.isDemo !== demo || s.detalle?.excluida) continue;
+      const m = btrim(s.marca ?? "").toUpperCase();
+      if (m) marcas.add(m);
+      if (s.vendedor && btrim(s.vendedor)) vendedores.add(s.vendedor);
+    }
+    const sorted = (x: Set<string>) => [...x].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+    return { marcas: sorted(marcas), vendedores: sorted(vendedores) };
   }
 
   async recordSalesUpload(input: SalesUploadInput): Promise<SalesUpload> {

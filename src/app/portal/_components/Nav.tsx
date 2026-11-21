@@ -1,21 +1,28 @@
 "use client";
-/** Navegación del portal; marca la sección actual. `validar`: muestra "Validar" (ranking, corrida G) a quien puede. */
+/**
+ * Navegación del portal; marca la sección actual. `validar`: muestra "Validar" (ranking, corrida G) a quien puede.
+ * `ventas`: muestra "Ventas" (pantalla general de ventas, corrida J) a vendedor, supervisor y admin; la página lo vuelve a
+ * comprobar en el servidor.
+ */
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+
+const isLista = (p: string) => p.startsWith("/portal/ventas/lista");
 
 const LINKS = [
   { href: "/portal", label: "Prospectos", match: (p: string) => p === "/portal" || p.startsWith("/portal/empresas") },
   { href: "/portal/pipeline", label: "Pipeline", match: (p: string) => p.startsWith("/portal/pipeline") },
   { href: "/portal/hoy", label: "Hoy", match: (p: string) => p.startsWith("/portal/hoy") },
   { href: "/portal/tablero", label: "Tablero", match: (p: string) => p.startsWith("/portal/tablero") },
-  { href: "/portal/ventas", label: "Subir ventas", match: (p: string) => p.startsWith("/portal/ventas") },
 ];
 
+const VENTAS = { href: "/portal/ventas/lista", label: "Ventas", match: isLista };
+const SUBIR = { href: "/portal/ventas", label: "Subir ventas", match: (p: string) => p.startsWith("/portal/ventas") && !isLista(p) };
 const VALIDAR = { href: "/portal/validar-ranking", label: "Validar", match: (p: string) => p.startsWith("/portal/validar-ranking") };
 
-export function Nav({ validar = false }: { validar?: boolean }) {
+export function Nav({ validar = false, ventas = false }: { validar?: boolean; ventas?: boolean }) {
   const pathname = usePathname() ?? "";
-  const links = validar ? [...LINKS, VALIDAR] : LINKS;
+  const links = [...LINKS, ...(ventas ? [VENTAS] : []), SUBIR, ...(validar ? [VALIDAR] : [])];
   return (
     <nav className="pt-nav" aria-label="Secciones del portal">
       {links.map((l) => (
