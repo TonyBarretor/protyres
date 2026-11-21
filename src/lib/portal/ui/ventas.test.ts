@@ -49,14 +49,15 @@ describe("ficha: historial de ventas (punto 8)", () => {
     const { store } = await setup();
     const v = await fichaSalesView(store, { ruc: FX.cliente });
     // F003-5008: "SERV.ENLLA 11R22.5 ..." con código de producto es un neumático con el enllante incluido
-    expect(v.neumaticos.map((r) => r.documento)).toEqual(["F003-5008", "F003-91", "F003-90", "F003-5001"]);
-    const [, solo, dev, fac] = v.neumaticos;
+    // F003-5006 (STATUS Cancelado) sale desde el ajuste 1: STATUS es de compra
+    expect(v.neumaticos.map((r) => r.documento)).toEqual(["F003-5008", "F003-5006", "F003-91", "F003-90", "F003-5001"]);
+    const [, , solo, dev, fac] = v.neumaticos;
     expect(fac).toMatchObject({ fecha: "12/09/2026", producto: "Fenixway Valor 89 295/80R22.5", cantidad: 8, precio: "US$ 255.00", costo: "US$ 199.15", proveedor: "PROVEEDOR PRUEBA SAC", margen: "21.90%", notaCredito: false });
     expect(dev).toMatchObject({ notaCredito: true, soloMonto: false, cantidad: -1, revierte: "F003-5001", tipoDoc: "Nota de crédito" });
     expect(solo).toMatchObject({ notaCredito: true, soloMonto: true, revierte: "F003-5001" });
-    // F003-5006 (Cancelado) y F003-5007 (Borrador) no salen
-    expect(v.neumaticos.some((r) => r.documento === "F003-5006" || r.documento === "F003-5007")).toBe(false);
-    expect(v.neumaticosNetos).toBe(8 - 1 + 2);
+    // F003-5007 (anulada en SUNAT) no sale
+    expect(v.neumaticos.some((r) => r.documento === "F003-5007")).toBe(false);
+    expect(v.neumaticosNetos).toBe(8 - 1 + 2 + 4);
     expect(v.clienteFinal).toBeNull();
   });
 
@@ -198,10 +199,8 @@ describe("Subir ventas: clientes fuera del padrón y vista previa (punto 11)", (
     const st: OdooPreviewStats = await previewOdooUpload(store, parsed.odoo!);
     expect(totalsCheck(st).estado).toBe("cuadra");
     expect(serviceRows(st).map((r) => [r.label, r.lineas])).toContainEqual(["Balanceo", 3]);
-    expect(countRows(st.excluidas.porStatus)).toEqual([
-      ["Borrador", 1],
-      ["Cancelado", 1],
-    ]);
+    // STATUS ya no excluye ventas (ajuste 1: antes salían Borrador y Cancelado); solo la anulada en SUNAT
+    expect(countRows(st.excluidas.porMotivo)).toEqual([["ESTADO SUNAT: Anulado", 1]]);
     const v = vendorSummary(st);
     // "FRANK RODRIGUEZ" y "Frank Rodriguez" del archivo son el mismo usuario: una sola fila
     expect(v.reconocidos.filter((x) => x.nombre === "Frank Rodríguez")).toHaveLength(1);

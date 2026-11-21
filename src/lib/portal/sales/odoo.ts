@@ -9,13 +9,16 @@
  *  - Nota de crédito: cantidad y montos se guardan con signo negativo (restan). Si el motivo es solo de monto
  *    (DESCUENTO COMERCIAL, AJUSTE DE PRECIO), resta montos pero no neumáticos.
  *  - Nota de débito: no suma neumáticos (son cargos: mora).
- *  - STATUS en sales.excludeStatus (Cancelado, Borrador): se guarda marcada `excluida` y no cuenta en nada. STATUS es una
- *    columna del bloque COMPRA (el estado del lado del proveedor); vacío, Hecho y Compra cuentan.
+ *  - Venta anulada: ESTADO SUNAT o TIPO DOC con una palabra de sales.annulledMarkers (Anulado, Rechazado, Baja): se guarda
+ *    marcada `excluida` (con su motivo) y no cuenta en nada. STATUS es una columna del bloque COMPRA (el estado del lado
+ *    del proveedor) y no excluye ventas, salvo que alguien ponga valores en sales.excludeStatus.
  *  - Documento del cliente: RUC de 11 dígitos, DNI de 8 (persona natural: venta minorista) u otro largo (advertencia,
  *    se guarda igual).
  *  - Clave estable: tipo de documento + N° + código de producto + n.º de aparición de ese código en el documento. Las
  *    líneas idénticas de una misma factura (hay 3 en el archivo real) quedan con claves distintas: no se fusionan.
- *  - Montos, moneda y tipo de cambio tal como vienen (no se recalcula nada).
+ *  - Montos, moneda y tipo de cambio tal como vienen. Única excepción: si TOTAL VTA S/ (o VTA UND S/) viene en 0 y su par
+ *    en dólares no, el monto en soles se calcula con el T.C. de esa línea (las notas de crédito en dólares del reporte
+ *    traen S/ 0), se marca `montoCalculado` y el valor del archivo queda en totalOriginal / precioUnitarioOriginal.
  */
 import type ExcelJS from "exceljs";
 import { foldText, normDocumento, docClienteOf } from "../store/shared";
@@ -165,7 +168,12 @@ export interface OdooStats {
   neumaticosVendidos: number;
   notasCredito: { documentos: number; lineas: number; neumaticos: number; soloMonto: number; totalSoles: number; totalUsd: number };
   notasDebito: { documentos: number; lineas: number };
-  excluidas: { lineas: number; porStatus: Record<string, number>; neumaticos: number; totalSoles: number };
+  /** Ventas anuladas (ESTADO SUNAT / TIPO DOC, o STATUS de sales.excludeStatus), por motivo ("ESTADO SUNAT: Anulado"). */
+  excluidas: { lineas: number; porMotivo: Record<string, number>; neumaticos: number; totalSoles: number };
+  /** Líneas cuyo monto en soles se calculó con el T.C. (TOTAL VTA S/ o VTA UND S/ en 0 con el de dólares distinto de 0). */
+  montosCalculados: { lineas: number; totalSoles: number };
+  /** Totales netos de lo que cuenta (sin anuladas; notas de crédito restando; soles con los montos calculados). */
+  totalesNetos: { soles: number; usd: number };
   porStatus: Record<string, number>;
   /** Clientes por tipo de documento (RUC distintos). */
   clientes: { ruc: number; dni: number; otro: number };
@@ -223,6 +231,8 @@ export function parseOdooRows(matrix: Raw[][], headerRow: number, mapping: OdooM
   const settings = opts.settings ?? DEFAULT_SALES_SETTINGS;
   const resolveVendor = vendorResolver(opts.users ?? [], settings);
   const excludeStatus = new Set(settings.excludeStatus.map((s) => foldText(s)));
+  const annulled = settings.annulledMarkers.map((m) => foldText(m)).filter(Boolean);
+  const isAnnulled = (v: string | null) => !!v && annulled.some((m) => foldText(v).split(/[^a-z0-9]+/).some((w) => w.startsWith(m)));
   const amountOnly = settings.creditNoteAmountOnlyReasons.map((s) => foldText(s));
   const cell = (r: Raw[], f: OdooField): Raw => (mapping[f] === undefined ? null : (r[mapping[f]!] ?? null));
   const str = (r: Raw[], f: OdooField): string | null => text(cell(r, f)) || null;
@@ -242,7 +252,9 @@ export function parseOdooRows(matrix: Raw[][], headerRow: number, mapping: OdooM
     neumaticosVendidos: 0,
     notasCredito: { documentos: 0, lineas: 0, neumaticos: 0, soloMonto: 0, totalSoles: 0, totalUsd: 0 },
     notasDebito: { documentos: 0, lineas: 0 },
-    excluidas: { lineas: 0, porStatus: {}, neumaticos: 0, totalSoles: 0 },
+    excluidas: { lineas: 0, porMotivo: {}, neumaticos: 0, totalSoles: 0 },
+    montosCalculados: { lineas: 0, totalSoles: 0 },
+    totalesNetos: { soles: 0, usd: 0 },
     porStatus: {},
     clientes: { ruc: 0, dni: 0, otro: 0 },
     personasNaturales: { lineas: 0, neumaticos: 0 },
@@ -291,10 +303,19 @@ export function parseOdooRows(matrix: Raw[][], headerRow: number, mapping: OdooM
       continue;
     }
 
-    const tipoDoc = docTypeOf(str(r, "tipoDoc") ?? "");
+    const tipoDocText = str(r, "tipoDoc");
+    const tipoDoc = docTypeOf(tipoDocText ?? "");
     const clase = classifyLine(descripcion!);
     const status = str(r, "status");
-    const excluida = !!status && excludeStatus.has(foldText(status));
+    const estadoSunat = str(r, "estadoSunat");
+    const motivoExclusion = isAnnulled(estadoSunat)
+      ? `ESTADO SUNAT: ${estadoSunat}`
+      : isAnnulled(tipoDocText)
+        ? `TIPO DOC: ${tipoDocText}`
+        : status && excludeStatus.has(foldText(status))
+          ? `STATUS: ${status}`
+          : null;
+    const excluida = motivoExclusion !== null;
     const ocProveedor = str(r, "ocProveedor");
     const nc = tipoDoc === "nota_credito";
     const motivo = nc ? creditNoteReason(ocProveedor).motivo : null;
@@ -311,6 +332,18 @@ export function parseOdooRows(matrix: Raw[][], headerRow: number, mapping: OdooM
     occurrences.set(docKey, n);
 
     const advertencias: string[] = [];
+    // soles en 0 con dólares distinto de 0: se calcula con el T.C. de la línea (sin signo; el signo va después)
+    const tc = numOf(r, "tipoCambio");
+    const totalUsdRaw = numOf(r, "totalUsd");
+    const puUsd = numOf(r, "precioUnitarioUsd");
+    const puRaw = numOf(r, "precioUnitario");
+    const needTotal = !totalVta && !!totalUsdRaw;
+    const needPu = !puRaw && !!puUsd;
+    const tcOk = tc !== null && tc > 0;
+    const totalSoles = needTotal && tcOk ? round2(totalUsdRaw! * tc!) : totalVta;
+    const puSoles = needPu && tcOk ? round2(puUsd! * tc!) : puRaw;
+    const montoCalculado = tcOk && (needTotal || needPu);
+    if ((needTotal || needPu) && !tcOk) advertencias.push("monto en soles en 0 y sin T.C. para calcularlo: queda como viene");
     if (docCliente === "otro") advertencias.push(`documento del cliente de ${ruc.length} dígitos ("${rucText}"): no es RUC (11) ni DNI (8)`);
     if (tipoDoc === "otro") advertencias.push(`tipo de documento desconocido ("${str(r, "tipoDoc") ?? ""}")`);
     for (const a of advertencias) stats.advertencias.push({ row: rowNum, documento, mensaje: a });
@@ -332,8 +365,8 @@ export function parseOdooRows(matrix: Raw[][], headerRow: number, mapping: OdooM
       marca: clase.marca,
       diseno: clase.diseno,
       cantidad,
-      precioUnitario: numOf(r, "precioUnitario"),
-      total: signed(numOf(r, "total")),
+      precioUnitario: puSoles,
+      total: signed(totalSoles),
       vendedor: vend.vendedor,
       origen: opts.origen ?? "odoo",
       isDemo: false,
@@ -344,7 +377,7 @@ export function parseOdooRows(matrix: Raw[][], headerRow: number, mapping: OdooM
         vencimiento: parseSaleDate(cell(r, "vencimiento")),
         moneda: str(r, "moneda"),
         tipoCambio: numOf(r, "tipoCambio"),
-        estadoSunat: str(r, "estadoSunat"),
+        estadoSunat,
         status,
         ocOdoo: str(r, "ocOdoo"),
         ocProveedor,
@@ -358,7 +391,7 @@ export function parseOdooRows(matrix: Raw[][], headerRow: number, mapping: OdooM
         vendedorUserId: vend.userId,
         totalSinServ: signed(numOf(r, "totalSinServ")),
         precioUnitarioUsd: numOf(r, "precioUnitarioUsd"),
-        totalUsd: signed(numOf(r, "totalUsd")),
+        totalUsd: signed(totalUsdRaw),
         costoUnitario: numOf(r, "costoUnitario"),
         costoTotal: signed(numOf(r, "costoTotal")),
         costoUnitarioUsd: numOf(r, "costoUnitarioUsd"),
@@ -371,6 +404,10 @@ export function parseOdooRows(matrix: Raw[][], headerRow: number, mapping: OdooM
         margenPct: margenNum,
         cuentaUnidades,
         excluida,
+        motivoExclusion,
+        montoCalculado,
+        totalOriginal: signed(totalVta),
+        precioUnitarioOriginal: puRaw,
         advertencia: advertencias.join("; ") || null,
       },
     });
@@ -389,11 +426,17 @@ export function parseOdooRows(matrix: Raw[][], headerRow: number, mapping: OdooM
     }
     if (excluida) {
       stats.excluidas.lineas++;
-      stats.excluidas.porStatus[status!] = (stats.excluidas.porStatus[status!] ?? 0) + 1;
+      stats.excluidas.porMotivo[motivoExclusion!] = (stats.excluidas.porMotivo[motivoExclusion!] ?? 0) + 1;
       if (clase.tipoLinea === "neumatico") stats.excluidas.neumaticos += cantidad;
-      stats.excluidas.totalSoles += signed(totalVta) ?? 0;
+      stats.excluidas.totalSoles += signed(totalSoles) ?? 0;
       continue;
     }
+    if (montoCalculado) {
+      stats.montosCalculados.lineas++;
+      stats.montosCalculados.totalSoles += (signed(totalSoles) ?? 0) - (signed(totalVta) ?? 0);
+    }
+    stats.totalesNetos.soles += signed(totalSoles) ?? 0;
+    stats.totalesNetos.usd += signed(totalUsdRaw) ?? 0;
     if (!clientDocs.has(ruc)) clientDocs.set(ruc, docCliente);
     stats.porTipo[clase.tipoLinea]++;
     if (clase.tipoServicio) stats.porServicio[clase.tipoServicio] = (stats.porServicio[clase.tipoServicio] ?? 0) + 1;
@@ -408,8 +451,8 @@ export function parseOdooRows(matrix: Raw[][], headerRow: number, mapping: OdooM
       stats.notasCredito.lineas++;
       if (cuentaUnidades) stats.notasCredito.neumaticos += -cantidad;
       if (soloMonto) stats.notasCredito.soloMonto++;
-      stats.notasCredito.totalSoles += -(signed(totalVta) ?? 0);
-      stats.notasCredito.totalUsd += -(signed(numOf(r, "totalUsd")) ?? 0);
+      stats.notasCredito.totalSoles += -(signed(totalSoles) ?? 0);
+      stats.notasCredito.totalUsd += -(signed(totalUsdRaw) ?? 0);
     }
     if (tipoDoc === "nota_debito") {
       ndDocs.add(normDocumento(documento));
@@ -425,5 +468,7 @@ export function parseOdooRows(matrix: Raw[][], headerRow: number, mapping: OdooM
   stats.notasCredito.totalSoles = round2(stats.notasCredito.totalSoles);
   stats.notasCredito.totalUsd = round2(stats.notasCredito.totalUsd);
   stats.excluidas.totalSoles = round2(stats.excluidas.totalSoles);
+  stats.montosCalculados.totalSoles = round2(stats.montosCalculados.totalSoles);
+  stats.totalesNetos = { soles: round2(stats.totalesNetos.soles), usd: round2(stats.totalesNetos.usd) };
   return { rows, info, errors, stats };
 }

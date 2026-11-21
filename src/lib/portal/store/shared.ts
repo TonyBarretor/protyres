@@ -214,7 +214,7 @@ export function saleUnits(s: SaleLike): number {
   return saleCountsUnits(s) ? s.cantidad : 0;
 }
 
-/** false si la línea está excluida (STATUS Cancelado / Borrador): no cuenta en nada. */
+/** false si la línea está excluida (venta anulada según ESTADO SUNAT / TIPO DOC): no cuenta en nada. */
 export function saleActive(s: SaleLike): boolean {
   return !s.detalle?.excluida;
 }

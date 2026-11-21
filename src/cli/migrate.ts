@@ -578,6 +578,11 @@ export const STATEMENTS = [
     stats jsonb not null default '{}'::jsonb,
     created_at timestamptz not null default now()
   )`,
+  // ventas-odoo (ajustes): motivo de exclusión (venta anulada) y montos en soles calculados con el T.C. de la línea
+  `alter table sales add column if not exists motivo_exclusion text`,
+  `alter table sales add column if not exists monto_calculado boolean not null default false`,
+  `alter table sales add column if not exists total_original numeric(14,2)`,
+  `alter table sales add column if not exists precio_unitario_original numeric(12,2)`,
 ];
 
 /** Desde aquí empiezan las sentencias del portal: antes de ejecutarlas se pasa la guardia (migrate-guard.ts). */

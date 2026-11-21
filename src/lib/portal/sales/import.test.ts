@@ -34,7 +34,9 @@ describe("ventas-odoo: carga en el store", () => {
     const p = await previewOdooUpload(store, r.odoo!);
     expect(p.empresas).toEqual({ enPadron: 2, fueraDelPadron: 1 });
     expect(p.fueraDelPadron.map((c) => c.ruc)).toEqual([FX.fueraPadron]);
-    expect(p.topEmpresas[0]).toMatchObject({ ruc: FX.banco, neumaticos: 10, companyId: expect.any(Number) });
+    // ajuste 1: F003-5006 (STATUS Cancelado) ahora cuenta y el cliente (13) pasa al banco (10)
+    expect(p.topEmpresas[0]).toMatchObject({ ruc: FX.cliente, neumaticos: 13, companyId: expect.any(Number) });
+    expect(p.topEmpresas[1]).toMatchObject({ ruc: FX.banco, neumaticos: 10, companyId: expect.any(Number) });
     expect(p).toMatchObject({ lineasNuevas: 17, lineasExistentes: 0 });
     await upload(store, frank, sampleOdooLines());
     const again = await previewOdooUpload(store, r.odoo!);
@@ -63,13 +65,14 @@ describe("ventas-odoo: carga en el store", () => {
     const { store, frank } = await setup();
     await upload(store, frank, sampleOdooLines());
     const part = await store.participation([FX.cliente, FX.banco, FX.fueraPadron, FX.dni], "2025-01-01");
-    // cliente: 8 - 1 (devolución) + 2 (Hecho: llanta con enllante) = 9; Cancelado (4) y Borrador (5), servicios, aros, ND: no
-    expect(part[FX.cliente]).toEqual({ cantidad: 9, demo: false });
+    // cliente: 8 - 1 (devolución) + 2 (Hecho: llanta con enllante) + 4 (STATUS Cancelado: es de compra, ajuste 1) = 13;
+    // F003-5007 (anulada en SUNAT, 5), servicios, aros, ND: no
+    expect(part[FX.cliente]).toEqual({ cantidad: 13, demo: false });
     expect(part[FX.banco].cantidad).toBe(10);
     expect(part[FX.fueraPadron].cantidad).toBe(6);
     expect(part[FX.dni].cantidad).toBe(4);
     const agg = (await store.salesAggregate("2025-01-01", "2027-01-01")).filter((a) => a.ruc === FX.cliente);
-    expect(agg.reduce((n, a) => n + a.cantidad, 0)).toBe(9);
+    expect(agg.reduce((n, a) => n + a.cantidad, 0)).toBe(13);
   });
 
   it("una empresa que solo compró servicios no queda como cliente por neumáticos", async () => {
@@ -126,9 +129,11 @@ describe("ventas-odoo: carga en el store", () => {
     const { store, frank } = await setup();
     await upload(store, frank, sampleOdooLines());
     const last = await lastTyreSales(store, FX.cliente, { medida: "295/80R22.5" });
-    expect(last).toHaveLength(1); // la nota de crédito no es una venta
-    expect(saleLineText(last[0])).toBe("12/09/2026 · Fenixway Valor 89 295/80R22.5 · 8 u. · precio US$ 255.00 · costo US$ 199.15 · margen 21.90%");
-    expect(await lastSaleReference(store, FX.cliente, "295/80 R22.5")).toBe("Última venta a este cliente: Valor 89 a US$ 255 el 12/09/2026");
+    // las notas de crédito no son ventas; F003-5006 (STATUS Cancelado) sí desde el ajuste 1, y es la más reciente
+    expect(last).toHaveLength(2);
+    expect(saleLineText(last[0])).toBe("05/10/2026 · Fenixway Flama 66 295/80R22.5 · 4 u. · precio US$ 240.00 · costo US$ 0.00 · margen 20.00%");
+    expect(saleLineText(last[1])).toBe("12/09/2026 · Fenixway Valor 89 295/80R22.5 · 8 u. · precio US$ 255.00 · costo US$ 199.15 · margen 21.90%");
+    expect(await lastSaleReference(store, FX.cliente, "295/80 R22.5")).toBe("Última venta a este cliente: Flama 66 a US$ 240 el 05/10/2026");
     expect(await lastSaleReference(store, FX.cliente, "11R22.5")).toMatch(/^Última venta a este cliente: Valor 96 a US\$ 250 el 07\/10\/2026$/);
     expect(await lastSaleReference(store, FX.cliente, "315/80R22.5")).toBeNull();
   });
@@ -138,9 +143,9 @@ describe("ventas-odoo: carga en el store", () => {
     await store.insertSales([{ fecha: "2026-09-01", ruc: FX.cliente, cantidad: 50, isDemo: true, origen: "demo" }]);
     await upload(store, frank, sampleOdooLines());
     expect((await companySalesView(store, { ruc: FX.cliente })).lineas.some((s) => s.isDemo)).toBe(false);
-    expect((await store.salesByClient()).find((r) => r.ruc === FX.cliente)!.neumaticos).toBe(9);
+    expect((await store.salesByClient()).find((r) => r.ruc === FX.cliente)!.neumaticos).toBe(13);
     expect(await store.deleteDemoSales()).toBe(1);
-    expect((await store.participation([FX.cliente], "2025-01-01"))[FX.cliente].cantidad).toBe(9);
+    expect((await store.participation([FX.cliente], "2025-01-01"))[FX.cliente].cantidad).toBe(13);
   });
 
   it("aviso al administrador cuando sube un vendedor: enviado, o aviso pendiente si la ventana de 24 h está cerrada", async () => {

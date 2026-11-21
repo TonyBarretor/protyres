@@ -3,7 +3,10 @@
  * xlsx.ts para el formato simple).
  *
  *  - uploadRoles: roles que pueden subir ventas (página y servidor). Por defecto admin, supervisor y vendedor.
- *  - excludeStatus: valores de STATUS cuyas líneas no cuentan (se guardan marcadas como excluidas).
+ *  - excludeStatus: valores de STATUS cuyas líneas no cuentan. Vacío por defecto: STATUS es una columna del bloque COMPRA
+ *    (el estado del lado del proveedor) y no dice nada de la venta.
+ *  - annulledMarkers: palabras (sin tildes, inicio de palabra) que, en ESTADO SUNAT o en TIPO DOC, marcan una venta
+ *    anulada: esa línea se guarda excluida y no cuenta en nada.
  *  - creditNoteAmountOnlyReasons: motivos de nota de crédito ("Reversión de: F003-4319, AJUSTE DE PRECIO") que solo
  *    corrigen el monto: restan montos pero no neumáticos (la mercadería no volvió).
  *  - leasingRucs: RUC de entidades de leasing (bancos); sus ventas sin cliente final van a "Por asignar cliente final".
@@ -18,7 +21,8 @@ const ROLES = ["admin", "supervisor", "vendedor", "tecnico"] as const;
 
 const SalesOdooSchema = z.looseObject({
   uploadRoles: z.array(z.enum(ROLES)).default(["admin", "supervisor", "vendedor"]),
-  excludeStatus: z.array(z.string()).default(["Cancelado", "Borrador"]),
+  excludeStatus: z.array(z.string()).default([]),
+  annulledMarkers: z.array(z.string()).default(["anulad", "rechazad", "baja"]),
   creditNoteAmountOnlyReasons: z.array(z.string()).default(["DESCUENTO", "AJUSTE DE PRECIO"]),
   leasingRucs: z.array(z.string().regex(/^\d{11}$/)).default(["20100047218", "20100130204", "20100053455"]),
   vendorAliases: z.record(z.string(), z.string()).default({}),

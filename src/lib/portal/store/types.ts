@@ -318,8 +318,17 @@ export interface SaleDetailInput {
   margenPct?: number | null;
   /** false: la línea no suma neumáticos (no es neumático, nota de débito, nota de crédito solo de monto, STATUS excluido). */
   cuentaUnidades: boolean;
-  /** STATUS excluido (Cancelado / Borrador): se guarda para el historial de cargas, pero no cuenta en nada. */
+  /** Venta anulada (ESTADO SUNAT o TIPO DOC; o un STATUS de sales.excludeStatus): se guarda, pero no cuenta en nada. */
   excluida: boolean;
+  /** Por qué se excluyó ("ESTADO SUNAT: Anulado", "TIPO DOC: Factura Anulada", "STATUS: …"); null si cuenta. */
+  motivoExclusion?: string | null;
+  /**
+   * true: TOTAL VTA S/ (o VTA UND S/) venía en 0 con su par en dólares distinto de 0, y el monto en soles de `total` /
+   * `precioUnitario` se calculó con el T.C. de la línea. Los valores del archivo quedan en totalOriginal / precioUnitarioOriginal.
+   */
+  montoCalculado?: boolean;
+  totalOriginal?: number | null;
+  precioUnitarioOriginal?: number | null;
   advertencia?: string | null;
   uploadId?: number | null;
 }
@@ -427,7 +436,7 @@ export interface SalesQuery {
   tipoLinea?: SaleLineType[];
   /** Solo líneas sin cliente final. */
   sinClienteFinal?: boolean;
-  /** Por defecto false: las líneas excluidas (Cancelado / Borrador) no salen. */
+  /** Por defecto false: las líneas excluidas (ventas anuladas) no salen. */
   includeExcluded?: boolean;
   /** Por defecto false: las ventas demo no salen. */
   includeDemo?: boolean;

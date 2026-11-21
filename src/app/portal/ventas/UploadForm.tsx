@@ -28,7 +28,7 @@ function OdooPreview({ preview, pending, onConfirm }: { preview: OdooSalesPrevie
   const nc = st.notasCredito;
   const totals = totalsCheck(st);
   const servicios = serviceRows(st);
-  const excl = countRows(st.excluidas.porStatus);
+  const excl = countRows(st.excluidas.porMotivo);
   const vend = vendorSummary(st);
   const guardar = st.lineasNuevas + st.lineasExistentes;
   return (
@@ -88,9 +88,18 @@ function OdooPreview({ preview, pending, onConfirm }: { preview: OdooSalesPrevie
             Notas de débito: {nf.format(st.notasDebito.documentos)} documentos, {nf.format(st.notasDebito.lineas)} líneas (no suman neumáticos).
           </li>
           <li>
-            Líneas excluidas por STATUS: {nf.format(st.excluidas.lineas)}
+            Ventas anuladas (según ESTADO SUNAT o tipo de documento): {nf.format(st.excluidas.lineas)}
             {excl.length > 0 && ` (${excl.map(([k, n]) => `${k}: ${nf.format(n)}`).join(", ")})`} · {nf.format(st.excluidas.neumaticos)} neumáticos. Se guardan, pero no
-            cuentan.
+            cuentan. El STATUS es del lado de compra: no excluye ventas.
+          </li>
+          {st.montosCalculados.lineas > 0 && (
+            <li>
+              Montos en soles calculados con el T.C. de la línea (venían en S/ 0 con monto en dólares): {nf.format(st.montosCalculados.lineas)} líneas · S/{" "}
+              {money.format(st.montosCalculados.totalSoles)}. Se guarda también el valor original.
+            </li>
+          )}
+          <li>
+            Total neto (lo que cuenta, notas de crédito restando): S/ {money.format(st.totalesNetos.soles)} y US$ {money.format(st.totalesNetos.usd)}.
           </li>
         </ul>
       </div>

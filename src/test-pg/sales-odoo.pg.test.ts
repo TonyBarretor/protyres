@@ -94,7 +94,8 @@ describe("ventas-odoo: JSON y Postgres dan lo mismo", () => {
     // y lo que se espera de cada paso (no solo que coincidan)
     expect(json["commit.2"]).toEqual({ inserted: 0, updated: 17, nuevas: 0 });
     expect(json["commit.3"]).toEqual({ inserted: 1, updated: 17 });
-    expect(json["part.2"]).toMatchObject({ [FX.cliente]: { cantidad: 13 }, [FX.clienteFinal]: { cantidad: 10 } });
+    // cliente: 8 - 1 + 2 + 4 (F003-5006, STATUS Cancelado: cuenta desde el ajuste 1; antes 13) + 4 (F003-5100) = 17
+    expect(json["part.2"]).toMatchObject({ [FX.cliente]: { cantidad: 17 }, [FX.clienteFinal]: { cantidad: 10 } });
     expect((json["part.2"] as Record<string, unknown>)[FX.banco]).toBeUndefined();
     expect(json["setCF.wrongBank"]).toBe(0);
   });
@@ -117,7 +118,8 @@ describe.skipIf(!fs.existsSync(REAL))("ventas-odoo: archivo real en Postgres", (
     console.log(`[test:pg] archivo real: ${times.map((t) => `${t} ms`).join(", ")}`);
     expect((await pg.countSales()).total).toBe(2920);
     const netos = (await pg.salesByClient()).reduce((n, r) => n + r.neumaticos, 0);
-    expect(netos).toBe(18430);
+    // 18.536: STATUS (Cancelado / Borrador) ya no excluye ventas (ajuste 1; antes 18.430)
+    expect(netos).toBe(18536);
     // la función de Vercel corta a los 300 s; el portal fija maxDuration más bajo: muy por debajo de ambos
     for (const t of times) expect(t).toBeLessThan(60_000);
   });

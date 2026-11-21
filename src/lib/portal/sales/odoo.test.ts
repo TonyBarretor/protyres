@@ -124,19 +124,85 @@ describe("ventas-odoo: lectura del reporte", () => {
     const s = r.odoo!.stats;
     expect(s.notasCredito).toMatchObject({ documentos: 2, lineas: 2, neumaticos: 1, soloMonto: 1 });
     expect(s.notasDebito).toEqual({ documentos: 1, lineas: 1 });
-    // 8 (F003-5001) - 1 (devolución) + 6 + 4 (boleta) + 2 (documento raro) + 10 (banco) + 2 (Hecho) = 31; Cancelado y Borrador no
-    expect(s.neumaticosNetos).toBe(31);
+    // 8 (F003-5001) - 1 (devolución) + 6 + 4 (boleta) + 2 (documento raro) + 10 (banco) + 2 (Hecho) + 4 (Cancelado) = 35;
+    // F003-5007 (anulada en SUNAT) no. Antes 31: STATUS Cancelado ya no excluye (ajuste 1)
+    expect(s.neumaticosNetos).toBe(35);
   });
 
-  it("STATUS Cancelado y Borrador: se guardan excluidas y no cuentan; vacío, Hecho y Compra cuentan", async () => {
+  // Cambio pedido (ventas-odoo, ajuste 1): STATUS es una columna del bloque COMPRA y ya no excluye ventas (antes
+  // Cancelado y Borrador se excluían). Solo se excluye lo que ESTADO SUNAT o TIPO DOC dicen que se anuló.
+  it("STATUS no excluye ventas (es del lado de compra): Cancelado, Borrador, vacío, Hecho y Compra cuentan", async () => {
     const r = await read(await buildOdooXlsx(sampleOdooLines()));
     const st = (status: string | null) => r.rows.filter((x) => x.detalle!.status === status);
-    expect(st("Cancelado").every((x) => x.detalle!.excluida && !x.detalle!.cuentaUnidades)).toBe(true);
-    expect(st("Borrador").every((x) => x.detalle!.excluida)).toBe(true);
+    expect(DEFAULT_SALES_SETTINGS.excludeStatus).toEqual([]);
+    expect(st("Cancelado")[0].detalle).toMatchObject({ excluida: false, cuentaUnidades: true, motivoExclusion: null });
     expect(st("Hecho")[0].detalle).toMatchObject({ excluida: false, cuentaUnidades: true });
     expect(st("Compra")[0].detalle).toMatchObject({ excluida: false, tipoLinea: "otro" });
     expect(st(null).every((x) => !x.detalle!.excluida)).toBe(true);
-    expect(r.odoo!.stats.excluidas).toMatchObject({ lineas: 2, porStatus: { Cancelado: 1, Borrador: 1 }, neumaticos: 9 });
+    // F003-5007 trae STATUS Borrador y ESTADO SUNAT Anulado: se excluye por SUNAT, no por el STATUS
+    expect(st("Borrador")[0].detalle).toMatchObject({ documento: "F003-5007", excluida: true, cuentaUnidades: false, motivoExclusion: "ESTADO SUNAT: Anulado" });
+    expect(r.rows.filter((x) => x.detalle!.excluida)).toHaveLength(1);
+    expect(r.odoo!.stats.excluidas).toMatchObject({ lineas: 1, porMotivo: { "ESTADO SUNAT: Anulado": 1 }, neumaticos: 5 });
+  });
+
+  it("se excluye solo lo anulado según ESTADO SUNAT o TIPO DOC; 'Consultar Estado' y 'Aceptado' cuentan", async () => {
+    const base = sampleOdooLines()[0];
+    const r = await read(
+      await buildOdooXlsx([
+        { ...base, documento: "F003-6001", estadoSunat: "Anulado" },
+        { ...base, documento: "F003-6002", estadoSunat: "Rechazado" },
+        { ...base, documento: "F003-6003", estadoSunat: "Comunicación de baja" },
+        { ...base, documento: "F003-6004", tipoDoc: "Factura Anulada" },
+        { ...base, documento: "F003-6005", estadoSunat: "Consultar Estado" },
+        { ...base, documento: "F003-6006", status: "Cancelado" },
+      ]),
+    );
+    const of = (doc: string) => r.rows.find((x) => x.detalle!.documento === doc)!.detalle!;
+    expect(of("F003-6001")).toMatchObject({ excluida: true, cuentaUnidades: false, motivoExclusion: "ESTADO SUNAT: Anulado" });
+    expect(of("F003-6002")).toMatchObject({ excluida: true, motivoExclusion: "ESTADO SUNAT: Rechazado" });
+    expect(of("F003-6003")).toMatchObject({ excluida: true, motivoExclusion: "ESTADO SUNAT: Comunicación de baja" });
+    expect(of("F003-6004")).toMatchObject({ excluida: true, tipoDoc: "factura", motivoExclusion: "TIPO DOC: Factura Anulada" });
+    expect(of("F003-6005")).toMatchObject({ excluida: false, cuentaUnidades: true });
+    expect(of("F003-6006")).toMatchObject({ excluida: false, cuentaUnidades: true });
+    const s = r.odoo!.stats;
+    expect(s.excluidas).toMatchObject({ lineas: 4, neumaticos: 32, porMotivo: { "ESTADO SUNAT: Anulado": 1, "ESTADO SUNAT: Rechazado": 1, "ESTADO SUNAT: Comunicación de baja": 1, "TIPO DOC: Factura Anulada": 1 } });
+    expect(s.neumaticosNetos).toBe(16);
+    // un STATUS en sales.excludeStatus sigue excluyendo si alguien lo configura a propósito
+    const conf = await readSalesXlsx(await buildOdooXlsx([{ ...base, status: "Cancelado" }]), { users, settings: { ...DEFAULT_SALES_SETTINGS, excludeStatus: ["Cancelado"] } });
+    expect(conf.rows[0].detalle).toMatchObject({ excluida: true, motivoExclusion: "STATUS: Cancelado" });
+  });
+
+  it("TOTAL VTA S/ en 0 con TOTAL VTA $ distinto de 0: soles calculados con el T.C. de la línea, marcados, con el original guardado", async () => {
+    const r = await read(
+      await buildOdooXlsx([
+        ...sampleOdooLines(),
+        // precio unitario en soles también en 0
+        { fecha: "2026-10-09", tipoDoc: "Nota Crédito", documento: "F003-92", ocProveedor: "Reversión de: F003-5005, DEVOLUCION", ruc: FX.banco, razon: "BANCO DE CREDITO DEL PERU", descripcion: "[P0118] 265/70R16 110/107Q GENERAL GRABBER MT", cantidad: 2, precio: 172, precioSoles: 0, totalSoles: 0 },
+        // sin T.C.: no se puede calcular, queda como viene con advertencia
+        { fecha: "2026-10-10", tipoDoc: "Nota Crédito", documento: "F003-93", ocProveedor: "Reversión de: F003-5005, DEVOLUCION", ruc: FX.banco, razon: "BANCO DE CREDITO DEL PERU", descripcion: "[P0118] 265/70R16 110/107Q GENERAL GRABBER MT", cantidad: 1, precio: 172, precioSoles: 0, totalSoles: 0, tc: null },
+      ]),
+    );
+    const of = (doc: string) => r.rows.find((x) => x.detalle!.documento === doc)!;
+    const dev = of("F003-90"); // NC en USD: 1 × 255 US$, TOTAL VTA S/ = 0, VTA UND S/ = 892.50, T.C. 3.5
+    expect(dev.total).toBe(-892.5);
+    expect(dev.precioUnitario).toBe(892.5);
+    expect(dev.detalle).toMatchObject({ montoCalculado: true, totalOriginal: 0, precioUnitarioOriginal: 892.5, totalUsd: -255, tipoCambio: 3.5 });
+    expect(of("F003-91").total).toBe(-140); // descuento: 8 × 5 US$ × 3.5
+    const both = of("F003-92");
+    expect(both.total).toBe(-1204);
+    expect(both.precioUnitario).toBe(602);
+    expect(both.detalle).toMatchObject({ montoCalculado: true, totalOriginal: 0, precioUnitarioOriginal: 0 });
+    const sinTc = of("F003-93");
+    expect(sinTc.total).toBe(0);
+    expect(sinTc.precioUnitario).toBe(0);
+    expect(sinTc.detalle).toMatchObject({ montoCalculado: false, totalOriginal: 0, precioUnitarioOriginal: 0 });
+    expect(sinTc.detalle!.advertencia).toMatch(/sin T\.C\./);
+    // una línea normal no se toca
+    expect(r.rows[0].detalle).toMatchObject({ montoCalculado: false, totalOriginal: 7140, precioUnitarioOriginal: 892.5 });
+    expect(r.rows[0].total).toBe(7140);
+    const s = r.odoo!.stats;
+    expect(s.montosCalculados).toEqual({ lineas: 3, totalSoles: -2236.5 });
+    expect(s.sumaTotalVtaSoles).toBeCloseTo(s.totalesArchivo!, 2); // la suma del archivo sigue siendo la original
   });
 
   it("documento del cliente: RUC, persona natural (DNI) y otro largo con advertencia, sin perder la fila", async () => {
@@ -194,7 +260,7 @@ describe("ventas-odoo: lectura del reporte", () => {
 // El archivo real del cliente (no está en git): la prueba corre donde está, y se salta donde no.
 const REAL = path.resolve(process.cwd(), "data/referencia-360tyres/Reporte_Ventas_01-2025_hasta_11-2026.xlsx");
 describe.skipIf(!fs.existsSync(REAL))("ventas-odoo: archivo real de Odoo (data/referencia-360tyres)", () => {
-  it("suma de TOTAL VTA S/ igual a la fila TOTALES antes de excluir nada, y las cifras tras las reglas", async () => {
+  it("suma de TOTAL VTA S/ igual a la fila TOTALES tal como viene, y las cifras tras las reglas", async () => {
     const t0 = Date.now();
     const r = await read(fs.readFileSync(REAL));
     const ms = Date.now() - t0;
@@ -208,7 +274,17 @@ describe.skipIf(!fs.existsSync(REAL))("ventas-odoo: archivo real de Odoo (data/r
     expect(s.desde).toBe("2025-08-08");
     expect(s.hasta).toBe("2026-11-19");
     expect(s.porTipo.neumatico + s.porTipo.servicio + s.porTipo.otro + s.excluidas.lineas).toBe(2920);
-    expect(s.excluidas.porStatus).toEqual({ Cancelado: 10, Borrador: 4 });
+    // ajuste 1: ESTADO SUNAT solo trae Aceptado / Consultar Estado y TIPO DOC Factura / Boleta / Nota Crédito / Nota Debito:
+    // nada anulado. Las 14 líneas Cancelado / Borrador (STATUS de compra, 106 neumáticos) ahora cuentan.
+    expect(s.excluidas).toMatchObject({ lineas: 0, porMotivo: {}, neumaticos: 0 });
+    expect(s.neumaticosNetos).toBe(18536);
+    // ajuste 2: 30 notas de crédito en USD con TOTAL VTA S/ = 0 → soles calculados con su T.C. (las otras 4 con S/ 0 traen
+    // también US$ 0: nada que calcular)
+    expect(s.montosCalculados).toEqual({ lineas: 30, totalSoles: -113260.87 });
+    // soles: 11.176.075,40 − 2 × 3.842,56 (NC que traen S/: el archivo las suma en positivo) − 113.260,87 (NC calculadas)
+    // dólares: 3.306.965,53 − 2 × 34.406,15 (NC: el archivo las suma en positivo)
+    expect(s.totalesNetos).toEqual({ soles: 11055129.41, usd: 3238153.23 });
+    expect(s.notasCredito).toMatchObject({ totalSoles: 117103.43, totalUsd: 34406.15, neumaticos: 211 });
     expect(s.notasCredito.lineas).toBe(47);
     expect(s.notasDebito.lineas).toBe(3);
     expect(s.personasNaturales.lineas).toBe(47);

@@ -47,9 +47,10 @@
   "holidays": [],
   "sales": {
     "_comment": "Subir ventas (.xlsx): para cada campo, encabezados posibles del Excel (sin importar mayúsculas, tildes ni espacios). Obligatorios: fecha, ruc, cantidad. Primer encabezado que coincide gana.",
-    "_commentOdoo": "Reporte de ventas de Odoo (se reconoce solo por sus encabezados). uploadRoles: quién sube ventas. excludeStatus: STATUS cuyas líneas no cuentan. creditNoteAmountOnlyReasons: motivos de nota de crédito que solo corrigen el monto (restan montos, no neumáticos). leasingRucs: entidades de leasing (sus ventas sin cliente final van a 'Por asignar cliente final'). vendorAliases: VENDEDOR del reporte -> nombre del usuario. vendorsWithoutOwner: textos que no son una persona.",
+    "_commentOdoo": "Reporte de ventas de Odoo (se reconoce solo por sus encabezados). uploadRoles: quién sube ventas. excludeStatus: STATUS cuyas líneas no cuentan (vacío: STATUS es del lado de compra). annulledMarkers: palabras de ESTADO SUNAT o TIPO DOC que marcan una venta anulada (no cuenta). creditNoteAmountOnlyReasons: motivos de nota de crédito que solo corrigen el monto (restan montos, no neumáticos). leasingRucs: entidades de leasing (sus ventas sin cliente final van a 'Por asignar cliente final'). vendorAliases: VENDEDOR del reporte -> nombre del usuario. vendorsWithoutOwner: textos que no son una persona.",
     "uploadRoles": ["admin", "supervisor", "vendedor"],
-    "excludeStatus": ["Cancelado", "Borrador"],
+    "excludeStatus": [],
+    "annulledMarkers": ["anulad", "rechazad", "baja"],
     "creditNoteAmountOnlyReasons": ["DESCUENTO", "AJUSTE DE PRECIO"],
     "leasingRucs": ["20100047218", "20100130204", "20100053455"],
     "vendorAliases": { "DANYER SAAVERDRA": "Danyer Saavedra" },
