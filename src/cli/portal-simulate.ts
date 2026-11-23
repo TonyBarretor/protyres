@@ -40,6 +40,11 @@
  *   @flota-prueba <RUC> <placa> <marca> <año> <llantas>
  *                                corrida J: un vehículo inventado en la flota de esa empresa (copia de datos), para ver el
  *                                contraste de la placa de una cotización con el padrón
+ *   @stock-prueba <código> <medida> <marca> <modelo…> <san luis> <callao> [reserva <n>]
+ *                                corrida K: una fila de stock propio inventada (como la del reporte de Odoo, con los dos
+ *                                almacenes y la reserva) en la copia del cotizador, fechada hoy (manda sobre la carga anterior)
+ *   @match-recalc                corrida K: recalcula Match Venta en la copia (siembra de prioridades de config, stock,
+ *                                cruce con el padrón), como tras una carga de stock o `npm run portal:recalc-match`
  *   @ventas-odoo <archivo.json>  carga en la copia de datos un reporte de ventas de Odoo inventado (líneas con la forma de
  *                                OdooFixtureLine, p. ej. scripts/fixtures/ventas-odoo-prueba.json) por el mismo camino que
  *                                "Subir ventas" (.xlsx de Odoo, vista previa y guardado con recálculo del puntaje)
@@ -732,6 +737,65 @@ async function main() {
     console.log(`🚚 vehículo de prueba ${placa} en la flota de ${company.razonSocial}`);
   };
 
+  /** @stock-prueba: una fila de stock propio inventada en la copia del cotizador (corrida K, Match Venta). */
+  const testStock = async (m: RegExpMatchArray) => {
+    if (!args.pgTest && (args.db || args.persist)) {
+      thrown.push("@stock-prueba solo sobre la copia de datos (sin --db ni --persist)");
+      return;
+    }
+    const [, code, size, brand, model, sanLuis, callao, reserva] = m;
+    const { findTyreSizes } = await import("../lib/tyre/spec");
+    const canonical = findTyreSizes(size)[0]?.canonical;
+    if (!canonical) {
+      thrown.push(`@stock-prueba: «${size}» no es una medida`);
+      return;
+    }
+    const by: Record<string, number> = { "San Luis": Number(sanLuis), Callao: Number(callao) };
+    const reserve = Number(reserva ?? 0);
+    const today = new Date().toLocaleDateString("en-CA", { timeZone: "America/Lima" });
+    await store.upsertRows([
+      {
+        id: `sim-stock-${code}`,
+        provider: "Protyres",
+        kind: "stock",
+        code: code.toUpperCase(),
+        description: `${canonical} ${brand} ${model}`.toUpperCase(),
+        brand,
+        model: model.toUpperCase(),
+        size: canonical,
+        sizeDisplay: canonical,
+        sizeRaw: size,
+        isTyre: true,
+        cost: null,
+        priceIncludesTax: false,
+        currency: "USD",
+        stock: Math.max(0, by["San Luis"] + by.Callao - reserve),
+        stockByWarehouse: by,
+        priceDate: today,
+        source: "odoo",
+        sourceRef: "stock de prueba (simulador)",
+        ...(reserve ? { notes: `reserva: ${reserve}` } : {}),
+      },
+    ]);
+    console.log(`📦 stock de prueba ${code}: ${canonical} ${brand} ${model} · San Luis ${by["San Luis"]} · Callao ${by.Callao}${reserve ? ` · reserva ${reserve}` : ""}`);
+  };
+
+  /** @match-recalc: Match Venta recalculado en la copia (como tras una carga de stock). */
+  const matchRecalc = async () => {
+    if (!args.pgTest && (args.db || args.persist)) {
+      thrown.push("@match-recalc solo sobre la copia de datos (sin --db ni --persist)");
+      return;
+    }
+    const { recalcMatch } = await import("../lib/portal/match");
+    try {
+      const r = await recalcMatch({ store: portal, prices: store, log: (m) => console.error(`[match] ${m}`) }, "simulador");
+      await portal.flush();
+      console.log(`🎯 Match Venta recalculado: ${r.productos} productos prioritarios, ${r.empresas} empresas, ${r.filas} filas en ${r.durationMs} ms`);
+    } catch (err) {
+      thrown.push(`@match-recalc: ${(err as Error).message}`);
+    }
+  };
+
   /** @ventas-odoo <archivo.json>: reporte de Odoo inventado cargado como "Subir ventas", en la copia de datos. */
   const odooSales = async (file: string) => {
     if (!args.pgTest && (args.db || args.persist)) {
@@ -815,6 +879,9 @@ async function main() {
     if (empresa) return testCompany(empresa[1], empresa[2].trim());
     const flota = line.match(/^@flota-prueba\s+(\d{11})\s+(\S+)\s+(\S+)\s+(\d{4})\s+(\d{1,2})\s*$/);
     if (flota) return testVehicle(flota[1], flota[2], flota[3], Number(flota[4]), Number(flota[5]));
+    const stock = line.match(/^@stock-prueba\s+(\S+)\s+(\S+)\s+(\S+)\s+(.+?)\s+(\d+)\s+(\d+)(?:\s+reserva\s+(\d+))?\s*$/i);
+    if (stock) return testStock(stock);
+    if (/^@match-recalc\s*$/.test(line)) return matchRecalc();
     const ventas = line.match(/^@ventas-odoo\s+(\S+)\s*$/);
     if (ventas) return odooSales(ventas[1]);
     const encuesta = line.match(/^@encuesta\s+(\S.*)$/);
