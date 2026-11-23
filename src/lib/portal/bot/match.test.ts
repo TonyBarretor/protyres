@@ -288,7 +288,13 @@ describe("agendar desde el bot", () => {
     expect(buttonsOf(ask).map((b) => b.title)).toEqual(["Hoy", "Mañana", "Otra fecha"]);
     const hour = await say(press("Mañana"));
     expect(buttonsOf(hour).map((b) => b.title)).toEqual(["Sin hora"]);
-    const done = bodyOf(await say(press("Sin hora")));
+    const doneMsgs = await say(press("Sin hora"));
+    const done = bodyOf(doneMsgs);
+    // como `cita` (corrida J, punto 4): resumen con la línea de la invitación y el .ics de respaldo después
+    expect(doneMsgs.map((m) => m.kind)).toEqual(["text", "document"]);
+    expect(doneMsgs[1]).toMatchObject({ mimeType: "text/calendar", caption: "" });
+    expect(doneMsgs[1].fileName).toMatch(/^cita-buses-del-sur-demo-\d{8}\.ics$/);
+    expect(done).toMatch(/Outlook|correo/);
     expect(done).toContain("📅 Visita a *BUSES DEL SUR DEMO SAC*");
     expect(done).toContain("09:00");
     expect(done).toContain("ofrecer 295/80R22.5 Fenixway Flama 66: ya te compró 60");

@@ -51,6 +51,7 @@ import { fetchVoice, logTranscript } from "../report";
 import { clearPending, setPending, type PendingStep } from "../state";
 import { heardLine } from "../voice-quote";
 import { assignToMe } from "./asignarme";
+import { inviteForNewAppointment } from "./cita";
 
 export const MATCH_STEP = "match";
 /** Empresas por tanda (como `mejores`). */
@@ -335,7 +336,11 @@ async function schedule(ctx: PortalContext, step: MatchStep, startsAt: Date, voi
   // el paso sigue (para *más*), sin empresa elegida
   await setPending(ctx.store, ctx.from, { ...step, pick: null, phase: null, day: null }, ctx.now);
   const tail = step.offset < step.total ? "\n*más* trae otras empresas para esta llanta." : "";
-  await ctx.reply(`${r.text}${r.ok ? tail : ""}`);
+  // la visita nueva lleva la invitación de calendario como cualquier `cita` (resumen primero, .ics de respaldo después)
+  const company = r.ok && !r.duplicate ? await ctx.store.getCompany(r.appointment.companyId) : null;
+  const invite = company && r.ok ? await inviteForNewAppointment(ctx, company, r.appointment) : null;
+  await ctx.reply([`${r.text}`, ...(invite?.lines ?? [])].join("\n") + (r.ok ? tail : ""));
+  if (invite) await invite.sendIcs();
 }
 
 /** "agendar", "agendar visita", "agéndala", "agendar mañana 10am" -> lo que sigue ("mañana 10am") o "" ; null si no es. */

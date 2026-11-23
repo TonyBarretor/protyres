@@ -397,6 +397,17 @@ export async function createCita(ctx: PortalContext, company: Company, input: Ci
   return appt;
 }
 
+/**
+ * Corrida K: invitación de una cita creada por otro camino (visita de Match Venta, scheduleMatchVisit). Manda el correo
+ * como `cita` (nunca lanza) y devuelve las líneas para el resumen; `sendIcs` manda el .ics de respaldo después del resumen.
+ */
+export async function inviteForNewAppointment(ctx: PortalContext, company: Company, appt: Appointment): Promise<{ lines: string[]; sendIcs: () => Promise<void> }> {
+  const contacts = await ctx.store.listContacts(company.id);
+  const invite = await sendCitaInvite(ctx, company, appt, contacts, "crear", 0);
+  const lines = [...inviteLines(invite, "crear", loadPortalConfig().techLead.nombre), ...(await calendarLinkLines(ctx, company, appt, contacts))];
+  return { lines, sendIcs: () => sendCitaIcs(ctx, company, appt, contacts) };
+}
+
 // ── cita duplicada: reprogramar ──
 
 /**
