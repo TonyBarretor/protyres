@@ -1,0 +1,209 @@
+/* Match Venta (corrida K): pensado primero para 390 px; sin tablas ni desplazamiento lateral de la página. */
+
+.mv-total {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.3rem 1rem;
+  font-family: var(--font-title);
+  font-size: 1.2rem;
+}
+.mv-total b { font-size: 1.5rem; }
+
+/* ── Vista 1: productos ── */
+.mv-prods { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.75rem; grid-template-columns: repeat(auto-fill, minmax(min(100%, 330px), 1fr)); }
+.mv-prod { display: grid; gap: 0.45rem; align-content: start; min-width: 0; }
+.mv-prod-main { display: grid; gap: 0.25rem; text-decoration: none; color: inherit; }
+.mv-prod-main:hover .mv-cta { text-decoration: underline; }
+.mv-prod-head { display: flex; justify-content: space-between; align-items: baseline; gap: 0.6rem; flex-wrap: wrap; }
+.mv-medida { font-family: var(--font-title); font-size: 1.55rem; font-weight: 700; letter-spacing: -0.01em; }
+.pt-shell h1.mv-medida { font-size: 1.7rem; }
+.mv-disp { white-space: nowrap; color: var(--muted); }
+.mv-disp b { font-family: var(--font-title); font-size: 1.45rem; color: var(--ink); font-variant-numeric: tabular-nums; }
+.mv-prod-name { font-weight: 600; overflow-wrap: anywhere; }
+.mv-aplic { color: #5b3bb5; font-size: 0.88rem; font-weight: 500; }
+.mv-prod-count { font-size: 0.92rem; }
+.mv-cta { display: inline-block; margin-top: 0.2rem; font-weight: 700; color: var(--accent-ink); background: var(--accent); border-radius: 8px; padding: 0.45rem 0.8rem; justify-self: start; }
+.mv-note { margin: 0; font-size: 0.84rem; background: var(--cold-bg); color: #1d3f8f; border-radius: 8px; padding: 0.45rem 0.6rem; }
+.mv-progress { margin: 0; color: var(--muted); }
+.mv-detail > summary { font-size: 0.86rem; font-weight: 600; color: var(--muted); padding: 0.15rem 0; }
+.mv-prod-hero { display: grid; gap: 0.3rem; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 0.9rem 1rem; }
+.mv-add-row { display: flex; justify-content: space-between; align-items: center; gap: 0.6rem; flex-wrap: wrap; }
+
+/* ── filtros: una sola fila de chips (se desliza de lado dentro de la fila, la página no) ── */
+.mv-chips {
+  display: flex;
+  gap: 0.4rem;
+  overflow-x: auto;
+  padding: 0.1rem 0.1rem 0.4rem;
+  margin: 0 -0.1rem;
+  scrollbar-width: thin;
+  -webkit-overflow-scrolling: touch;
+  max-width: 100%;
+}
+.mv-chip {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  min-height: 36px;
+  padding: 0.3rem 0.8rem;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  text-decoration: none;
+  font-size: 0.86rem;
+  font-weight: 500;
+  white-space: nowrap;
+}
+.mv-chip-on { background: var(--ink); color: #fff; border-color: var(--ink); }
+.mv-chip-clear { border-style: dashed; color: var(--muted); }
+.mv-chip-select { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 0.3rem; }
+.pt-shell .mv-chip-select select { min-height: 36px; border-radius: 999px; padding: 0.25rem 0.7rem; font-size: 0.86rem; width: auto; max-width: 13rem; }
+.pt-shell .mv-chip-select.mv-chip-on select { background: var(--ink); color: #fff; border-color: var(--ink); }
+
+/* ── Vista 2: tarjetas de empresa ── */
+.mv-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.75rem; grid-template-columns: repeat(auto-fill, minmax(min(100%, 380px), 1fr)); align-items: start; }
+.mv-card { display: grid; gap: 0.45rem; min-width: 0; overflow-wrap: anywhere; position: relative; scroll-margin-top: 7rem; }
+.mv-anchor { position: absolute; top: -7rem; }
+.mv-card-top { display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap; }
+.mv-name { margin: 0; font-size: 1.05rem; }
+.mv-name a { text-decoration: none; }
+.mv-name a:hover { text-decoration: underline; }
+.mv-estado { display: inline-block; font-size: 0.74rem; font-weight: 700; padding: 0.1rem 0.5rem; border-radius: 999px; border: 1px solid transparent; }
+.mv-st-cliente { background: #ecfdf3; color: var(--ok); border-color: #abefc6; }
+.mv-st-tuya { background: var(--accent-soft); color: var(--accent-ink); border-color: #f3dc8a; }
+.mv-st-libre { background: #eff4ff; color: #1849a9; border-color: #c7d7fe; }
+.mv-st-prospecto { background: #f2f4f7; color: #475467; border-color: #e4e7ec; }
+.mv-check { margin-left: auto; display: inline-flex; align-items: center; gap: 0.35rem; font-size: 0.82rem; color: var(--muted); cursor: pointer; min-height: 32px; padding: 0 0.2rem; }
+.mv-check input { width: 18px; height: 18px; }
+.mv-ruc { display: flex; align-items: center; gap: 0.4rem; font-size: 0.86rem; color: var(--muted); flex-wrap: wrap; }
+.pt-shell .mv-copy { font: inherit; font-size: 0.78rem; font-weight: 600; border: 1px solid var(--line); background: var(--surface); border-radius: 6px; padding: 0.15rem 0.5rem; min-height: 28px; cursor: pointer; color: var(--ink); }
+
+.mv-pct { display: grid; gap: 0.2rem; }
+.mv-pct-head { display: flex; align-items: baseline; gap: 0.5rem; flex-wrap: wrap; }
+.mv-pct-num { font-family: var(--font-title); font-size: 2.1rem; font-weight: 700; line-height: 1; font-variant-numeric: tabular-nums; }
+.mv-bar { height: 8px; border-radius: 999px; background: #eceef2; overflow: hidden; }
+.mv-bar > span { display: block; height: 100%; background: var(--accent); border-radius: 999px; }
+.mv-pct-sm .mv-pct-num { font-size: 1.25rem; }
+.mv-pct-sm .mv-bar { height: 5px; }
+.mv-pct-sm { min-width: 7.5rem; }
+.mv-desglose { margin: 0; font-size: 0.88rem; }
+.mv-meta { margin: 0; }
+
+.mv-badge { display: inline-block; font-size: 0.68rem; font-weight: 700; letter-spacing: 0.03em; text-transform: uppercase; padding: 0.08rem 0.4rem; border-radius: 4px; white-space: nowrap; vertical-align: 0.08em; }
+.mv-badge-est { background: #f2f4f7; color: #475467; border: 1px dashed #98a2b3; }
+.mv-badge-real { background: var(--ok); color: #fff; }
+.mv-badge-migra { background: #f3eefe; color: #5b3bb5; border: 1px solid #d9cbfb; }
+.mv-real { margin: 0; font-size: 0.86rem; background: #ecfdf3; border-left: 3px solid var(--ok); padding: 0.4rem 0.55rem; border-radius: 0 6px 6px 0; }
+.mv-migra { margin: 0; font-size: 0.84rem; background: #faf7ff; border-left: 3px solid #9e77ed; padding: 0.4rem 0.55rem; border-radius: 0 6px 6px 0; }
+.mv-credito { margin: 0; font-size: 0.84rem; color: var(--danger); font-weight: 600; }
+
+.mv-line { display: flex; gap: 0.45rem; align-items: flex-start; font-size: 0.88rem; }
+.mv-link { color: #1849a9; font-weight: 600; text-decoration: underline; text-underline-offset: 2px; cursor: pointer; font-size: 0.84rem; }
+.mv-inline > summary { list-style: none; display: inline; }
+.mv-inline > summary::-webkit-details-marker { display: none; }
+
+/* acciones: máximo tres visibles + "Más"; un panel abierto ocupa toda la fila */
+.mv-actions { display: flex; gap: 0.4rem; flex-wrap: wrap; align-items: flex-start; padding-top: 0.35rem; border-top: 1px solid var(--line); margin-top: 0.15rem; }
+.mv-actions > form,
+.mv-actions > details,
+.mv-actions > a { flex: 0 0 auto; }
+.mv-actions .pt-btn { min-height: 40px; }
+.mv-act > summary { list-style: none; }
+.mv-act > summary::-webkit-details-marker { display: none; }
+.mv-act[open] { flex-basis: 100%; }
+.mv-act[open] > summary { box-shadow: inset 0 0 0 2px var(--ink); }
+.mv-panel { display: grid; gap: 0.5rem; margin-top: 0.5rem; padding: 0.7rem; background: #f8f9fb; border: 1px solid var(--line); border-radius: 8px; }
+.mv-quote { margin: 0; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.85rem; background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 0.45rem 0.55rem; }
+.mv-menu { display: grid; gap: 0.35rem; margin-top: 0.5rem; }
+.mv-menu .mv-menu-item { width: 100%; justify-content: flex-start; }
+.mv-menu-form { display: block; }
+.mv-days { border: 0; padding: 0; margin: 0; display: flex; gap: 0.4rem; flex-wrap: wrap; }
+.mv-days legend { width: 100%; margin-bottom: 0.2rem; }
+.mv-days label { display: inline-flex; align-items: center; gap: 0.35rem; min-height: 40px; padding: 0.3rem 0.8rem; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); font-weight: 600; cursor: pointer; }
+.mv-days label:has(input:checked) { background: var(--accent-soft); border-color: var(--accent); }
+.mv-days input { width: auto; margin: 0; }
+.mv-sched:not(:has(input[value="otra"]:checked)) .mv-fecha { display: none; }
+.pt-shell .mv-panel input[type="date"],
+.pt-shell .mv-panel input[type="time"],
+.pt-shell .mv-plan input[type="time"] {
+  font: inherit;
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0.4rem 0.55rem;
+  min-height: 40px;
+  width: 100%;
+  max-width: 14rem;
+}
+
+/* "Ver por empresa": los matches de la empresa */
+.mv-sublist { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.55rem; }
+.mv-sublist > li { display: grid; gap: 0.3rem; padding: 0.55rem 0.6rem; background: #fafbfc; border: 1px solid var(--line); border-radius: 8px; }
+.mv-sub-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 0.6rem; flex-wrap: wrap; }
+.mv-sub-prod { font-weight: 700; text-decoration: none; }
+.mv-sub-prod:hover { text-decoration: underline; }
+
+.mv-more-wrap { display: flex; align-items: center; gap: 0.8rem; flex-wrap: wrap; justify-content: center; }
+
+/* barra de planificar (fija abajo) */
+.mv-planbar {
+  position: sticky;
+  bottom: 0.6rem;
+  z-index: 5;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  background: var(--ink);
+  color: #fff;
+  border-radius: 12px;
+  padding: 0.6rem 0.8rem;
+  box-shadow: 0 6px 18px rgba(16, 24, 40, 0.25);
+}
+.mv-planbar .pt-btn:not(.pt-btn-primary) { background: transparent; color: #fff; border-color: #4a4f58; }
+
+/* planificar visitas */
+.mv-plan { display: grid; gap: 0.8rem; }
+.mv-plan-day h2 { font-size: 1rem; margin-bottom: 0.15rem; }
+.mv-plan-day h2::first-letter { text-transform: uppercase; }
+.mv-plan-item { display: grid; gap: 0.4rem; padding: 0.6rem 0; border-top: 1px solid var(--line); }
+.mv-plan-item:first-of-type { border-top: 0; }
+.mv-plan-fields { display: flex; gap: 0.5rem; flex-wrap: wrap; }
+.mv-plan-fields .pt-field { flex: 1 1 9rem; }
+
+/* ficha, Hoy y Tablero */
+.mv-ficha-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.7rem; }
+.mv-ficha-list > li { display: grid; gap: 0.3rem; border-top: 1px solid var(--line); padding-top: 0.6rem; }
+.mv-ficha-list > li:first-child { border-top: 0; padding-top: 0; }
+.mv-today { display: flex; align-items: center; justify-content: space-between; gap: 0.6rem; flex-wrap: wrap; text-decoration: none; background: var(--accent-soft); border: 1px solid #f3dc8a; color: var(--accent-ink); }
+.mv-today:hover { border-color: var(--accent); }
+.mv-today b { font-family: var(--font-title); }
+.mv-progress-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.6rem; grid-template-columns: repeat(auto-fill, minmax(min(100%, 300px), 1fr)); }
+.mv-progress-list > li { border: 1px solid var(--line); border-radius: 8px; padding: 0.6rem 0.7rem; display: grid; gap: 0.3rem; min-width: 0; }
+
+@media (max-width: 720px) {
+  .mv-medida { font-size: 1.4rem; }
+  .mv-pct-num { font-size: 1.9rem; }
+}
+
+/* la pila de la página es un grid: sin esto la fila de chips (que se desliza) ensancha la columna más allá del teléfono */
+.pt-stack.mv-page { grid-template-columns: minmax(0, 1fr); }
+/* el texto oculto para lectores de pantalla (position: absolute) escapaba de la fila de chips y ensanchaba la página 220 px */
+.mv-chips, .mv-chip-select { position: relative; }
+/* acciones en dos columnas iguales (en 390 px "Más" quedaba solo en otra línea y los botones con alturas distintas) */
+.mv-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.45rem; }
+.mv-actions > form,
+.mv-actions > details,
+.mv-actions > a { min-width: 0; }
+.pt-shell .mv-actions .pt-btn,
+.pt-shell .mv-actions form > button.pt-btn { width: 100%; min-height: 42px; font-size: 0.92rem; }
+.mv-act[open] { grid-column: 1 / -1; }
+.mv-act > summary.pt-btn { width: 100%; }
+/* en escritorio hay ancho: los chips se acomodan en líneas en lugar de deslizarse */
+@media (min-width: 900px) {
+  .mv-chips { flex-wrap: wrap; overflow-x: visible; }
+}

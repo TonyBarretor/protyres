@@ -2,6 +2,8 @@
  * Hoy: próximas acciones del usuario (vencidas, de hoy, de los próximos 7 días y sin fecha), sus citas de hoy y los
  * próximos 7 días, en hora de Lima, y lo que dejó en pausa en el bot de WhatsApp (corrida D: se retoma desde el bot).
  * Corrida G: "Tus 20 mejores flotas para trabajar" (bestFleets) para quien puede asignarse empresas (no el técnico).
+ * Corrida K: la línea "Tienes 636 llantas prioritarias: N empresas sin contactar hacen match" lleva a Match Venta; las
+ * visitas agendadas desde Match Venta salen en Citas con su motivo (notas de la cita).
  */
 import Link from "next/link";
 import { requireUser } from "@/lib/portal/auth/session";
@@ -11,11 +13,14 @@ import { stageLabel } from "@/lib/portal/stages";
 import { getPortalStore } from "@/lib/portal/store";
 import type { Company } from "@/lib/portal/store/types";
 import { pausedOf } from "@/lib/portal/bot/state";
+import { todayMatchLine } from "@/lib/portal/match";
+import { canUseMatch } from "@/lib/portal/ui/match";
 import { canAssignSelf } from "@/lib/portal/ui/permissions";
 import { appointmentWindow, pausedForToday, selectToday } from "@/lib/portal/ui/today";
 import { formatLimaDateTime, formatLimaDay, formatLimaTime } from "@/lib/portal/ui/time";
 import { Flash } from "../_components/bits";
 import { BestFleets } from "./BestFleets";
+import "../match/match.css";
 
 export const metadata = { title: "Hoy · Portal 360 Tyres" };
 
@@ -30,10 +35,11 @@ export default async function HoyPage({ searchParams }: { searchParams: Promise<
   const scoring = loadPortalConfig().scoring;
   // el técnico no se asigna empresas: sin bloque de mejores flotas
   const showBest = canAssignSelf(user, { ownerUserId: null });
-  const [opps, appointments, best] = await Promise.all([
+  const [opps, appointments, best, matchLine] = await Promise.all([
     store.listOpportunities({ ownerId: user.id, open: true }),
     store.listAppointments({ userId: user.id, from, to }),
     showBest ? bestFleets(store, user, scoring, { now, limit: scoring.mejores.hoy }) : null,
+    canUseMatch(user) ? todayMatchLine(store, user).catch(() => null) : null,
   ]);
   const today = selectToday(opps, appointments, now);
   const paused = user.whatsapp ? pausedForToday(pausedOf(await store.getPortalConversation(user.whatsapp).catch(() => null)), now) : [];
@@ -59,6 +65,12 @@ export default async function HoyPage({ searchParams }: { searchParams: Promise<
         </span>
       </div>
       <Flash aviso={str(sp.aviso)} error={str(sp.error)} />
+      {matchLine && (
+        <Link className="pt-card mv-today" href="/portal/match">
+          <span>{matchLine.text}</span>
+          <b>Ver Match Venta →</b>
+        </Link>
+      )}
 
       <div className="pt-today">
         <section className="pt-card" aria-labelledby="acciones-title">

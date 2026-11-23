@@ -4,6 +4,7 @@
  * ventas-odoo: "Historial de ventas", servicios, otros productos y cliente final del banco (SalesHistory).
  * Corrida J: empresa creada a mano (no está en el padrón): lo dice, sus cifras no llevan la etiqueta MTC y tiene el bloque
  * "Vehículos cargados a mano" (marca, clase, ejes, llantas, medida y placa) para el dueño, supervisor o admin.
+ * Corrida K: bloque "Match con tu stock" (MatchBlock).
  */
 import Link from "next/link";
 import { notFound } from "next/navigation";
@@ -24,6 +25,7 @@ import { CreditBlock } from "../../_components/CreditBlock";
 import { loadSalesHistory, SalesHistory } from "./SalesHistory";
 import { SurveyBlock } from "./SurveyBlock";
 import { WhyLevel } from "./WhyLevel";
+import { loadMatchBlock, MatchBlock } from "./MatchBlock";
 import { addManualVehicleAction, removeManualVehicleAction } from "./vehicle-actions";
 
 type Props = { params: Promise<{ id: string }>; searchParams: Promise<Record<string, string | string[] | undefined>> };
@@ -83,6 +85,7 @@ export default async function EmpresaPage({ params, searchParams }: Props) {
   ]);
   const history = opp ? await store.stageHistory(opp.id) : [];
   const sales = await loadSalesHistory(store, company, user, sp);
+  const match = await loadMatchBlock(store, user, company);
   const brands = groupByBrand(fleet);
   const participacion = part[company.ruc] ?? { cantidad: 0, demo: false };
   const userName = (uid: number | null) => (uid === null ? "—" : (users.find((u) => u.id === uid)?.nombre ?? `#${uid}`));
@@ -154,6 +157,8 @@ export default async function EmpresaPage({ params, searchParams }: Props) {
       <div className="pt-ficha">
         <div className="pt-stack">
           <WhyLevel company={company} />
+          {/* corrida K: productos prioritarios que le sirven (Match Venta) */}
+          <MatchBlock data={match} user={user} company={company} />
 
           <section className="pt-card" aria-labelledby="flota-title">
             <div className="pt-section-head">
