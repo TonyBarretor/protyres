@@ -19,6 +19,7 @@ import { GraphWhatsAppClient, graphConfigFromEnv } from "@/lib/whatsapp/client";
 import { readSalesXlsx, REQUIRED_SALE_FIELDS, SALE_FIELDS, checkUploadMeta, checkXlsxBytes, SalesXlsxLimitError, type SalesXlsxResult } from "@/lib/portal/sales/xlsx";
 import { loadPortalConfig } from "@/lib/portal/config";
 import { recalcScoresSafely } from "@/lib/portal/scoring/recalc";
+import { recalcMatchSafely } from "@/lib/portal/match/recalc";
 import { getPortalStore } from "@/lib/portal/store";
 import { priceSizesSource } from "@/lib/store/price-sizes";
 import { canUploadSales } from "@/lib/portal/ui/permissions";
@@ -121,6 +122,7 @@ export async function confirmSales(formData: FormData): Promise<ConfirmResult> {
   const inserted = await store.insertSales(p.result.rows.map((r) => ({ ...r, sourceRef })));
   // corrida G: las ventas cambian quién es cliente y el espacio por ganar (y con eso los cortes de nivel): todo
   await recalcScoresSafely(store, loadPortalConfig().scoring, { prices: priceSizesSource, why: "subida de ventas" });
+  await recalcMatchSafely({ store, why: "subida de ventas" });
   await store.flush();
   revalidatePath("/portal", "layout");
   await store.recordSalesUpload({

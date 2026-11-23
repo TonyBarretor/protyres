@@ -9,6 +9,8 @@ import { resolveSourceOptions } from "../ingest/sources";
 import type { IngestResult } from "../ingest/types";
 import type { PriceStore } from "../store/types";
 import { DriveClient } from "./client";
+import { recalcMatchAfterStockLoad } from "../portal/match/recalc";
+import { getPortalStore } from "../portal/store";
 
 export function providerFromFileName(name: string): string {
   const cfg = resolveSourceOptions(name);
@@ -55,6 +57,8 @@ export async function syncDriveFolder(store: PriceStore, opts: { folderId?: stri
       continue;
     }
     await store.upsertRows(result.rows, { replace: { provider, sourceRef: result.stats.sourceRef, kind: kind ?? result.rows[0]?.kind } });
+    // corrida K: Match Venta se recalcula con el stock nuevo (nunca hace fallar la sincronización)
+    if ((kind ?? result.rows[0]?.kind) === "stock") await recalcMatchAfterStockLoad(getPortalStore, store);
     await store.setSyncMark(f.id, f.modifiedTime, provider);
     report.files.push({ name: f.name, provider, rows: result.rows.length, warnings: result.warnings });
   }

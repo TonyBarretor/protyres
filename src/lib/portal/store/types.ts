@@ -54,6 +54,14 @@ export interface Company {
   origen?: CompanyOrigen;
   /** Corrida J: quién la creó a mano (null en las del padrón). */
   createdBy?: number | null;
+  /**
+   * Corrida K: provincia y distrito principales (los más frecuentes de su flota de pasajeros: el padrón de carga solo trae
+   * departamento) y dirección escrita a mano en el portal ("Agregar dirección"; el padrón no la trae). Opcionales en objetos
+   * armados a mano; los stores siempre los traen (null si no hay).
+   */
+  provincia?: string | null;
+  distrito?: string | null;
+  direccion?: string | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -94,9 +102,14 @@ export interface CompanyInput {
   unidades?: number;
   llantasPiso?: number;
   antiguedadMedia?: number | null;
+  /** Corrida K: provincia y distrito principales (solo el padrón de pasajeros los trae). */
+  provincia?: string | null;
+  distrito?: string | null;
 }
 
-export type CompanyPatch = Partial<Pick<Company, "razonSocial" | "sector" | "departamento" | "unidades" | "llantasPiso" | "antiguedadMedia" | "esCliente" | "ownerUserId" | "temperatura" | "score" | "creditTermsDays">>;
+export type CompanyPatch = Partial<
+  Pick<Company, "razonSocial" | "sector" | "departamento" | "unidades" | "llantasPiso" | "antiguedadMedia" | "esCliente" | "ownerUserId" | "temperatura" | "score" | "creditTermsDays" | "provincia" | "distrito" | "direccion">
+>;
 
 export interface UpsertCompaniesResult {
   inserted: number;
@@ -1389,7 +1402,244 @@ export interface ScoringRepo {
   markUserNotice(userId: number, aviso: string): Promise<boolean>;
 }
 
-export interface PortalStore extends ScoringRepo, CompanyRepo, FleetRepo, SalesRepo, UserRepo, ContactRepo, OpportunityRepo, ActivityRepo, AppointmentRepo, PortalConversationRepo, VocabularyRepo, VoiceTranscriptRepo, PurchaseOrderRepo, CreditRepo, SurveyRepo, RateLimitRepo {
+// ── Match Venta (corrida K) ──
+
+/** Cambios de la marca de prioridad (y de la aplicación) de un producto del stock propio; quedan en match_priority_log. */
+export type MatchPriorityAction = "activar" | "quitar" | "sin_stock" | "aplicacion" | "sembrada";
+
+/**
+ * Producto del stock propio en Match Venta, ligado al CÓDIGO de Odoo ("P0433"): sobrevive a una carga nueva de stock.
+ * `prioridad`: el vendedor lo quiere vender ya. `sinStockAt`: la prioridad se apagó sola al llegar el disponible a 0.
+ */
+export interface MatchProduct {
+  code: string;
+  /** "Delantera regional", "Tracción bloque on/off road"… (editable). */
+  aplicacion: string | null;
+  prioridad: boolean;
+  prioridadAt: Date | null;
+  prioridadBy: number | null;
+  sinStockAt: Date | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface MatchProductSeed {
+  code: string;
+  aplicacion: string | null;
+  prioridad: boolean;
+}
+
+export interface MatchPriorityLogEntry {
+  id: number;
+  code: string;
+  accion: MatchPriorityAction;
+  userId: number | null;
+  detalle: string | null;
+  createdAt: Date;
+}
+
+export interface MatchPriorityInput {
+  userId: number | null;
+  accion: MatchPriorityAction;
+  detalle?: string | null;
+  at?: Date;
+  /** Solo si la prioridad sigue prendida (apagado automático: un solo aviso aunque dos procesos lo intenten). */
+  onlyIfOn?: boolean;
+}
+
+/** Flota de una empresa en una medida probable: unidades, llantas conocidas y vehículos sin N_LLANTAS por número de ejes. */
+export interface MatchFleetSize {
+  unidades: number;
+  llantas: number;
+  /** ejes ("2", "3"; "?" sin ejes) -> vehículos sin llantas en el padrón (se estiman con match.llantasPorEjes). */
+  sinLlantas: Record<string, number>;
+}
+
+/** Lo que el cruce necesita de cada empresa (una consulta por tabla, todas las empresas). */
+export interface MatchCompanyInput {
+  companyId: number;
+  ruc: string;
+  razonSocial: string;
+  sector: Sector | null;
+  departamento: string | null;
+  provincia: string | null;
+  distrito: string | null;
+  unidades: number;
+  ownerUserId: number | null;
+  esCliente: boolean;
+  credito: CreditEstado | null;
+  /** Medida probable -> flota en esa medida. */
+  medidas: Record<string, MatchFleetSize>;
+  /** Clase de vehículo -> unidades. */
+  clases: Record<string, number>;
+}
+
+export type MatchTipo = "directo" | "migracion" | "solo_ventas";
+export type MatchExclusion = "estado" | "leasing";
+
+/** "Ya te compró esta medida": dato real (ventas de Odoo), nunca mezclado con la estimación. */
+export interface MatchPurchase {
+  /** Neumáticos netos de la medida. */
+  cantidad: number;
+  ultimaFecha: IsoDate;
+  /** Cantidad de la última compra (todas las líneas de esa fecha). */
+  ultimaCantidad: number;
+  /** Precio unitario de la última compra (sin IGV) y su moneda. */
+  precioUnitario: number | null;
+  moneda: "USD" | "PEN" | null;
+  /** Margen ponderado de las compras de la medida (%). */
+  margenPct: number | null;
+  facturas: number;
+  /** Alguna línea fue de este mismo código de producto. */
+  mismoProducto: boolean;
+  /** Días promedio entre compras (con 2 o más fechas). */
+  ritmoDias: number | null;
+  /** "le tocaría reponer" según su ritmo (o sin ritmo, pasado match.reposicionDias). */
+  reponer: boolean;
+}
+
+/** Cómo salió el porcentaje (se guarda con el resultado; de aquí sale el desglose). */
+export interface MatchDetail {
+  /** Factores 0–1. */
+  encaje: number;
+  volumen: number;
+  historial: number;
+  /** Puntos de cada factor y de la aplicación (sumados y redondeados dan el porcentaje). */
+  puntos: { encaje: number; volumen: number; historial: number; aplicacion: number };
+  /** El desglose en una línea ("92% de su flota usa 12R22.5 · 368 llantas en piso · aún no es cliente"). */
+  desglose: string;
+  /** Migración: medida de la flota desde la que migraría y la etiqueta para el vendedor. */
+  migracionDesde?: string;
+  etiquetaMigracion?: string;
+  /** Por qué la aplicación la sube ("buses y carga en carretera"). */
+  aplicacion?: string;
+  compra?: MatchPurchase;
+  /** Solo ventas: llantas compradas a un banco de leasing sin cliente final asignado. */
+  bancoSinClienteFinal?: boolean;
+}
+
+export interface MatchResultInput {
+  productCode: string;
+  medida: string;
+  /** null: compró la medida pero no está en el padrón (bloque "Clientes que ya compraron esta medida"). */
+  companyId: number | null;
+  ruc: string;
+  razonSocial: string;
+  tipo: MatchTipo;
+  /** null en solo_ventas (sin flota no hay porcentaje). */
+  pct: number | null;
+  llantasMedida: number;
+  unidadesMedida: number;
+  podriaLlevar: number | null;
+  yaCompro: boolean;
+  excluida: MatchExclusion | null;
+  detalle: MatchDetail;
+}
+
+export interface MatchResult extends MatchResultInput {
+  id: number;
+}
+
+/** Resultado con los datos vivos de la empresa (dueño, crédito, ubicación, última actividad) para mostrarlo. */
+export interface MatchResultView extends MatchResult, MatchCompanyLive {}
+
+/** Lo mismo sin el detalle (listas largas: filtros, conteos y orden; el detalle se pide solo para la página). */
+export type MatchResultSummary = Omit<MatchResult, "detalle"> & MatchCompanyLive;
+
+export interface MatchCompanyLive {
+  ownerUserId: number | null;
+  esCliente: boolean;
+  credito: CreditEstado | null;
+  sector: Sector | null;
+  departamento: string | null;
+  provincia: string | null;
+  distrito: string | null;
+  direccion: string | null;
+  unidades: number;
+  lastActivityAt: Date | null;
+}
+
+export interface MatchResultQuery {
+  productCodes?: string[];
+  companyIds?: number[];
+  tipos?: MatchTipo[];
+  ids?: number[];
+  /** Solo pct >= minPct, las que ya compraron y las de solo ventas. */
+  minPct?: number;
+}
+
+export interface MatchRunInput {
+  motivo: string;
+  productos: number;
+  empresas: number;
+  filas: number;
+  duracionMs: number;
+  /** Foto del stock de los productos y notas por producto (lo lee la vista sin ir a la tabla de precios). */
+  data: Record<string, unknown>;
+  runAt?: Date;
+}
+
+export interface MatchRun extends Omit<MatchRunInput, "runAt"> {
+  id: number;
+  runAt: Date;
+}
+
+/** Visita agendada desde Match Venta: ligada a la cita y al producto que la originó, con su motivo. */
+export interface MatchVisit {
+  id: number;
+  appointmentId: number;
+  companyId: number;
+  userId: number | null;
+  productCode: string;
+  /** "ofrecer 295/80R22.5 Flama 66: ya te compró 40 en marzo" */
+  motivo: string | null;
+  /** La actividad (visita) con la que el vendedor la reportó; null mientras no se reporta. */
+  activityId: number | null;
+  reportedAt: Date | null;
+  createdAt: Date;
+}
+
+export interface MatchVisitInput {
+  appointmentId: number;
+  companyId: number;
+  userId: number | null;
+  productCode: string;
+  motivo: string | null;
+}
+
+export interface MatchVisitFilter {
+  userId?: number;
+  companyId?: number;
+  productCode?: string;
+  appointmentIds?: number[];
+  /** true = solo sin reportar. */
+  pending?: boolean;
+}
+
+export interface MatchRepo {
+  /** Empresas con su flota por medida probable y por clase, dueño, cliente y crédito. */
+  matchInputs(): Promise<MatchCompanyInput[]>;
+  listMatchProducts(): Promise<MatchProduct[]>;
+  /** Agrega los códigos que no existen (idempotente: no toca los que ya están). Devuelve los agregados. */
+  seedMatchProducts(seeds: MatchProductSeed[], at?: Date): Promise<string[]>;
+  /** Prende / apaga la prioridad (crea el producto si no existe) y deja el registro. null si `onlyIfOn` y ya estaba apagada. */
+  setMatchPriority(code: string, on: boolean, input: MatchPriorityInput): Promise<MatchProduct | null>;
+  setMatchApplication(code: string, aplicacion: string | null, userId: number | null, at?: Date): Promise<MatchProduct>;
+  /** Más reciente primero. */
+  matchPriorityLog(code?: string): Promise<MatchPriorityLogEntry[]>;
+  /** Guarda un cálculo completo: reemplaza todos los resultados (atómico) y registra la corrida. */
+  saveMatchRun(run: MatchRunInput, rows: MatchResultInput[]): Promise<MatchRun>;
+  latestMatchRun(): Promise<MatchRun | null>;
+  listMatchResults(q?: MatchResultQuery): Promise<MatchResultView[]>;
+  /** Como listMatchResults sin el detalle (rápido para miles de filas). */
+  listMatchSummaries(q?: MatchResultQuery): Promise<MatchResultSummary[]>;
+  addMatchVisit(input: MatchVisitInput): Promise<MatchVisit>;
+  listMatchVisits(filter?: MatchVisitFilter): Promise<MatchVisit[]>;
+  /** La visita quedó reportada con esa actividad (solo la primera vez). */
+  markMatchVisitReported(id: number, activityId: number, at?: Date): Promise<MatchVisit | null>;
+}
+
+export interface PortalStore extends ScoringRepo, CompanyRepo, FleetRepo, SalesRepo, UserRepo, ContactRepo, OpportunityRepo, ActivityRepo, AppointmentRepo, PortalConversationRepo, VocabularyRepo, VoiceTranscriptRepo, PurchaseOrderRepo, CreditRepo, SurveyRepo, RateLimitRepo, MatchRepo {
   /** Escribe lo pendiente (JSON); no-op en Postgres. Los CLI la llaman antes de salir. */
   flush(): Promise<void>;
   close(): Promise<void>;

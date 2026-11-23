@@ -12,6 +12,7 @@ import {
   docClienteOf,
   fromTenThousandths,
   groupFleet,
+  matchCode,
   normDocumento,
   normEmail,
   normMarca,
@@ -30,6 +31,27 @@ import {
 } from "./shared";
 import type { SaleClientDoc, SaleDetail, SaleDocType, SaleLineType, SalesClientRow, SalesClientSort, SalesListClientRow, SalesListFilter, SalesListSummary, SalesQuery, SalesUpload, SalesUploadInput, ServiceType } from "./types";
 import type { BestCompaniesQuery, BestCompany, Nivel, RankingValidation, RankingValidationInput, ScoreDetail, ScoreInput, ScoreInputQuery, ScoreRun, ScoreRunInput, ScoreUpdate, ValidationAnswer } from "./types";
+import type {
+  MatchCompanyInput,
+  MatchDetail,
+  MatchExclusion,
+  MatchFleetSize,
+  MatchPriorityAction,
+  MatchPriorityInput,
+  MatchPriorityLogEntry,
+  MatchProduct,
+  MatchProductSeed,
+  MatchResultInput,
+  MatchResultQuery,
+  MatchResultSummary,
+  MatchResultView,
+  MatchRun,
+  MatchRunInput,
+  MatchTipo,
+  MatchVisit,
+  MatchVisitFilter,
+  MatchVisitInput,
+} from "./types";
 import type {
   Activity,
   ActivityFilter,
@@ -148,12 +170,17 @@ function toCompany(r: Row): Company {
     creditTermsDays: num(r.credit_terms_days),
     origen: ((r.origen as CompanyOrigen | null) ?? "mtc") as CompanyOrigen,
     createdBy: num(r.created_by),
+    provincia: str(r.provincia),
+    distrito: str(r.distrito),
+    direccion: str(r.direccion),
     createdAt: date(r.created_at)!,
     updatedAt: date(r.updated_at)!,
   };
 }
 
 const SCORE_BATCH = 1000;
+/** Filas de match_results por sentencia (unnest de 14 arreglos). */
+const MATCH_BATCH = 5000;
 
 function toScoreRun(r: Row): ScoreRun {
   const conteo = jsonOf<Record<Nivel, number>>(r.conteo) ?? { A: 0, B: 0, C: 0 };
@@ -481,6 +508,9 @@ const COMPANY_COLS: Record<string, string> = {
   temperatura: "temperatura",
   score: "score",
   creditTermsDays: "credit_terms_days",
+  provincia: "provincia",
+  distrito: "distrito",
+  direccion: "direccion",
 };
 const CONTACT_COLS: Record<string, string> = { nombre: "nombre", cargo: "cargo", telefono: "telefono", email: "email", notas: "notas" };
 const OPPORTUNITY_COLS: Record<string, string> = {
@@ -696,6 +726,8 @@ export class PgPortalStore implements PortalStore {
       if (c.unidades !== undefined) rec.unidades = c.unidades;
       if (c.llantasPiso !== undefined) rec.llantas_piso = c.llantasPiso;
       if (c.antiguedadMedia !== undefined) rec.antiguedad_media = c.antiguedadMedia;
+      if (c.provincia !== undefined) rec.provincia = c.provincia;
+      if (c.distrito !== undefined) rec.distrito = c.distrito;
       const sig = Object.keys(rec).join(",");
       const list = groups.get(sig);
       if (list) list.push(rec);
@@ -1865,6 +1897,281 @@ export class PgPortalStore implements PortalStore {
     const rows = await this.sql`select * from company_credit_history where company_id = ${companyId} order by created_at desc, id desc`;
     return rows.map(toCreditHistory);
   }
+
+  // ── Match Venta (corrida K) ──
+  // Una consulta por tabla (en serie). Los resultados se reemplazan enteros en una transacción con candado (dos cálculos a
+  // la vez no dejan filas repetidas).
+
+  async matchInputs(): Promise<MatchCompanyInput[]> {
+    const sql = this.sql;
+    const companies = await sql`
+      select c.id, c.ruc, c.razon_social, c.sector, c.departamento, c.provincia, c.distrito, c.unidades, c.owner_user_id, c.es_cliente, cc.estado as credito
+      from companies c left join company_credit cc on cc.company_id = c.id order by c.id`;
+    const medidas = await sql`
+      select company_id, medida_probable as medida, ejes, count(*)::int as n, coalesce(sum(llantas), 0)::int as llantas,
+        (count(*) filter (where llantas is null))::int as sin
+      from fleet_vehicles where medida_probable is not null group by 1, 2, 3`;
+    const clases = await sql`select company_id, clase, count(*)::int as n from fleet_vehicles where clase is not null group by 1, 2`;
+    const med = new Map<number, Record<string, MatchFleetSize>>();
+    for (const m of medidas) {
+      const id = Number(m.company_id);
+      const o = med.get(id) ?? {};
+      const f = (o[String(m.medida)] ??= { unidades: 0, llantas: 0, sinLlantas: {} });
+      f.unidades += Number(m.n);
+      f.llantas += Number(m.llantas);
+      const sin = Number(m.sin);
+      if (sin) {
+        const k = m.ejes === null ? "?" : String(m.ejes);
+        f.sinLlantas[k] = (f.sinLlantas[k] ?? 0) + sin;
+      }
+      med.set(id, o);
+    }
+    const cls = new Map<number, Record<string, number>>();
+    for (const c of clases) {
+      const id = Number(c.company_id);
+      const o = cls.get(id) ?? {};
+      o[String(c.clase)] = Number(c.n);
+      cls.set(id, o);
+    }
+    return companies.map((c) => ({
+      companyId: Number(c.id),
+      ruc: String(c.ruc),
+      razonSocial: String(c.razon_social ?? ""),
+      sector: (c.sector as Sector | null) ?? null,
+      departamento: str(c.departamento),
+      provincia: str(c.provincia),
+      distrito: str(c.distrito),
+      unidades: Number(c.unidades ?? 0),
+      ownerUserId: num(c.owner_user_id),
+      esCliente: Boolean(c.es_cliente),
+      credito: (str(c.credito) as CreditEstado | null) ?? null,
+      medidas: med.get(Number(c.id)) ?? {},
+      clases: cls.get(Number(c.id)) ?? {},
+    }));
+  }
+
+  async listMatchProducts(): Promise<MatchProduct[]> {
+    const rows = await this.sql`select * from match_products order by code`;
+    return rows.map(toMatchProduct);
+  }
+
+  async seedMatchProducts(seeds: MatchProductSeed[], at: Date = new Date()): Promise<string[]> {
+    const list = dedupeBy(
+      seeds.map((s) => ({ ...s, code: matchCode(s.code) })).filter((s) => s.code),
+      (s) => s.code,
+    );
+    if (!list.length) return [];
+    return this.sql.begin(async (tx) => {
+      const added: string[] = [];
+      for (const s of list) {
+        const [r] = await tx`
+          insert into match_products (code, aplicacion, prioridad, prioridad_at, created_at, updated_at)
+          values (${s.code}, ${s.aplicacion}, ${s.prioridad}, ${s.prioridad ? at : null}, ${at}, ${at})
+          on conflict (code) do nothing returning code`;
+        if (!r) continue;
+        added.push(s.code);
+        await tx`insert into match_priority_log (code, accion, user_id, detalle, created_at) values (${s.code}, 'sembrada', null, ${s.prioridad ? "prioridad" : null}, ${at})`;
+      }
+      return added;
+    }) as Promise<string[]>;
+  }
+
+  async setMatchPriority(rawCode: string, on: boolean, input: MatchPriorityInput): Promise<MatchProduct | null> {
+    const code = matchCode(rawCode);
+    const at = input.at ?? new Date();
+    return this.sql.begin(async (tx) => {
+      // una sola sentencia: con onlyIfOn, solo el primero que la encuentra prendida la apaga (un solo aviso)
+      const [r] = input.onlyIfOn
+        ? await tx`
+            update match_products set prioridad = false, sin_stock_at = ${input.accion === "sin_stock" ? at : null}, updated_at = ${at}
+            where code = ${code} and prioridad returning *`
+        : on
+          ? await tx`
+              insert into match_products (code, prioridad, prioridad_at, prioridad_by, sin_stock_at, created_at, updated_at)
+              values (${code}, true, ${at}, ${input.userId}, null, ${at}, ${at})
+              on conflict (code) do update set prioridad = true, prioridad_at = ${at}, prioridad_by = ${input.userId}, sin_stock_at = null, updated_at = ${at}
+              returning *`
+          : await tx`
+              insert into match_products (code, prioridad, sin_stock_at, created_at, updated_at)
+              values (${code}, false, ${input.accion === "sin_stock" ? at : null}, ${at}, ${at})
+              on conflict (code) do update set prioridad = false,
+                sin_stock_at = ${input.accion === "sin_stock" ? at : null}, updated_at = ${at}
+              returning *`;
+      if (!r) return null;
+      await tx`insert into match_priority_log (code, accion, user_id, detalle, created_at) values (${code}, ${input.accion}, ${input.userId}, ${input.detalle ?? null}, ${at})`;
+      return toMatchProduct(r);
+    }) as Promise<MatchProduct | null>;
+  }
+
+  async setMatchApplication(rawCode: string, aplicacion: string | null, userId: number | null, at: Date = new Date()): Promise<MatchProduct> {
+    const code = matchCode(rawCode);
+    const value = aplicacion?.trim() || null;
+    return this.sql.begin(async (tx) => {
+      const [r] = await tx`
+        insert into match_products (code, aplicacion, created_at, updated_at) values (${code}, ${value}, ${at}, ${at})
+        on conflict (code) do update set aplicacion = ${value}, updated_at = ${at} returning *`;
+      await tx`insert into match_priority_log (code, accion, user_id, detalle, created_at) values (${code}, 'aplicacion', ${userId}, ${value}, ${at})`;
+      return toMatchProduct(r);
+    }) as Promise<MatchProduct>;
+  }
+
+  async matchPriorityLog(code?: string): Promise<MatchPriorityLogEntry[]> {
+    const rows = code
+      ? await this.sql`select * from match_priority_log where code = ${matchCode(code)} order by created_at desc, id desc`
+      : await this.sql`select * from match_priority_log order by created_at desc, id desc`;
+    return rows.map((r) => ({ id: Number(r.id), code: String(r.code), accion: String(r.accion) as MatchPriorityAction, userId: num(r.user_id), detalle: str(r.detalle), createdAt: date(r.created_at)! }));
+  }
+
+  async saveMatchRun(run: MatchRunInput, rows: MatchResultInput[]): Promise<MatchRun> {
+    return this.sql.begin(async (tx) => {
+      await tx`select pg_advisory_xact_lock(hashtext('match_results'))`;
+      const [r] = await tx`
+        insert into match_runs (run_at, motivo, productos, empresas, filas, duracion_ms, data)
+        values (${run.runAt ?? new Date()}, ${run.motivo}, ${run.productos}, ${run.empresas}, ${run.filas}, ${run.duracionMs}, ${JSON.stringify(run.data)}::jsonb)
+        returning *`;
+      const runId = Number(r.id);
+      await tx`delete from match_results`;
+      for (let i = 0; i < rows.length; i += MATCH_BATCH) {
+        const b = rows.slice(i, i + MATCH_BATCH);
+        await tx`
+          insert into match_results (run_id, product_code, medida, company_id, ruc, razon_social, tipo, pct, llantas_medida, unidades_medida, podria_llevar, ya_compro, excluida, detalle)
+          select ${runId}, v.code, v.medida, v.company_id, v.ruc, v.razon, v.tipo, v.pct, v.llantas, v.unidades, v.podria, v.compro, v.excluida, v.detalle::jsonb
+          from unnest(${tx.array(b.map((x) => matchCode(x.productCode)))}::text[], ${tx.array(b.map((x) => x.medida))}::text[],
+            ${tx.array(b.map((x) => x.companyId))}::int[], ${tx.array(b.map((x) => x.ruc))}::text[], ${tx.array(b.map((x) => x.razonSocial))}::text[],
+            ${tx.array(b.map((x) => x.tipo))}::text[], ${tx.array(b.map((x) => x.pct))}::int[], ${tx.array(b.map((x) => x.llantasMedida))}::int[],
+            ${tx.array(b.map((x) => x.unidadesMedida))}::int[], ${tx.array(b.map((x) => x.podriaLlevar))}::int[], ${tx.array(b.map((x) => x.yaCompro))}::boolean[],
+            ${tx.array(b.map((x) => x.excluida))}::text[], ${tx.array(b.map((x) => JSON.stringify(x.detalle)))}::text[])
+            as v(code, medida, company_id, ruc, razon, tipo, pct, llantas, unidades, podria, compro, excluida, detalle)`;
+      }
+      return toMatchRun(r);
+    }) as Promise<MatchRun>;
+  }
+
+  async latestMatchRun(): Promise<MatchRun | null> {
+    const [r] = await this.sql`select * from match_runs order by id desc limit 1`;
+    return r ? toMatchRun(r) : null;
+  }
+
+  async listMatchResults(q: MatchResultQuery = {}): Promise<MatchResultView[]> {
+    return (await this.matchRows(q, true)) as MatchResultView[];
+  }
+
+  async listMatchSummaries(q: MatchResultQuery = {}): Promise<MatchResultSummary[]> {
+    return (await this.matchRows(q, false)) as MatchResultSummary[];
+  }
+
+  private async matchRows(q: MatchResultQuery, withDetail: boolean): Promise<(MatchResultSummary | MatchResultView)[]> {
+    const sql = this.sql;
+    const conds: Fragment[] = [];
+    if (q.productCodes) conds.push(sql`r.product_code in ${sql(q.productCodes.length ? q.productCodes.map(matchCode) : [""])}`);
+    if (q.companyIds) conds.push(sql`r.company_id in ${sql(q.companyIds.length ? q.companyIds : [-1])}`);
+    if (q.tipos) conds.push(sql`r.tipo in ${sql(q.tipos.length ? q.tipos : [""])}`);
+    if (q.ids) conds.push(sql`r.id in ${sql(q.ids.length ? q.ids : [-1])}`);
+    if (q.minPct !== undefined) conds.push(sql`(r.pct is null or r.pct >= ${q.minPct} or r.ya_compro)`);
+    // última actividad por empresa: agregada una vez (no una subconsulta por fila)
+    const rows = await sql`
+      select r.id, r.run_id, r.product_code, r.medida, r.company_id, r.ruc, r.razon_social, r.tipo, r.pct, r.llantas_medida, r.unidades_medida,
+        r.podria_llevar, r.ya_compro, r.excluida, ${withDetail ? sql`r.detalle,` : sql``}
+        c.owner_user_id, c.es_cliente, c.sector, c.departamento, c.provincia, c.distrito, c.direccion, c.unidades, cc.estado as credito, a.last as last_activity_at
+      from match_results r
+      left join companies c on c.id = r.company_id
+      left join company_credit cc on cc.company_id = r.company_id
+      left join (select company_id, max(occurred_at) as last from activities group by company_id) a on a.company_id = r.company_id
+      where ${where(sql, conds)} order by r.id`;
+    return rows.map((r) => ({
+      id: Number(r.id),
+      productCode: String(r.product_code),
+      medida: String(r.medida),
+      companyId: num(r.company_id),
+      ruc: String(r.ruc),
+      razonSocial: String(r.razon_social ?? ""),
+      tipo: String(r.tipo) as MatchTipo,
+      pct: num(r.pct),
+      llantasMedida: Number(r.llantas_medida ?? 0),
+      unidadesMedida: Number(r.unidades_medida ?? 0),
+      podriaLlevar: num(r.podria_llevar),
+      yaCompro: Boolean(r.ya_compro),
+      excluida: (str(r.excluida) as MatchExclusion | null) ?? null,
+      ...(withDetail ? { detalle: jsonOf<MatchDetail>(r.detalle)! } : {}),
+      ownerUserId: num(r.owner_user_id),
+      esCliente: Boolean(r.es_cliente),
+      credito: (str(r.credito) as CreditEstado | null) ?? null,
+      sector: (r.sector as Sector | null) ?? null,
+      departamento: str(r.departamento),
+      provincia: str(r.provincia),
+      distrito: str(r.distrito),
+      direccion: str(r.direccion),
+      unidades: Number(r.unidades ?? 0),
+      lastActivityAt: date(r.last_activity_at),
+    }));
+  }
+
+  async addMatchVisit(input: MatchVisitInput): Promise<MatchVisit> {
+    const [r] = await this.sql`
+      insert into match_visits (appointment_id, company_id, user_id, product_code, motivo)
+      values (${input.appointmentId}, ${input.companyId}, ${input.userId}, ${matchCode(input.productCode)}, ${input.motivo})
+      on conflict (appointment_id) do nothing returning *`;
+    if (r) return toMatchVisit(r);
+    const [e] = await this.sql`select * from match_visits where appointment_id = ${input.appointmentId}`;
+    return toMatchVisit(e);
+  }
+
+  async listMatchVisits(f: MatchVisitFilter = {}): Promise<MatchVisit[]> {
+    const sql = this.sql;
+    const conds: Fragment[] = [];
+    if (f.userId !== undefined) conds.push(sql`user_id = ${f.userId}`);
+    if (f.companyId !== undefined) conds.push(sql`company_id = ${f.companyId}`);
+    if (f.productCode !== undefined) conds.push(sql`product_code = ${matchCode(f.productCode)}`);
+    if (f.appointmentIds) conds.push(sql`appointment_id in ${sql(f.appointmentIds.length ? f.appointmentIds : [-1])}`);
+    if (f.pending) conds.push(sql`activity_id is null`);
+    const rows = await sql`select * from match_visits where ${where(sql, conds)} order by id`;
+    return rows.map(toMatchVisit);
+  }
+
+  async markMatchVisitReported(id: number, activityId: number, at: Date = new Date()): Promise<MatchVisit | null> {
+    const [r] = await this.sql`update match_visits set activity_id = ${activityId}, reported_at = ${at} where id = ${id} and activity_id is null returning *`;
+    return r ? toMatchVisit(r) : null;
+  }
+}
+
+function toMatchProduct(r: Row): MatchProduct {
+  return {
+    code: String(r.code),
+    aplicacion: str(r.aplicacion),
+    prioridad: Boolean(r.prioridad),
+    prioridadAt: date(r.prioridad_at),
+    prioridadBy: num(r.prioridad_by),
+    sinStockAt: date(r.sin_stock_at),
+    createdAt: date(r.created_at)!,
+    updatedAt: date(r.updated_at)!,
+  };
+}
+
+function toMatchRun(r: Row): MatchRun {
+  return {
+    id: Number(r.id),
+    runAt: date(r.run_at)!,
+    motivo: String(r.motivo ?? ""),
+    productos: Number(r.productos ?? 0),
+    empresas: Number(r.empresas ?? 0),
+    filas: Number(r.filas ?? 0),
+    duracionMs: Number(r.duracion_ms ?? 0),
+    data: jsonOf<Record<string, unknown>>(r.data) ?? {},
+  };
+}
+
+function toMatchVisit(r: Row): MatchVisit {
+  return {
+    id: Number(r.id),
+    appointmentId: Number(r.appointment_id),
+    companyId: Number(r.company_id),
+    userId: num(r.user_id),
+    productCode: String(r.product_code),
+    motivo: str(r.motivo),
+    activityId: num(r.activity_id),
+    reportedAt: date(r.reported_at),
+    createdAt: date(r.created_at)!,
+  };
 }
 
 /** Columnas de company_credit sin pdf_data (el PDF en base64 solo lo lee getCreditPdf). */

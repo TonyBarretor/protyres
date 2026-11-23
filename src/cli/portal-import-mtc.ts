@@ -7,6 +7,7 @@
  *   npm run portal:import-mtc -- --dry-run       solo calcula e imprime el resumen
  *   npm run portal:import-mtc -- --json          fuerza el store JSON local (igual que PORTAL_STORE=json)
  *   npm run portal:import-mtc -- --min 20        umbral de unidades (por defecto import.minUnits de config/portal.json)
+ *   npm run portal:import-mtc -- --ubicacion     corrida K: solo provincia y distrito (padrón de pasajeros), sin tocar la flota
  */
 import "./env";
 import fs from "node:fs";
@@ -18,6 +19,8 @@ import { loadTyreRules } from "../lib/portal/mtc/inference";
 import { recalcScoresSafely } from "../lib/portal/scoring/recalc";
 import { getPortalStore } from "../lib/portal/store";
 import { getStore } from "../lib/store";
+import { recalcMatchSafely } from "../lib/portal/match/recalc";
+import { importUbicaciones } from "../lib/portal/mtc/ubicacion";
 import { seedUsers } from "../lib/portal/users";
 
 const { values } = parseArgs({
@@ -25,6 +28,7 @@ const { values } = parseArgs({
     "dry-run": { type: "boolean", default: false },
     json: { type: "boolean", default: false },
     min: { type: "string" },
+    ubicacion: { type: "boolean", default: false },
   },
 });
 
@@ -46,6 +50,17 @@ async function main(): Promise<void> {
     .map((f) => path.join(dir, f));
   if (!files.length) throw new Error(`No hay CSV del padrón en ${dir}`);
 
+  if (values.ubicacion) {
+    const store = await getPortalStore();
+    try {
+      const r = await importUbicaciones({ files, currentCut: config.currentCut, store, log: (m) => console.log(m) });
+      console.log(`Provincia y distrito: ${r.conUbicacion.toLocaleString("es-PE")} de ${r.empresas.toLocaleString("es-PE")} empresas (${r.actualizadas.toLocaleString("es-PE")} actualizadas). El padrón no trae dirección, teléfono ni correo.`);
+      await store.flush();
+    } finally {
+      await store.close();
+    }
+    return;
+  }
   const dryRun = values["dry-run"];
   const store = dryRun ? null : await getPortalStore();
   if (store) console.log(`Store: ${process.env.DATABASE_URL && process.env.PORTAL_STORE !== "json" ? "Postgres" : "JSON local"}`);
@@ -64,6 +79,8 @@ async function main(): Promise<void> {
       const prices = await getStore();
       const r = await recalcScoresSafely(store, cfg.scoring, { prices, why: "import del padrón", log: (m) => console.log(m) });
       if (r) console.log(`Puntaje: A ${r.conteo.A} · B ${r.conteo.B} · C ${r.conteo.C}`);
+      // corrida K: Match Venta depende de la flota por medida
+      await recalcMatchSafely({ store, prices, why: "import del padrón", log: (m) => console.log(m) });
       await prices.close();
       await store.flush();
     }

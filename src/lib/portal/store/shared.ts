@@ -8,6 +8,9 @@ export const MAX_PAGE_SIZE = 500;
 
 export const digits = (s: string | null | undefined): string => (s ?? "").replace(/\D/g, "");
 
+/** Corrida K: código de producto de Odoo comparable ("p0433 " -> "P0433"). */
+export const matchCode = (s: string): string => s.replace(/\s+/g, "").toUpperCase();
+
 /** Correo de un usuario: recortado y en minúsculas; vacío o sin forma de correo -> null. */
 export function normEmail(s: string | null | undefined): string | null {
   const t = (s ?? "").trim().toLowerCase();

@@ -39,6 +39,8 @@ export interface MtcVehicle {
   departamento: string | null;
   /** Only in pasajeros. */
   provincia: string | null;
+  /** Only in pasajeros (corrida K). */
+  distrito: string | null;
   /** Permit valid until, AAAAMMDD (null if the field is not a date, e.g. "DS. 009-2004-MTC"). */
   vigenciaHasta: string | null;
   /** AAAAMMDD. */
@@ -249,6 +251,7 @@ export function parseRow(fields: string[], header: MtcHeader): RowResult {
       chasis: normalizeText(get("N_CHASIS")),
       departamento: normalizeText(get("DEPARTAMENTO")),
       provincia: carga ? null : normalizeText(get("PROVINCIA")),
+      distrito: carga ? null : normalizeText(get("DISTRITO")),
       vigenciaHasta: parseDate(get("VIGENCIA_HASTA")),
       fechaCorte,
     },

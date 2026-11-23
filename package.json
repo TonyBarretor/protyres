@@ -36,7 +36,10 @@
     "portal:prepropuesta": "tsx --tsconfig tsconfig.cli.json src/cli/portal-prepropuesta.ts",
     "portal:import-suppliers": "tsx --tsconfig tsconfig.cli.json src/cli/portal-import-suppliers.ts",
     "portal:stock": "tsx --tsconfig tsconfig.cli.json src/cli/portal-stock.ts",
-    "portal:cerrar-sesiones": "tsx --tsconfig tsconfig.cli.json src/cli/portal-cerrar-sesiones.ts"
+    "portal:cerrar-sesiones": "tsx --tsconfig tsconfig.cli.json src/cli/portal-cerrar-sesiones.ts",
+    "portal:recalc-match": "tsx --tsconfig tsconfig.cli.json src/cli/portal-recalc-match.ts",
+    "match:analisis-flotas": "tsx --tsconfig tsconfig.cli.json src/cli/match-analisis-flotas.ts",
+    "match:equivalencias": "tsx --tsconfig tsconfig.cli.json src/cli/match-equivalencias.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.131.0",

@@ -12,6 +12,7 @@
  */
 import { loadPortalConfig } from "../../config";
 import { recalcScoresSafely, type PriceSizesSource } from "../../scoring/recalc";
+import { recalcMatchSafely } from "../../match/recalc";
 import { loadSalesSettings } from "../../sales/config";
 import { lastTyreSales, normalizeDocInput, saleLineText } from "../../sales/history";
 import { saleUnits } from "../../store/shared";
@@ -203,6 +204,7 @@ async function assignClienteFinal(ctx: PortalContext, company: Company, document
   const bankCompanies = await ctx.store.getCompaniesByRucs(banks);
   const companyIds = [...new Set([company.id, ...before, ...bankCompanies.map((c) => c.id)])];
   await recalcScoresSafely(ctx.store, loadPortalConfig().scoring, { companyIds, prices: pricesSource(), now: ctx.now, why: `cliente final ${documento}`, log: ctx.log });
+  await recalcMatchSafely({ store: ctx.store, now: ctx.now, why: `cliente final ${documento}`, log: ctx.log });
   await ctx.store.flush();
   const units = lines.filter((s) => (s.detalle?.tipoLinea ?? "neumatico") === "neumatico").reduce((n, s) => n + saleUnits(s), 0);
   const bankName = lines[0].razonSocial ?? lines[0].ruc;

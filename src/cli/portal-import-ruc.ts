@@ -18,6 +18,7 @@ import { loadPortalConfig } from "../lib/portal/config";
 import { formatImportSummary, importMtc } from "../lib/portal/mtc/import";
 import { loadTyreRules } from "../lib/portal/mtc/inference";
 import { recalcScoresSafely } from "../lib/portal/scoring/recalc";
+import { recalcMatchSafely } from "../lib/portal/match/recalc";
 import { getPortalStore } from "../lib/portal/store";
 import { getStore } from "../lib/store";
 
@@ -57,6 +58,7 @@ async function main(): Promise<void> {
       const found = await store.getCompaniesByRucs(rucs);
       const prices = await getStore();
       await recalcScoresSafely(store, cfg.scoring, { companyIds: found.map((c) => c.id), prices, why: "import por RUC", log: (m) => console.log(m) });
+      await recalcMatchSafely({ store, prices, why: "import por RUC", log: (m) => console.log(m) });
       await prices.close();
       for (const c of found) console.log(`${c.ruc} ${c.razonSocial}: ${c.unidades} unidades, ${c.llantasPiso} llantas en piso — /portal/empresas/${c.id}`);
       await store.flush();

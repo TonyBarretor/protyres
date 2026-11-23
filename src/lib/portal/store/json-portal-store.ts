@@ -16,6 +16,7 @@ import {
   docClienteOf,
   fromTenThousandths,
   groupFleet,
+  matchCode,
   nameMatches,
   normDocumento,
   normEmail,
@@ -110,6 +111,25 @@ import type { Survey, SurveyAnswer, SurveyAnswerInput, SurveyAnswerResult, Surve
 import { resolveCreditSave } from "../credit/changes";
 import type { CompanyCredit, CreditHistoryEntry, CreditPdf, CreditSaveInput } from "./types";
 import type { BestCompaniesQuery, BestCompany, RankingValidation, RankingValidationInput, ScoreInput, ScoreInputQuery, ScoreRun, ScoreRunInput, ScoreUpdate } from "./types";
+import type {
+  MatchCompanyInput,
+  MatchFleetSize,
+  MatchPriorityAction,
+  MatchPriorityInput,
+  MatchPriorityLogEntry,
+  MatchProduct,
+  MatchProductSeed,
+  MatchResult,
+  MatchResultInput,
+  MatchResultQuery,
+  MatchResultSummary,
+  MatchResultView,
+  MatchRun,
+  MatchRunInput,
+  MatchVisit,
+  MatchVisitFilter,
+  MatchVisitInput,
+} from "./types";
 
 interface StoredLoginToken extends LoginToken {
   usedAt: Date | null;
@@ -150,6 +170,12 @@ interface FileData {
   userNotices?: { userId: number; aviso: string; createdAt: Date }[];
   /** ventas-odoo: historial de cargas de "Subir ventas". */
   salesUploads?: SalesUpload[];
+  /** Corrida K: Match Venta (productos y su prioridad, registro, cálculos, resultados del último y visitas). */
+  matchProducts?: MatchProduct[];
+  matchPriorityLog?: MatchPriorityLogEntry[];
+  matchRuns?: MatchRun[];
+  matchResults?: MatchResult[];
+  matchVisits?: MatchVisit[];
 }
 
 /** Campos Date por colección (JSON los guarda como texto ISO). */
@@ -177,6 +203,10 @@ const DATE_FIELDS: Record<string, string[]> = {
   rankingValidations: ["createdAt"],
   userNotices: ["createdAt"],
   salesUploads: ["createdAt"],
+  matchProducts: ["prioridadAt", "sinStockAt", "createdAt", "updatedAt"],
+  matchPriorityLog: ["createdAt"],
+  matchRuns: ["runAt"],
+  matchVisits: ["reportedAt", "createdAt"],
 };
 
 const DEBOUNCE_MS = 300;
@@ -277,6 +307,12 @@ export class JsonPortalStore implements PortalStore {
   private scoreRuns: ScoreRun[] = [];
   private rankingValidations: RankingValidation[] = [];
   private userNotices: { userId: number; aviso: string; createdAt: Date }[] = [];
+  /** Corrida K: Match Venta. */
+  private matchProducts = new Map<string, MatchProduct>();
+  private matchLog: MatchPriorityLogEntry[] = [];
+  private matchRuns: MatchRun[] = [];
+  private matchResults: MatchResult[] = [];
+  private matchVisits = new Map<number, MatchVisit>();
   /**
    * Límite de intentos (corrida E, punto 5): solo en memoria, no va al archivo (el store JSON es de un proceso; en
    * producción manda la tabla rate_limit_hits de Postgres). Clave `bucket|ventana`.
@@ -367,6 +403,11 @@ export class JsonPortalStore implements PortalStore {
     this.scoreRuns = revive("scoreRuns", raw.scoreRuns);
     this.rankingValidations = revive("rankingValidations", raw.rankingValidations);
     this.userNotices = revive("userNotices", raw.userNotices);
+    for (const m of revive("matchProducts", raw.matchProducts)) this.matchProducts.set(m.code, m);
+    this.matchLog = revive("matchPriorityLog", raw.matchPriorityLog);
+    this.matchRuns = revive("matchRuns", raw.matchRuns);
+    this.matchResults = raw.matchResults ?? [];
+    for (const v of revive("matchVisits", raw.matchVisits)) this.matchVisits.set(v.id, v);
   }
 
   private snapshot(): FileData {
@@ -397,6 +438,11 @@ export class JsonPortalStore implements PortalStore {
       rankingValidations: this.rankingValidations,
       userNotices: this.userNotices,
       salesUploads: this.salesUploads,
+      matchProducts: [...this.matchProducts.values()],
+      matchPriorityLog: this.matchLog,
+      matchRuns: this.matchRuns,
+      matchResults: this.matchResults,
+      matchVisits: [...this.matchVisits.values()],
     };
   }
 
@@ -441,6 +487,10 @@ export class JsonPortalStore implements PortalStore {
     // archivos anteriores a la corrida J: empresas del padrón
     c.origen ??= "mtc";
     c.createdBy ??= null;
+    // archivos anteriores a la corrida K: sin provincia, distrito ni dirección
+    c.provincia ??= null;
+    c.distrito ??= null;
+    c.direccion ??= null;
     this.companies.set(c.id, c);
     this.companyByRuc.set(c.ruc, c.id);
   }
@@ -519,6 +569,8 @@ export class JsonPortalStore implements PortalStore {
         if (input.unidades !== undefined) prev.unidades = input.unidades;
         if (input.llantasPiso !== undefined) prev.llantasPiso = input.llantasPiso;
         if (input.antiguedadMedia !== undefined) prev.antiguedadMedia = input.antiguedadMedia;
+        if (input.provincia !== undefined) prev.provincia = input.provincia;
+        if (input.distrito !== undefined) prev.distrito = input.distrito;
         prev.updatedAt = now;
         res.updated++;
         res.ids[ruc] = prev.id;
@@ -532,6 +584,9 @@ export class JsonPortalStore implements PortalStore {
           unidades: input.unidades ?? 0,
           llantasPiso: input.llantasPiso ?? 0,
           antiguedadMedia: input.antiguedadMedia ?? null,
+          provincia: input.provincia ?? null,
+          distrito: input.distrito ?? null,
+          direccion: null,
           esCliente: false,
           ownerUserId: null,
           temperatura: null,
@@ -1920,5 +1975,200 @@ export class JsonPortalStore implements PortalStore {
     this.userNotices.push({ userId, aviso, createdAt: new Date() });
     this.changed();
     return true;
+  }
+
+  // ── Match Venta (corrida K) ──
+
+  async matchInputs(): Promise<MatchCompanyInput[]> {
+    const out: MatchCompanyInput[] = [];
+    for (const c of [...this.companies.values()].sort((a, b) => a.id - b.id)) {
+      const medidas: Record<string, MatchFleetSize> = {};
+      const clases: Record<string, number> = {};
+      for (const key of this.fleetByCompany.get(c.id) ?? []) {
+        const v = this.fleet.get(key);
+        if (!v) continue;
+        if (v.clase) clases[v.clase] = (clases[v.clase] ?? 0) + 1;
+        if (!v.medidaProbable) continue;
+        const m = (medidas[v.medidaProbable] ??= { unidades: 0, llantas: 0, sinLlantas: {} });
+        m.unidades++;
+        if (v.llantas !== null) m.llantas += v.llantas;
+        else {
+          const k = v.ejes === null ? "?" : String(v.ejes);
+          m.sinLlantas[k] = (m.sinLlantas[k] ?? 0) + 1;
+        }
+      }
+      out.push({
+        companyId: c.id,
+        ruc: c.ruc,
+        razonSocial: c.razonSocial,
+        sector: c.sector,
+        departamento: c.departamento,
+        provincia: c.provincia ?? null,
+        distrito: c.distrito ?? null,
+        unidades: c.unidades,
+        ownerUserId: c.ownerUserId,
+        esCliente: c.esCliente,
+        credito: this.credit.get(c.id)?.estado ?? null,
+        medidas,
+        clases,
+      });
+    }
+    return out;
+  }
+
+  async listMatchProducts(): Promise<MatchProduct[]> {
+    return [...this.matchProducts.values()].sort((a, b) => a.code.localeCompare(b.code)).map((p) => ({ ...p }));
+  }
+
+  private matchLogAdd(code: string, accion: MatchPriorityAction, userId: number | null, detalle: string | null, at: Date): void {
+    this.matchLog.push({ id: (this.matchLog.at(-1)?.id ?? 0) + 1, code, accion, userId, detalle, createdAt: at });
+  }
+
+  async seedMatchProducts(seeds: MatchProductSeed[], at: Date = new Date()): Promise<string[]> {
+    const added: string[] = [];
+    for (const s of dedupeBy(seeds, (x) => matchCode(x.code))) {
+      const code = matchCode(s.code);
+      if (!code || this.matchProducts.has(code)) continue;
+      this.matchProducts.set(code, { code, aplicacion: s.aplicacion, prioridad: s.prioridad, prioridadAt: s.prioridad ? at : null, prioridadBy: null, sinStockAt: null, createdAt: at, updatedAt: at });
+      this.matchLogAdd(code, "sembrada", null, s.prioridad ? "prioridad" : null, at);
+      added.push(code);
+    }
+    if (added.length) this.changed();
+    return added;
+  }
+
+  async setMatchPriority(rawCode: string, on: boolean, input: MatchPriorityInput): Promise<MatchProduct | null> {
+    const code = matchCode(rawCode);
+    const at = input.at ?? new Date();
+    let p = this.matchProducts.get(code);
+    if (input.onlyIfOn && !p?.prioridad) return null;
+    if (!p) {
+      p = { code, aplicacion: null, prioridad: false, prioridadAt: null, prioridadBy: null, sinStockAt: null, createdAt: at, updatedAt: at };
+      this.matchProducts.set(code, p);
+    }
+    p.prioridad = on;
+    if (on) {
+      p.prioridadAt = at;
+      p.prioridadBy = input.userId;
+      p.sinStockAt = null;
+    } else if (input.accion === "sin_stock") p.sinStockAt = at;
+    p.updatedAt = at;
+    this.matchLogAdd(code, input.accion, input.userId, input.detalle ?? null, at);
+    this.changed();
+    return { ...p };
+  }
+
+  async setMatchApplication(rawCode: string, aplicacion: string | null, userId: number | null, at: Date = new Date()): Promise<MatchProduct> {
+    const code = matchCode(rawCode);
+    let p = this.matchProducts.get(code);
+    if (!p) {
+      p = { code, aplicacion: null, prioridad: false, prioridadAt: null, prioridadBy: null, sinStockAt: null, createdAt: at, updatedAt: at };
+      this.matchProducts.set(code, p);
+    }
+    p.aplicacion = aplicacion?.trim() || null;
+    p.updatedAt = at;
+    this.matchLogAdd(code, "aplicacion", userId, p.aplicacion, at);
+    this.changed();
+    return { ...p };
+  }
+
+  async matchPriorityLog(code?: string): Promise<MatchPriorityLogEntry[]> {
+    const c = code ? matchCode(code) : null;
+    return this.matchLog
+      .filter((e) => !c || e.code === c)
+      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime() || b.id - a.id)
+      .map((e) => ({ ...e }));
+  }
+
+  async saveMatchRun(run: MatchRunInput, rows: MatchResultInput[]): Promise<MatchRun> {
+    const saved: MatchRun = { id: (this.matchRuns.at(-1)?.id ?? 0) + 1, runAt: run.runAt ?? new Date(), motivo: run.motivo, productos: run.productos, empresas: run.empresas, filas: run.filas, duracionMs: run.duracionMs, data: structuredClone(run.data) };
+    this.matchRuns.push(saved);
+    if (this.matchRuns.length > 100) this.matchRuns.splice(0, this.matchRuns.length - 100);
+    this.matchResults = rows.map((r, i) => ({ ...structuredClone(r), id: i + 1 }));
+    this.changed();
+    return structuredClone(saved);
+  }
+
+  async latestMatchRun(): Promise<MatchRun | null> {
+    const r = this.matchRuns.at(-1);
+    return r ? structuredClone(r) : null;
+  }
+
+  async listMatchSummaries(q: MatchResultQuery = {}): Promise<MatchResultSummary[]> {
+    return (await this.matchRows(q, false)) as MatchResultSummary[];
+  }
+
+  async listMatchResults(q: MatchResultQuery = {}): Promise<MatchResultView[]> {
+    return (await this.matchRows(q, true)) as MatchResultView[];
+  }
+
+  private async matchRows(q: MatchResultQuery, withDetail: boolean): Promise<(MatchResultSummary | MatchResultView)[]> {
+    const codes = q.productCodes ? new Set(q.productCodes.map(matchCode)) : null;
+    const ids = q.companyIds ? new Set(q.companyIds) : null;
+    const tipos = q.tipos ? new Set(q.tipos) : null;
+    const rowIds = q.ids ? new Set(q.ids) : null;
+    const lastAct = new Map<number, Date>();
+    for (const a of this.activities) {
+      const prev = lastAct.get(a.companyId);
+      if (!prev || a.occurredAt > prev) lastAct.set(a.companyId, a.occurredAt);
+    }
+    const out: (MatchResultSummary | MatchResultView)[] = [];
+    for (const r of this.matchResults) {
+      if (codes && !codes.has(r.productCode)) continue;
+      if (ids && (r.companyId === null || !ids.has(r.companyId))) continue;
+      if (tipos && !tipos.has(r.tipo)) continue;
+      if (rowIds && !rowIds.has(r.id)) continue;
+      if (q.minPct !== undefined && r.pct !== null && r.pct < q.minPct && !r.yaCompro) continue;
+      const c = r.companyId !== null ? this.companies.get(r.companyId) : undefined;
+      const { detalle, ...rest } = r;
+      out.push({
+        ...rest,
+        ...(withDetail ? { detalle: structuredClone(detalle) } : {}),
+        ownerUserId: c?.ownerUserId ?? null,
+        esCliente: c?.esCliente ?? false,
+        credito: c ? (this.credit.get(c.id)?.estado ?? null) : null,
+        sector: c?.sector ?? null,
+        departamento: c?.departamento ?? null,
+        provincia: c?.provincia ?? null,
+        distrito: c?.distrito ?? null,
+        direccion: c?.direccion ?? null,
+        unidades: c?.unidades ?? 0,
+        lastActivityAt: c ? (lastAct.get(c.id) ?? null) : null,
+      });
+    }
+    return out;
+  }
+
+  async addMatchVisit(input: MatchVisitInput): Promise<MatchVisit> {
+    const existing = [...this.matchVisits.values()].find((v) => v.appointmentId === input.appointmentId);
+    if (existing) return { ...existing };
+    const v: MatchVisit = { id: Math.max(0, ...this.matchVisits.keys()) + 1, appointmentId: input.appointmentId, companyId: input.companyId, userId: input.userId, productCode: matchCode(input.productCode), motivo: input.motivo, activityId: null, reportedAt: null, createdAt: new Date() };
+    this.matchVisits.set(v.id, v);
+    this.changed();
+    return { ...v };
+  }
+
+  async listMatchVisits(f: MatchVisitFilter = {}): Promise<MatchVisit[]> {
+    const appts = f.appointmentIds ? new Set(f.appointmentIds) : null;
+    return [...this.matchVisits.values()]
+      .filter(
+        (v) =>
+          (f.userId === undefined || v.userId === f.userId) &&
+          (f.companyId === undefined || v.companyId === f.companyId) &&
+          (f.productCode === undefined || v.productCode === matchCode(f.productCode)) &&
+          (!appts || appts.has(v.appointmentId)) &&
+          (!f.pending || v.activityId === null),
+      )
+      .sort((a, b) => a.id - b.id)
+      .map((v) => ({ ...v }));
+  }
+
+  async markMatchVisitReported(id: number, activityId: number, at: Date = new Date()): Promise<MatchVisit | null> {
+    const v = this.matchVisits.get(id);
+    if (!v || v.activityId !== null) return null;
+    v.activityId = activityId;
+    v.reportedAt = at;
+    this.changed();
+    return { ...v };
   }
 }

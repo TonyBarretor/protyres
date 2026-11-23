@@ -1,6 +1,6 @@
 {
   "sources": [
-    { "match": "^STOCK PROTYRES", "provider": "Protyres", "kind": "stock" },
+    { "match": "^STOCK[ _-]*PROTYRES", "provider": "Protyres", "kind": "stock" },
     { "match": "^SourceOwnProvider|LISTA DE PRECIOS", "provider": "Protyres", "kind": "own", "priceIncludesTax": true, "maxDiscountPct": 20, "currency": "USD" },
     {
       "match": "jch|j\\.ch",
