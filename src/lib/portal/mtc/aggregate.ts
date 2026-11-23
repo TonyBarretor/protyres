@@ -10,6 +10,12 @@ export interface CompanyAggregate {
   sector: Sector;
   /** Most frequent departamento (ties → alphabetical). */
   departamento: string | null;
+  /**
+   * Corrida K: provincia y distrito más frecuentes dentro del departamento principal (solo el padrón de pasajeros los
+   * trae; empate → alfabético). null si ningún vehículo del departamento principal los tiene.
+   */
+  provincia: string | null;
+  distrito: string | null;
   unidades: number;
   unidadesCarga: number;
   unidadesPasajeros: number;
@@ -21,12 +27,14 @@ export interface CompanyAggregate {
   antiguedadMedia: number | null;
 }
 
-type AggInput = Pick<MtcVehicle, "ruc" | "razonSocial" | "origen" | "departamento" | "llantas" | "anio" | "fechaCorte">;
+type AggInput = Pick<MtcVehicle, "ruc" | "razonSocial" | "origen" | "departamento" | "llantas" | "anio" | "fechaCorte"> & Partial<Pick<MtcVehicle, "provincia" | "distrito">>;
 
 interface Acc {
   ruc: string;
   names: Map<string, number>;
   deps: Map<string, number>;
+  /** departamento -> "provincia|distrito" -> vehículos */
+  places: Map<string, Map<string, number>>;
   byOrigin: Record<MtcOrigin, number>;
   llantas: number;
   conLlantas: number;
@@ -67,11 +75,16 @@ export function aggregateCompanies(vehicles: Iterable<AggInput>, opts: { minUnit
   for (const v of vehicles) {
     let a = accs.get(v.ruc);
     if (!a) {
-      a = { ruc: v.ruc, names: new Map(), deps: new Map(), byOrigin: { carga: 0, pasajeros: 0 }, llantas: 0, conLlantas: 0, ageSum: 0, ageN: 0 };
+      a = { ruc: v.ruc, names: new Map(), deps: new Map(), places: new Map(), byOrigin: { carga: 0, pasajeros: 0 }, llantas: 0, conLlantas: 0, ageSum: 0, ageN: 0 };
       accs.set(v.ruc, a);
     }
     bump(a.names, v.razonSocial);
     bump(a.deps, v.departamento);
+    if (v.departamento && v.provincia) {
+      let p = a.places.get(v.departamento);
+      if (!p) a.places.set(v.departamento, (p = new Map()));
+      bump(p, `${v.provincia}|${v.distrito ?? ""}`);
+    }
     a.byOrigin[v.origen]++;
     if (v.llantas != null) {
       a.llantas += v.llantas;
@@ -88,11 +101,16 @@ export function aggregateCompanies(vehicles: Iterable<AggInput>, opts: { minUnit
   for (const a of accs.values()) {
     const unidades = a.byOrigin.carga + a.byOrigin.pasajeros;
     if (unidades < min) continue;
+    const departamento = mode(a.deps);
+    const place = departamento ? mode(a.places.get(departamento) ?? new Map()) : null;
+    const [provincia, distrito] = place ? place.split("|") : [null, null];
     out.push({
       ruc: a.ruc,
       razonSocial: mode(a.names) ?? "",
       sector: classifySector(a.byOrigin.carga, a.byOrigin.pasajeros, opts.sectorMajority) ?? "carga",
-      departamento: mode(a.deps),
+      departamento,
+      provincia: provincia || null,
+      distrito: distrito || null,
       unidades,
       unidadesCarga: a.byOrigin.carga,
       unidadesPasajeros: a.byOrigin.pasajeros,

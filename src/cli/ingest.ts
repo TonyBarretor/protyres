@@ -22,6 +22,8 @@ import { ingestWhatsAppText } from "../lib/ingest/whatsapp-text";
 import { resolveSourceOptions } from "../lib/ingest/sources";
 import type { IngestOptions, IngestResult, RowKind } from "../lib/ingest/types";
 import { getStore } from "../lib/store";
+import { recalcMatchAfterStockLoad } from "../lib/portal/match/recalc";
+import { getPortalStore } from "../lib/portal/store";
 import { fmtTable } from "./env";
 
 const { values, positionals } = parseArgs({
@@ -78,6 +80,7 @@ async function main() {
   const targets: (string | null)[] = values.text ? [null] : positionals;
   if (targets.length === 0) throw new Error("indica uno o más archivos (.xlsx, .xls, .csv, .pdf, .txt) o --text");
   const store = values.dry ? null : await getStore();
+  let stockLoaded = false;
   for (const file of targets) {
     let ingested: { result: IngestResult; opts: IngestOptions };
     try {
@@ -116,7 +119,15 @@ async function main() {
     if (store) {
       const { inserted, removed } = await store.upsertRows(result.rows, values.replace ? { replace: { provider: opts.provider, sourceRef: opts.sourceRef.split("#")[0], kind: opts.kind } } : undefined);
       console.log(`guardado: ${inserted} filas (${removed} anteriores del mismo archivo reemplazadas)`);
+      if (result.rows.some((r) => r.kind === "stock")) stockLoaded = true;
     } else console.log("(--dry: no se guardó nada)");
+  }
+  // corrida K: con stock nuevo, Match Venta se recalcula
+  if (store && stockLoaded) {
+    const portal = await getPortalStore();
+    await recalcMatchAfterStockLoad(portal, store, (m) => console.log(m));
+    await portal.flush();
+    await portal.close();
   }
   await store?.close();
 }

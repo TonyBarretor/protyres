@@ -4,6 +4,7 @@ import { parsePriceLines } from "./lines";
 import { dedupeRows } from "./tabular";
 import { detectPdfLayout, parseOdooStockText, parseOwnListText, type PdfLayout } from "./protyres-pdf";
 import { extractPricesWithLLM, llmAvailable } from "../llm/extract-prices";
+import { parseOdooStockWarehouses, pdfTextItems } from "./stock-warehouses";
 
 export async function pdfToText(buffer: Buffer): Promise<{ text: string; pages: number }> {
   const pdf = await getDocumentProxy(new Uint8Array(buffer));
@@ -31,6 +32,7 @@ export async function ingestPdf(buffer: Buffer, opts: PdfIngestOptions): Promise
   const layout = opts.layout ?? (hasText ? detectPdfLayout(text) : "generic");
   if (layout === "own-list") return parseOwnListText(text, { ...opts, kind: "own" });
   if (layout === "odoo-stock") return parseOdooStockText(text, { ...opts, kind: "stock" });
+  if (layout === "odoo-stock-warehouses") return parseOdooStockWarehouses(await pdfTextItems(buffer), { ...opts, kind: "stock" });
 
   const method = opts.method ?? "auto";
   const useLlm = method === "llm" || (method === "auto" && llmAvailable());

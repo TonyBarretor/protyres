@@ -3,6 +3,7 @@
  *
  *  own list  – "COD ODOO | Medida | Marca | Modelo | Tipo | Precio Lista", footer "Precios Incluyen IGV- Descuento maximo 20%"
  *  stock     – "CÓDIGO | MEDIDA | MARCA | MODELO | Cantidad disponible para uso | RESERVA"
+ *  stock con almacenes (corrida K) – "… | DISPON. ALMACEN SAN LUIS | DISPON. ALMACEN CALLAO | RESERVA": stock-warehouses.ts
  *
  * Both are read from the PDF text (one line per row). Column boundaries are recovered by finding the brand
  * column (last brand mention on the line) and the trailing number(s).
@@ -14,12 +15,14 @@ import type { IngestOptions, IngestResult, PriceRow } from "./types";
 import { buildRow, parseDateLoose, parseMoney, todayIso } from "./util";
 import { dedupeRows } from "./tabular";
 
-export type PdfLayout = "own-list" | "odoo-stock" | "generic";
+/** odoo-stock-warehouses (corrida K): una columna por almacén y RESERVA; se lee con posiciones (stock-warehouses.ts). */
+export type PdfLayout = "own-list" | "odoo-stock" | "odoo-stock-warehouses" | "generic";
 
 export function detectPdfLayout(text: string): PdfLayout {
   const head = text.slice(0, 2000).toUpperCase();
   if (/COD\.?\s*ODOO/.test(head) && /PRECIO/.test(head)) return "own-list";
   if (/C[ÓO]DIGO/.test(head) && /CANTIDAD\s+DISPONIBLE/.test(head)) return "odoo-stock";
+  if (/C[ÓO]DIGO/.test(head) && /DISPON\.?\s*ALMAC[EÉ]N/.test(head)) return "odoo-stock-warehouses";
   return "generic";
 }
 

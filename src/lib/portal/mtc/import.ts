@@ -215,6 +215,8 @@ export async function importMtc(opts: ImportMtcOptions): Promise<ImportMtcSummar
       razonSocial: c.razonSocial,
       sector: c.sector,
       departamento: c.departamento,
+      provincia: c.provincia,
+      distrito: c.distrito,
       unidades: c.unidades,
       llantasPiso: c.llantasEnPiso,
       antiguedadMedia: c.antiguedadMedia,

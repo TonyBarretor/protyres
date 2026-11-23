@@ -47,6 +47,7 @@ import { fmtMoney, r2 } from "../quote/pricing";
 import { FIELD_LABEL, askRequired, detectProfile, findProfile, hasExcelFormat, leadingProfile, missingInQuote, missingRequired, profileGuide, profileHead, profileId, profileKey, profileRequestText, shortItemLabel, usesUnits, type RequiredField } from "../quote/profiles";
 import { invalidPlateReply, lineRefs, lineRefsChat, normalizePlate, parsePlateCommand, type PlateCommand } from "../quote/line-refs";
 import { portalPlateNotes } from "../portal/quotes/plates";
+import { recalcMatchAfterStockLoad } from "../portal/match/recalc";
 import { PROSEGUR_MAX_ITEMS, prosegurTooManyItems, renderProsegurXlsx } from "../quote/prosegur-xlsx";
 import { describeLine, describeRequest, parseEmail, parseQuantity, parseRequest, parseRequestRegex, shadowCompare, stripMargin, unparsedHintInfo } from "../quote/request";
 import type { Candidate, EmailDraft, LineCandidates, Quote, QuoteItem, QuoteRequest, RequestLine } from "../quote/types";
@@ -821,6 +822,8 @@ export class BotHandler {
     const warn = result.warnings.length ? `\n⚠️ ${result.warnings[0]}` : "";
     const what = kind === "stock" ? "stock" : kind === "own" ? "precios de lista" : "precios";
     await this.reply(from, `Guardé *${result.rows.length} ${what}* de *${canonical}*:\n${preview}${more}${warn}`);
+    // corrida K: Match Venta se recalcula con el stock nuevo, después de responder (nunca hace fallar la carga)
+    if (kind === "stock") await recalcMatchAfterStockLoad(async () => this.deps.portalStore ?? (await getPortalStore()), this.store, (m) => this.log(m));
   }
 
   // ---------- quote flow ----------

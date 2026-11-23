@@ -594,6 +594,73 @@ export const STATEMENTS = [
   // quién la creó. Los vehículos cargados a mano van en fleet_vehicles con origen 'manual' (sin cambio de esquema).
   `alter table companies add column if not exists origen text not null default 'mtc'`,
   `alter table companies add column if not exists created_by integer`,
+  // Corrida K: Match Venta. Provincia y distrito principales (padrón de pasajeros) y dirección escrita a mano.
+  `alter table companies add column if not exists provincia text`,
+  `alter table companies add column if not exists distrito text`,
+  `alter table companies add column if not exists direccion text`,
+  // Producto del stock propio por código de Odoo: prioridad (sobrevive a una carga nueva) y aplicación; registro de cambios.
+  `create table if not exists match_products (
+    code text primary key,
+    aplicacion text,
+    prioridad boolean not null default false,
+    prioridad_at timestamptz,
+    prioridad_by integer,
+    sin_stock_at timestamptz,
+    created_at timestamptz not null default now(),
+    updated_at timestamptz not null default now()
+  )`,
+  `create table if not exists match_priority_log (
+    id serial primary key,
+    code text not null,
+    accion text not null,
+    user_id integer,
+    detalle text,
+    created_at timestamptz not null default now()
+  )`,
+  `create index if not exists match_priority_log_code_idx on match_priority_log (code, created_at)`,
+  // Cálculo por lotes (al cargar stock, ventas o padrón y al cambiar una prioridad): las vistas leen lo guardado.
+  `create table if not exists match_runs (
+    id serial primary key,
+    run_at timestamptz not null default now(),
+    motivo text,
+    productos integer not null default 0,
+    empresas integer not null default 0,
+    filas integer not null default 0,
+    duracion_ms integer,
+    data jsonb
+  )`,
+  `create table if not exists match_results (
+    id serial primary key,
+    run_id integer not null,
+    product_code text not null,
+    medida text not null,
+    company_id integer,
+    ruc text not null,
+    razon_social text,
+    tipo text not null,
+    pct integer,
+    llantas_medida integer not null default 0,
+    unidades_medida integer not null default 0,
+    podria_llevar integer,
+    ya_compro boolean not null default false,
+    excluida text,
+    detalle jsonb not null
+  )`,
+  `create index if not exists match_results_product_idx on match_results (product_code, pct desc)`,
+  `create index if not exists match_results_company_idx on match_results (company_id)`,
+  // Visita agendada desde Match Venta: ligada a la cita y al producto que la originó (y a la actividad con que se reportó).
+  `create table if not exists match_visits (
+    id serial primary key,
+    appointment_id integer not null unique,
+    company_id integer not null,
+    user_id integer,
+    product_code text not null,
+    motivo text,
+    activity_id integer,
+    reported_at timestamptz,
+    created_at timestamptz not null default now()
+  )`,
+  `create index if not exists match_visits_company_idx on match_visits (company_id)`,
 ];
 
 /** Desde aquí empiezan las sentencias del portal: antes de ejecutarlas se pasa la guardia (migrate-guard.ts). */

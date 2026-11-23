@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { z } from "zod";
 import { ScoringSchema } from "./scoring/config";
+import { MatchSchema } from "./match/config";
 
 /** Portal settings (config/portal.json). Other blocks add their own keys here; unknown keys are kept. */
 const ImportSchema = z.object({
@@ -209,6 +210,8 @@ export const PortalConfigSchema = z.looseObject({
   orders: OrdersSchema.prefault({}),
   /** Hotfix login 2: sesión, enlace de entrada y número del bot. */
   access: AccessSchema.prefault({}),
+  /** Corrida K: Match Venta (src/lib/portal/match/config.ts). */
+  match: MatchSchema.prefault({}),
 });
 
 export type PortalConfig = z.infer<typeof PortalConfigSchema>;
@@ -224,6 +227,7 @@ export type RateRule = z.infer<typeof RateRuleSchema>;
 export type PortalScoringConfig = PortalConfig["scoring"];
 export type PortalOrdersConfig = PortalConfig["orders"];
 export type PortalAccessConfig = PortalConfig["access"];
+export type PortalMatchConfig = PortalConfig["match"];
 
 export function portalConfigPath(): string {
   return process.env.PORTAL_CONFIG || path.join(process.cwd(), "config", "portal.json");

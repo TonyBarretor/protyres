@@ -15,6 +15,7 @@ import { canonicalMedida, companySalesView, fmtFecha, fmtMargen, fmtMoney, norma
 import { loadSalesSettings } from "../sales/config";
 import { creditNoteReason } from "../sales/odoo";
 import { recalcScoresSafely, type PriceSizesSource } from "../scoring/recalc";
+import { recalcMatchSafely } from "../match/recalc";
 import { digits, normDocumento, saleUnits } from "../store/shared";
 import type { Company, IsoDate, PortalStore, PortalUser, Sale, SaleDocType, SalesClientRow } from "../store/types";
 import { canAssignClienteFinal } from "./permissions";
@@ -274,6 +275,7 @@ export async function assignClienteFinal(store: PortalStore, input: AssignClient
   const companyIds = [...new Set([...(bank.id ? [bank.id] : []), ...(target ? [target.id] : []), ...before])];
   for (const id of companyIds) await store.addActivity({ companyId: id, opportunityId: null, userId: user.id, tipo: "nota", texto, canal: "portal" });
   await recalcScoresSafely(store, loadPortalConfig().scoring, { companyIds, prices: input.prices ?? null, why: "cliente final de leasing", log: input.log });
+  await recalcMatchSafely({ store, why: "cliente final de leasing", log: input.log });
   const facturas = `${docs.size} documento${docs.size === 1 ? "" : "s"}`;
   const lineas = `${n} línea${n === 1 ? "" : "s"}`;
   const mensaje = target ? `Cliente final asignado: ${target.razonSocial} en ${facturas} (${lineas}).` : `Cliente final quitado de ${facturas} (${lineas}).`;

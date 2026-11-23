@@ -13,6 +13,7 @@ import { addNotice } from "../bot/state";
 import { isWindowError } from "../bot/commands/cita";
 import { loadPortalConfig } from "../config";
 import { recalcScoresSafely, type PriceSizesSource } from "../scoring/recalc";
+import { recalcMatchSafely } from "../match/recalc";
 import { digits, saleCountRuc } from "../store/shared";
 import type { PortalStore, PortalUser, SalesUpload } from "../store/types";
 import type { WhatsAppClient } from "../../whatsapp/client";
@@ -111,6 +112,8 @@ export async function commitOdooUpload(input: CommitInput): Promise<CommitResult
   const rucs = new Set<string>([...rows.map((r) => r.ruc), ...before.map(saleCountRuc)]);
   const companies = await store.getCompaniesByRucs([...rucs]);
   const r = await recalcScoresSafely(store, loadPortalConfig().scoring, { prices: input.prices ?? null, companyIds: companies.map((c) => c.id), why: "subida de ventas de Odoo", log: input.log });
+  // corrida K: "Ya te compró esta medida" y el historial del match salen de las ventas
+  await recalcMatchSafely({ store, why: "subida de ventas de Odoo", log: input.log });
   await store.flush();
   return { upload: { ...upload, inserted, updated }, inserted, updated, empresasRecalculadas: r?.empresas ?? 0 };
 }

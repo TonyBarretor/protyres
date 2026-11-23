@@ -46,6 +46,7 @@ import { getPortalCommand, registerPausable, registerPendingHandler, registerPor
 import { fold } from "../../tyre/brands";
 import { parsePortalCommand } from "./router";
 import { clearPending, setPending, type ReportDraftStep } from "./state";
+import { markMatchVisitsReported, matchReportData, pendingMatchVisits } from "../match/schedule";
 
 export const VOICE_OFF = "La voz aún no está activa. Escríbeme el reporte en texto, por favor.";
 export const VOICE_FAILED = "No pude transcribir tu nota de voz. Escríbeme el reporte en texto, por favor.";
@@ -428,7 +429,14 @@ async function saveFull(ctx: PortalContext, draft: ReportDraft, company: Company
   }
   if (rec.opportunityPatch) await store.updateOpportunity(rec.opportunityPatch.opportunityId, rec.opportunityPatch.patch);
   const { createdAt: _createdAt, ...activity } = rec.activity;
-  await store.addActivity({ ...activity, opportunityId: oppId });
+  // corrida K: la visita agendada desde Match Venta queda reportada y la actividad conserva el producto que la originó
+  const matchVisits = draft.tipo === "visita" ? await pendingMatchVisits(store, company.id, user.id, activity.occurredAt).catch(() => []) : [];
+  const matchData = matchReportData(matchVisits);
+  const saved = await store.addActivity({ ...activity, opportunityId: oppId, ...(matchData ? { data: { ...(activity.data ?? {}), ...matchData } } : {}) });
+  if (matchVisits.length) {
+    await markMatchVisitsReported(store, matchVisits, saved.id, now).catch(() => undefined);
+    for (const v of matchVisits) lines.push(`• Visita de Match Venta: ${v.motivo ?? v.productCode}`);
+  }
   if (rec.newContact) {
     const c = await store.addContact(rec.newContact);
     lines.push(`• Contacto nuevo: ${c.nombre}${c.cargo ? ` (${c.cargo})` : ""}`);

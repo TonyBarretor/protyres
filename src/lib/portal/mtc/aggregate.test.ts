@@ -22,6 +22,9 @@ describe("aggregateCompanies", () => {
       razonSocial: "TRANSPORTES ANDINOS DEMO S.A.C.",
       sector: "mixto",
       departamento: "LIMA",
+      // corrida K: provincia y distrito del departamento principal (su ómnibus del padrón de pasajeros está en Lima)
+      provincia: "LIMA",
+      distrito: "LIMA",
       unidades: 4,
       unidadesCarga: 3,
       unidadesPasajeros: 1,
@@ -35,6 +38,11 @@ describe("aggregateCompanies", () => {
   });
   it("pasajeros company", () => {
     expect(byRuc.get("20333333333")).toMatchObject({ sector: "pasajeros", departamento: "HUANUCO", unidades: 3, llantasEnPiso: 18 });
+  });
+  it("corrida K: provincia y distrito del departamento principal (empate: alfabético); carga sin ellos", () => {
+    // HUÁNUCO: AMARILIS 1, HUANUCO 1 (el de LIMA no cuenta: otro departamento)
+    expect(byRuc.get("20333333333")).toMatchObject({ provincia: "HUANUCO", distrito: "AMARILIS" });
+    expect(byRuc.get("20222222222")).toMatchObject({ provincia: null, distrito: null });
   });
   it("sorted by units and filtered by minUnits", () => {
     expect(all[0].ruc).toBe("20111111111");
