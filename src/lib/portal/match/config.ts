@@ -56,7 +56,14 @@ export const MatchSchema = z.looseObject({
   /** Historial: compró esa medida / es cliente de otras medidas. */
   historial: z.looseObject({ compro: z.number().min(0).max(1).default(1), clienteOtras: z.number().min(0).max(1).default(0.5) }).prefault({}),
   /** Migración de medida: tolerancia del diámetro exterior (0,03 = ±3%) y factor sobre el encaje. */
-  migracion: z.looseObject({ tolerancia: z.number().min(0).max(0.2).default(0.03), factor: z.number().min(0).max(1).default(0.5) }).prefault({}),
+  migracion: z
+    .looseObject({
+      tolerancia: z.number().min(0).max(0.2).default(0.03),
+      factor: z.number().min(0).max(1).default(0.5),
+      /** El ancho de sección no puede diferir más (mm): una 385/65R22.5 de eje simple no reemplaza a una 295/80R22.5. */
+      maxDiferenciaAnchoMm: z.number().min(0).max(200).default(30),
+    })
+    .prefault({}),
   /**
    * Perfil nominal (%) de las medidas sin perfil ("12R22.5", "11R22.5"): por aro, "default" para el resto. 85 en aro
    * 22.5/19.5/17.5 da 1090 mm para 12R22.5 y 1047 mm para 11R22.5 (catálogos: 1085 y 1054 mm).

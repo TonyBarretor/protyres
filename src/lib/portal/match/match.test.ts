@@ -3,6 +3,7 @@
  * de prueba (nada real; __fixtures__/world.ts).
  */
 import { describe, expect, it } from "vitest";
+import { loadPortalConfig } from "../config";
 import type { StockDeduction } from "../../store/types";
 import { noticesOf } from "../bot/state";
 import { JsonPortalStore } from "../store/json-portal-store";
@@ -61,6 +62,42 @@ describe("equivalencias de medida", () => {
     const e315 = equivalencesFor("315/80R22.5", ["295/80R22.5", "12R22.5", "275/80R22.5"], c);
     expect(e315.migracion.map((x) => x.desde).sort()).toEqual(["12R22.5", "295/80R22.5"]);
     expect(e315.revision.map((x) => x.desde)).toEqual(["275/80R22.5"]);
+  });
+
+  it("el ancho no puede diferir más de 30 mm (configurable): 385/65R22.5 coincide en diámetro pero va a revisión", () => {
+    // 385/65R22.5 es una llanta ancha de eje simple: coincidir en diámetro no la hace intercambiable con 295/80 o 315/80
+    const c = defaultMatchConfig();
+    expect(c.migracion.maxDiferenciaAnchoMm).toBe(30);
+    const e295 = equivalencesFor("295/80R22.5", ["385/65R22.5", "11R22.5", "315/70R22.5"], c);
+    expect(e295.migracion.map((x) => x.desde).sort()).toEqual(["11R22.5", "315/70R22.5"]);
+    expect(e295.revision.find((x) => x.desde === "385/65R22.5")).toMatchObject({ diferenciaPct: 2.7, diferenciaAnchoMm: 90 });
+    // 11R22.5 (279 mm) frente a 315/80R22.5: 36 mm de diferencia -> revisión; 12R22.5 (305 mm): 10 mm -> migración
+    const e315 = equivalencesFor("315/80R22.5", ["385/65R22.5", "11R22.5", "12R22.5", "295/80R22.5"], c);
+    expect(e315.migracion.map((x) => x.desde).sort()).toEqual(["12R22.5", "295/80R22.5"]);
+    expect(e315.revision.map((x) => x.desde).sort()).toEqual(["11R22.5", "385/65R22.5"]);
+    expect(equivalencesFor("12R22.5", ["385/65R22.5", "315/80R22.5"], c).migracion.map((x) => x.desde)).toEqual(["315/80R22.5"]);
+    // configurable: con 100 mm vuelve a entrar por diámetro
+    const wide = defaultMatchConfig({ migracion: { ...c.migracion, maxDiferenciaAnchoMm: 100 } });
+    expect(equivalencesFor("295/80R22.5", ["385/65R22.5"], wide).migracion.map((x) => x.desde)).toEqual(["385/65R22.5"]);
+  });
+
+  it("pesos del porcentaje en config/portal.json: Volumen 45, Encaje 40, Historial 15 (decisión del 23/11)", async () => {
+    const pesos = loadPortalConfig().match.pesos;
+    expect(pesos).toMatchObject({ encaje: 40, volumen: 45, historial: 15 });
+    expect(pesos.encaje + pesos.volumen + pesos.historial).toBe(100);
+    // el cálculo usa esos pesos: encaje completo y volumen completo sin historial = 85
+    const w = await world();
+    await load(w, { cfg: cfg({ pesos }) });
+    const r = (await w.store.listMatchResults({ productCodes: ["T0433"] })).find((x) => !x.yaCompro && x.detalle.encaje === 1 && x.detalle.volumen === 1 && x.detalle.historial === 0);
+    expect(r?.pct).toBe(85 + (r?.detalle.puntos?.aplicacion ?? 0));
+  });
+
+  it("la tabla guardada en config/portal.json no trae 385/65R22.5 como migración en ninguna medida", () => {
+    const eq = loadPortalConfig().match.equivalencias;
+    for (const [medida, e] of Object.entries(eq)) {
+      expect(e.migracion.map((x) => x.desde), medida).not.toContain("385/65R22.5");
+      if (medida.endsWith("R22.5")) expect(e.revision.map((x) => x.desde), medida).toContain("385/65R22.5");
+    }
   });
 
   it("la tabla se escribe en config/portal.json sin reformatear lo demás", () => {
@@ -270,9 +307,10 @@ describe("el cruce", () => {
     expect(buses.tipo).toBe("migracion");
     expect(buses.migracionTexto).toBe("Migración posible desde 295/80R22.5: confirmar con el área técnica");
     expect(buses.detalle.encaje).toBeCloseTo(0.45, 3);
-    // la flota 11R22.5 (Callao) migra a 315/80R22.5 pero no a 12R22.5 (−4%: revisión)
+    // la flota 11R22.5 (Callao) migra a 295/80R22.5 (+0,3%, 16 mm), no a 12R22.5 (−4%: revisión) y, desde que la regla
+    // limita el ancho a 30 mm (pedido del 23/11), tampoco a 315/80R22.5 (36 mm más ancha: revisión); antes salía T0428
     const chica = (await w.store.listMatchResults({ companyIds: [w.ids["20000000007"]] })).map((r) => r.productCode).sort();
-    expect(chica).toEqual(["T0428", "T0433"]);
+    expect(chica).toEqual(["T0433"]);
   });
 
   it("filtros en la dirección y estados vacíos con explicación", async () => {

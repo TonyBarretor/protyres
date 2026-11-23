@@ -143,19 +143,21 @@
   "match": {
     "_comment": "Corrida K — Match Venta. Match % (estimado) = encaje × pesos.encaje + volumen × pesos.volumen + historial × pesos.historial (+ puntos de la aplicación, sin excluir), tope 100. Encaje: unidades de la flota con esa medida probable / unidades. Volumen: llantas en piso en la medida / disponible de la medida (tope 1; con menos de minLlantasVolumen llantas vale 0). Historial: compró la medida (ventas reales, cliente final en leasing) / cliente de otras medidas / no cliente. Tras cambiar algo: npm run portal:recalc-match.",
     "almacenesLima": ["San Luis", "Callao"],
-    "pesos": { "encaje": 50, "volumen": 35, "historial": 15 },
+    "_commentPesos": "23/11/2026: Volumen 45 y Encaje 40 (antes 50/35), decidido por el administrador con el análisis por tamaño de flota (npm run match:analisis-flotas): las flotas de 100+ unidades convierten 11,1% frente a 0,4% (10–29) y compran ~407 neumáticos por cliente frente a ~80.",
+    "pesos": { "encaje": 40, "volumen": 45, "historial": 15 },
     "minLlantasVolumen": 6,
     "_commentVolumen": "Ajuste tras ver la distribución real (23/11/2026): con el disponible tal cual como referencia (1), ~10 camiones de 12R22.5 ya llenan el Volumen (97 llantas) y las 20 primeras de 12R22.5 eran flotas de 11 a 23 unidades (mediana 19); una flota de 10 unidades al 100% quedaba encima de una de 300 al 60%. Con 3 × disponible, la mediana de las 20 primeras pasa a 38–152 unidades y el encaje medio sigue en 0,83–0,96. minPctLista: las listas muestran desde ese porcentaje (las que ya compraron la medida, siempre).",
     "volumenReferencia": 3,
     "minPctLista": 30,
     "historial": { "compro": 1, "clienteOtras": 0.5 },
     "_commentMigracion": "Migración posible: mismo aro exacto y diámetro exterior (aro × 25,4 + 2 × ancho × perfil / 100) dentro de ± tolerancia; el encaje se multiplica por factor. perfilConvencional: perfil (%) de las medidas sin perfil (12R22.5, 11R22.5) por aro. equivalencias: tabla para validar y editar por el área técnica (npm run match:equivalencias la regenera; -- --write la guarda aquí). revision = mismo aro fuera de la tolerancia: se muestra aparte, nunca como match.",
-    "migracion": { "tolerancia": 0.03, "factor": 0.5 },
+    "_commentMigracion": "Migración posible: mismo aro exacto, diámetro exterior dentro de ±tolerancia y ancho de sección que no difiera más de maxDiferenciaAnchoMm (una 385/65R22.5 de eje simple coincide en diámetro con la 295/80R22.5 pero no la reemplaza). Tras cambiar esto: npm run match:equivalencias y npm run portal:recalc-match.",
+    "migracion": { "tolerancia": 0.03, "factor": 0.5, "maxDiferenciaAnchoMm": 30 },
     "perfilConvencional": { "22.5": 85, "19.5": 85, "17.5": 85, "default": 95 },
     "equivalencias": {
       "12R22.5": {
-        "migracion": [{ "desde": "315/80R22.5", "diferenciaPct": -1.3 }, { "desde": "385/65R22.5", "diferenciaPct": -1.6 }],
-        "revision": [{ "desde": "425/65R22.5", "diferenciaPct": 3.2 }, { "desde": "11R22.5", "diferenciaPct": -4 }, { "desde": "13R22.5", "diferenciaPct": 4 }, { "desde": "295/80R22.5", "diferenciaPct": -4.2 }, { "desde": "445/65R22.5", "diferenciaPct": 5.5 }, { "desde": "315/70R22.5", "diferenciaPct": -7.1 }, { "desde": "275/80R22.5", "diferenciaPct": -7.2 }, { "desde": "600/50R22.5", "diferenciaPct": 7.5 }, { "desde": "275/70R22.5", "diferenciaPct": -12.2 }]
+        "migracion": [{ "desde": "315/80R22.5", "diferenciaPct": -1.3 }],
+        "revision": [{ "desde": "385/65R22.5", "diferenciaPct": -1.6 }, { "desde": "425/65R22.5", "diferenciaPct": 3.2 }, { "desde": "11R22.5", "diferenciaPct": -4 }, { "desde": "13R22.5", "diferenciaPct": 4 }, { "desde": "295/80R22.5", "diferenciaPct": -4.2 }, { "desde": "445/65R22.5", "diferenciaPct": 5.5 }, { "desde": "315/70R22.5", "diferenciaPct": -7.1 }, { "desde": "275/80R22.5", "diferenciaPct": -7.2 }, { "desde": "600/50R22.5", "diferenciaPct": 7.5 }, { "desde": "275/70R22.5", "diferenciaPct": -12.2 }]
       },
       "215/75R17.5": {
         "migracion": [{ "desde": "205/75R17.5", "diferenciaPct": -2 }, { "desde": "225/75R17.5", "diferenciaPct": 2 }],
@@ -166,12 +168,12 @@
         "revision": [{ "desde": "245/65R17", "diferenciaPct": -3.3 }, { "desde": "285/65R17", "diferenciaPct": 3.3 }, { "desde": "265/70R17", "diferenciaPct": 3.4 }, { "desde": "225/70R17", "diferenciaPct": -3.8 }, { "desde": "235/80R17", "diferenciaPct": 4.1 }, { "desde": "235/65R17", "diferenciaPct": -5 }, { "desde": "225/65R17", "diferenciaPct": -6.7 }, { "desde": "285/70R17", "diferenciaPct": 7 }, { "desde": "215/65R17", "diferenciaPct": -8.4 }, { "desde": "225/60R17", "diferenciaPct": -9.6 }, { "desde": "215/60R17", "diferenciaPct": -11.1 }, { "desde": "235/55R17", "diferenciaPct": -11.1 }, { "desde": "315/70R17", "diferenciaPct": 12.4 }, { "desde": "225/55R17", "diferenciaPct": -12.5 }, { "desde": "215/55R17", "diferenciaPct": -13.9 }, { "desde": "225/50R17", "diferenciaPct": -15.4 }, { "desde": "205/45R17", "diferenciaPct": -20.6 }]
       },
       "295/80R22.5": {
-        "migracion": [{ "desde": "11R22.5", "diferenciaPct": 0.3 }, { "desde": "385/65R22.5", "diferenciaPct": 2.7 }, { "desde": "315/70R22.5", "diferenciaPct": -3 }],
-        "revision": [{ "desde": "275/80R22.5", "diferenciaPct": -3.1 }, { "desde": "315/80R22.5", "diferenciaPct": 3.1 }, { "desde": "12R22.5", "diferenciaPct": 4.4 }, { "desde": "425/65R22.5", "diferenciaPct": 7.7 }, { "desde": "275/70R22.5", "diferenciaPct": -8.3 }, { "desde": "13R22.5", "diferenciaPct": 8.6 }, { "desde": "445/65R22.5", "diferenciaPct": 10.2 }, { "desde": "600/50R22.5", "diferenciaPct": 12.3 }]
+        "migracion": [{ "desde": "11R22.5", "diferenciaPct": 0.3 }, { "desde": "315/70R22.5", "diferenciaPct": -3 }],
+        "revision": [{ "desde": "385/65R22.5", "diferenciaPct": 2.7 }, { "desde": "275/80R22.5", "diferenciaPct": -3.1 }, { "desde": "315/80R22.5", "diferenciaPct": 3.1 }, { "desde": "12R22.5", "diferenciaPct": 4.4 }, { "desde": "425/65R22.5", "diferenciaPct": 7.7 }, { "desde": "275/70R22.5", "diferenciaPct": -8.3 }, { "desde": "13R22.5", "diferenciaPct": 8.6 }, { "desde": "445/65R22.5", "diferenciaPct": 10.2 }, { "desde": "600/50R22.5", "diferenciaPct": 12.3 }]
       },
       "315/80R22.5": {
-        "migracion": [{ "desde": "385/65R22.5", "diferenciaPct": -0.3 }, { "desde": "12R22.5", "diferenciaPct": 1.3 }, { "desde": "11R22.5", "diferenciaPct": -2.7 }, { "desde": "295/80R22.5", "diferenciaPct": -3 }],
-        "revision": [{ "desde": "425/65R22.5", "diferenciaPct": 4.5 }, { "desde": "13R22.5", "diferenciaPct": 5.3 }, { "desde": "315/70R22.5", "diferenciaPct": -5.9 }, { "desde": "275/80R22.5", "diferenciaPct": -6 }, { "desde": "445/65R22.5", "diferenciaPct": 6.9 }, { "desde": "600/50R22.5", "diferenciaPct": 8.9 }, { "desde": "275/70R22.5", "diferenciaPct": -11.1 }]
+        "migracion": [{ "desde": "12R22.5", "diferenciaPct": 1.3 }, { "desde": "295/80R22.5", "diferenciaPct": -3 }],
+        "revision": [{ "desde": "385/65R22.5", "diferenciaPct": -0.3 }, { "desde": "11R22.5", "diferenciaPct": -2.7 }, { "desde": "425/65R22.5", "diferenciaPct": 4.5 }, { "desde": "13R22.5", "diferenciaPct": 5.3 }, { "desde": "315/70R22.5", "diferenciaPct": -5.9 }, { "desde": "275/80R22.5", "diferenciaPct": -6 }, { "desde": "445/65R22.5", "diferenciaPct": 6.9 }, { "desde": "600/50R22.5", "diferenciaPct": 8.9 }, { "desde": "275/70R22.5", "diferenciaPct": -11.1 }]
       }
     },
     "_commentFiltros": "cortesFlota: filtro de tamaño de flota (10 a 29, 30 a 99, 100 o más unidades). podriaLlevarFactor: 'podría llevar ~N' = llantas en piso en la medida × factor (reposición de un año), tope en el disponible. bonusPorMatchExtra: en la vista por empresa, cada producto adicional sube el orden estos puntos. visitasPorDia: reparto de 'Planificar visitas'.",

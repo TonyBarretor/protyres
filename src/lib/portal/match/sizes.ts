@@ -9,8 +9,10 @@
  *  - Sin perfil, ancho en mm ("185R14C"): serie 82.
  *  - Flotación ("31x10.50R15"): el primer número ya es el diámetro en pulgadas.
  *
- * Regla: SOLO el mismo aro exacto (17 ≠ 17.5) y diámetro dentro de ±tolerancia (3%) es "migración posible"; el resto del
- * mismo aro va aparte como "requiere revisión técnica". Otro aro nunca aparece.
+ * Regla: SOLO el mismo aro exacto (17 ≠ 17.5), diámetro dentro de ±tolerancia (3%) y ancho de sección que no difiera más
+ * de match.migracion.maxDiferenciaAnchoMm (30 mm) es "migración posible"; el resto del mismo aro va aparte como "requiere
+ * revisión técnica". Otro aro nunca aparece. El ancho descarta las anchas de eje simple (385/65R22.5 frente a 295/80R22.5:
+ * mismo diámetro, 90 mm más ancha, otra llanta). Ancho sin perfil: pulgadas × 25,4 (11R22.5 = 279 mm).
  */
 import { parseTyreSize, sizeCore } from "../../tyre/spec";
 import type { MatchConfig, MatchEquivalencia } from "./config";
@@ -54,6 +56,17 @@ export interface SizeComparison {
   desde: string;
   /** (diámetro de `desde` − diámetro de la medida) / diámetro de la medida, en % con un decimal. */
   diferenciaPct: number;
+  /** Ancho de `desde` − ancho de la medida, en mm (null si alguno no se puede calcular). */
+  diferenciaAnchoMm?: number | null;
+}
+
+/** Ancho de sección en mm (null si no se puede calcular: flotación y otras). */
+export function sectionWidthMm(size: string): number | null {
+  const t = parseTyreSize(size);
+  if (!t) return null;
+  if (t.kind === "metric") return t.width;
+  if (t.kind === "numeric") return Math.round(t.width * 25.4 * 10) / 10;
+  return null;
 }
 
 /**
@@ -67,6 +80,8 @@ export function equivalencesFor(target: string, candidates: Iterable<string>, cf
   const rim = rimOf(t);
   const d = outerDiameterMm(t, cfg.perfilConvencional);
   if (rim === null || d === null) return out;
+  const w = sectionWidthMm(t);
+  const maxW = cfg.migracion.maxDiferenciaAnchoMm ?? 30;
   const seen = new Set<string>([t]);
   for (const raw of candidates) {
     const c = candidateSize(raw);
@@ -76,8 +91,12 @@ export function equivalencesFor(target: string, candidates: Iterable<string>, cf
     const dc = outerDiameterMm(c, cfg.perfilConvencional);
     if (dc === null) continue;
     const diff = (dc - d) / d;
-    const entry = { desde: c, diferenciaPct: Math.round(diff * 1000) / 10 };
-    if (Math.abs(diff) <= cfg.migracion.tolerancia + 1e-9) out.migracion.push(entry);
+    const wc = sectionWidthMm(c);
+    const dw = w !== null && wc !== null ? Math.round((wc - w) * 10) / 10 : null;
+    const entry = { desde: c, diferenciaPct: Math.round(diff * 1000) / 10, diferenciaAnchoMm: dw };
+    // ancho desconocido: no se puede asegurar que encaje -> revisión
+    const anchoOk = dw !== null && Math.abs(dw) <= maxW + 1e-9;
+    if (Math.abs(diff) <= cfg.migracion.tolerancia + 1e-9 && anchoOk) out.migracion.push(entry);
     else out.revision.push(entry);
   }
   const byAbs = (a: SizeComparison, b: SizeComparison) => Math.abs(a.diferenciaPct) - Math.abs(b.diferenciaPct) || a.desde.localeCompare(b.desde);
