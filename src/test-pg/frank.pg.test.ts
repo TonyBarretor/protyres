@@ -33,7 +33,8 @@ describe.runIf(hasData)("guion de Frank contra Postgres", () => {
     const r = spawnSync("npx", ["tsx", "--tsconfig", "tsconfig.cli.json", "src/cli/portal-simulate.ts", "--as", "frank", "--pg-test", "--out", out, "--script", "scripts/guion-frank.txt"], {
       cwd: process.cwd(),
       encoding: "utf8",
-      timeout: 540_000,
+      // el guion creció con Match Venta (corrida K): 440–536 s contra el pooler remoto; margen amplio
+      timeout: 1_140_000,
       // la base de pruebas también como DATABASE_URL: aunque algo leyera esa variable, no llega a la real
       env: { ...process.env, PGTEST_DB_URL: testDbUrl(), DATABASE_URL: testDbUrl(), LLM_DISABLED: "1", PHOTOS_DISABLED: "1" },
     });
@@ -44,5 +45,5 @@ describe.runIf(hasData)("guion de Frank contra Postgres", () => {
     expect(resumen).toMatch(/Verificaciones fallidas: 0/);
     expect(resumen).toMatch(/Errores: 0/);
     expect(r.status).toBe(0);
-  }, 600_000);
+  }, 1_200_000);
 });

@@ -239,7 +239,8 @@ match
 @espera-texto estimado
 @espera-texto 1–5 de
 más
-@espera-texto 6–10 de
+#      la segunda tanda empieza en la 6.ª (cuántas hay depende del padrón de la copia: con Postgres la siembra trae menos)
+@espera-texto 6–
 #      la primera de esta tanda: *Agendar visita*, *Mañana*, *Sin hora* (se la asigna si no tiene dueño)
 @btn 1 || 6
 @espera-texto ¿Qué hago?
