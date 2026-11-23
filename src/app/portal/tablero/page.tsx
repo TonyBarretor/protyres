@@ -15,6 +15,8 @@ import { loadSurveySummary } from "@/lib/portal/survey/summary";
 import { DemoTag } from "../_components/bits";
 import { HBar, Legend, ProgressBar, WeekBars } from "./charts";
 import { RankingSummary } from "./RankingSummary";
+import { MatchSummary } from "./MatchSummary";
+import { loadMatchProgress } from "@/lib/portal/ui/match-progress";
 import { SurveySummary } from "./SurveySummary";
 import { UsageSummary } from "./UsageSummary";
 import "./tablero.css";
@@ -95,7 +97,8 @@ export default async function TableroPage({ searchParams }: { searchParams: Prom
   if (picked && !users.some((u) => u.id === picked.id)) users.push(picked);
   // corrida E: consumo del modelo y de la voz, solo para el admin (null para los demás)
   // corrida G: validación del ranking, solo para el admin (null para los demás)
-  const [usage, ranking] = await Promise.all([loadUsageForDashboard(user, store), loadRankingForDashboard(user, store)]);
+  // corrida K: avance de Match Venta, para supervisor y admin
+  const [usage, ranking, matchRows] = await Promise.all([loadUsageForDashboard(user, store), loadRankingForDashboard(user, store), all ? loadMatchProgress(store).catch(() => null) : null]);
 
   const { compliance, projection, goal } = d.figures;
   const cur = d.currency;
@@ -365,6 +368,9 @@ export default async function TableroPage({ searchParams }: { searchParams: Prom
           </ol>
         )}
       </section>
+
+      {/* Corrida K: avance de Match Venta por producto prioritario (supervisor y admin; nada sin productos). */}
+      <MatchSummary rows={matchRows} />
 
       {/* C3: resumen de encuestas (no renderiza nada sin datos). */}
       <SurveySummary data={surveys} />

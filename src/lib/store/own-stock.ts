@@ -5,6 +5,7 @@
  */
 import path from "node:path";
 import type { PriceRow, PriceSource } from "../ingest/types";
+import type { Quote } from "../quote/types";
 import { JsonStore } from "./json-store";
 import { serverlessPostgres } from "./pg-options";
 import type { StockDeduction } from "./types";
@@ -80,4 +81,27 @@ export function ownStockSource(): { allRows(): Promise<PriceRow[]>; listStockDed
   let snap: Promise<OwnStockSnapshot> | null = null;
   const get = () => (snap ??= readOwnStock());
   return { allRows: async () => (await get()).rows, listStockDeductions: async () => (await get()).deductions };
+}
+
+/**
+ * Corrida K (pantalla): cotizaciones guardadas desde `since` (las más recientes primero, hasta `limit`) para el avance de
+ * Match Venta ("cotizado"), sin pasar por getStore(). Solo lee: el cotizador no cambia. Postgres: el estado de la columna
+ * manda sobre el del JSON (anulada).
+ */
+export async function readRecentQuotes(since: Date | null, limit = 2000): Promise<Quote[]> {
+  const url = process.env.DATABASE_URL;
+  if (url) {
+    const sql = serverlessPostgres(url, { max: 1 });
+    try {
+      const rows = since
+        ? await sql`select status, data from quotes where created_at >= ${since} order by created_at desc limit ${limit}`
+        : await sql`select status, data from quotes order by created_at desc limit ${limit}`;
+      return rows.map((r) => ({ ...(r.data as Quote), status: String(r.status) as Quote["status"] }));
+    } finally {
+      await sql.end({ timeout: 5 });
+    }
+  }
+  const store = new JsonStore(process.env.STORE_PATH || path.resolve(process.cwd(), "data/store.json"), process.env.STORE_SEED_PATH || path.resolve(process.cwd(), "data/seed.json.gz"));
+  const all = await store.listQuotes({ limit });
+  return since ? all.filter((q) => Date.parse(q.createdAt) >= since.getTime()) : all;
 }
