@@ -109,6 +109,22 @@ describe("prioridad", () => {
     expect((await matchOverview(w.store, w.frank, { cfg: cfg() })).productos.map((p) => p.code)).not.toContain("T0949");
   });
 
+  it("una carga de stock anterior al día en que se marcó la prioridad no la apaga (la siembra no se pierde al migrar)", async () => {
+    // Al migrar, el primer cálculo corre con el stock viejo que ya estaba cargado: ahí faltan o están en 0 productos de la
+    // siembra del 23/11. Si eso las apagara, la siembra (que solo agrega códigos nuevos) no las vuelve a prender.
+    const w = await world();
+    await w.store.seedMatchProducts(["T0433", "T0949", "T1527", "T0428"].map((code) => ({ code, aplicacion: null, prioridad: true })), NOW);
+    const old = STOCK.filter((r) => r.code !== "T1527").map((r) => ({ ...r, priceDate: "2026-11-10", ...(r.code === "T0949" ? { stockByWarehouse: { "San Luis": 0 }, stock: 0 } : {}) }));
+    const r1 = await recalcMatch({ store: w.store, prices: source(old), cfg: cfg(), leasingRucs: [BANK], now: NOW }, "migración");
+    expect(r1.apagados).toEqual([]);
+    expect((await w.store.listMatchProducts()).filter((p) => p.prioridad).map((p) => p.code)).toEqual(["T0428", "T0433", "T0949", "T1527"]);
+    expect(noticesOf(await w.store.getPortalConversation(w.frank.whatsapp)).filter((n) => n.kind === "match_sin_stock")).toEqual([]);
+    // una carga del mismo día o posterior sí cuenta: T1527 no vino y T0949 está en 0
+    const fresh = old.map((r) => ({ ...r, priceDate: "2026-11-23" }));
+    const r2 = await recalcMatch({ store: w.store, prices: source(fresh), cfg: cfg(), leasingRucs: [BANK], now: NOW }, "carga nueva");
+    expect(r2.apagados.sort()).toEqual(["T0949", "T1527"]);
+  });
+
   it("activar y quitar con registro de quién; no se activa sin disponible ni en lo que no es neumático", async () => {
     const w = await world();
     const stock = ownStockProducts(STOCK, [], defaultMatchConfig());

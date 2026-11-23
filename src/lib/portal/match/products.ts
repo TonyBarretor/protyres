@@ -72,12 +72,18 @@ export function soldOutNotice(p: MatchStockProduct): string {
 export async function switchOffSoldOut(store: PortalStore, stock: MatchStockProduct[], opts: { now?: Date; log?: (m: string) => void } = {}): Promise<string[]> {
   const now = opts.now ?? new Date();
   const byCode = new Map(stock.map((p) => [p.code, p]));
+  // Solo cuenta una carga de stock del día en que se marcó la prioridad o posterior: al migrar, el primer cálculo corre
+  // con el stock viejo y no debe apagar la siembra (que no vuelve a prender lo apagado). Sin ninguna carga, no hay prueba.
+  const newestLoad = stock.reduce((m, p) => (p.loadedAt > m ? p.loadedAt : m), "");
+  const limaDay = (d: Date) => new Date(d.getTime() - 5 * 3600_000).toISOString().slice(0, 10);
   const off: string[] = [];
   const users = await store.listUsers();
   for (const prod of await store.listMatchProducts()) {
     if (!prod.prioridad) continue;
     const st = byCode.get(prod.code);
     if (st && st.available > 0) continue;
+    const evidence = st ? st.loadedAt : newestLoad;
+    if (!evidence || (prod.prioridadAt && evidence < limaDay(prod.prioridadAt))) continue;
     const done = await store.setMatchPriority(prod.code, false, { userId: null, accion: "sin_stock", detalle: st ? "disponible 0" : "ya no está en el stock", at: now, onlyIfOn: true });
     if (!done) continue;
     off.push(prod.code);

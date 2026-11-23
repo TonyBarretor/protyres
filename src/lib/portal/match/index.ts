@@ -15,7 +15,8 @@
  *   - setPriority(store, { code, on, user, stock })  prende/quita con registro (match_priority_log); después llamar
  *     recalcMatchSafely({ store, prices, why }) (o usar setPriorityAndRecalc).
  *   - store.setMatchApplication(code, texto, userId)  editar la aplicación; store.matchPriorityLog(code) quién y cuándo.
- *   - switchOffSoldOut  (lo corre el cálculo) apaga la prioridad al llegar a 0 y deja el aviso (avisos pendientes).
+ *   - switchOffSoldOut  (lo corre el cálculo) apaga la prioridad al llegar a 0 y deja el aviso (avisos pendientes); solo
+ *     cuenta una carga de stock del día en que se marcó o posterior.
  *
  * Cálculo por lotes (nunca al abrir la página)
  *   - recalcMatch / recalcMatchSafely({ store, prices?, why })  siembra productos de config, stock, apagado, cruce y
