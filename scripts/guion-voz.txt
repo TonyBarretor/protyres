@@ -254,3 +254,25 @@ cancelar
 @espera-texto RUC 20999000038 · Carga · Puno
 @voz Sí, créala.
 @espera-texto Empresa creada y asignada a ti: *TRANSPORTES AYNI*
+# Corrida K: Match Venta por voz (stock propio inventado en la copia; los códigos son los prioritarios de config)
+cancelar
+@stock-prueba P0433 295/80R22.5 Fenixway FLAMA 66 50 30
+@stock-prueba P0428 315/80R22.5 Fenixway FLAMA 77 MIX 20 10 reserva 4
+@stock-prueba P1098 215/75R17.5 Fenixway FLAMA 77 15 0
+@match-recalc
+@voz ¿A quién le vendo mi stock?
+@espera-texto *Match Venta*
+@no-texto Reporte de
+@voz A quién le ofrezco las flama sesenta y seis
+@espera-texto *295/80R22.5 Fenixway Flama 66* (P0433)
+@voz la dos
+@espera-texto ¿Qué hago?
+@voz Agéndala mañana a las diez
+@espera-texto 📅 Visita a
+#      "flama setenta y siete" son dos llantas prioritarias (315 y 215): se elige de una lista
+@voz Quítale la prioridad a la flama setenta y siete
+@espera-texto ¿Cuál?
+@btn 315/80R22.5 Flama 77 Mix || quitar prioridad P0428
+@espera-texto Quité la prioridad
+@voz Prioridad trescientos quince flama setenta y siete
+@espera-texto es prioridad

@@ -225,3 +225,39 @@ ayuda portal
 @espera-texto *ultima venta ZBUSS 295/80R22.5*
 @espera-texto *cliente final F003-4050 ZBUSS*
 @espera-texto *nueva empresa*
+# 12. Match Venta (corrida K): stock propio inventado en la copia (cantidades de prueba; los códigos son los prioritarios
+#     de config/portal.json) y el cruce con el padrón de la copia
+@stock-prueba P0433 295/80R22.5 Fenixway FLAMA 66 50 30
+@stock-prueba P0949 12R22.5 Fenixway FUERTE 89 30 0
+@stock-prueba P0428 315/80R22.5 Fenixway FLAMA 77 MIX 20 10 reserva 4
+@match-recalc
+match
+@espera-texto *Match Venta*
+@espera-texto (P0433): 80 en Lima
+@btn 295/80R22.5 Flama 66 || match P0433
+@espera-texto *295/80R22.5 Fenixway Flama 66* (P0433)
+@espera-texto estimado
+@espera-texto 1–5 de
+más
+@espera-texto 6–10 de
+#      la primera de esta tanda: *Agendar visita*, *Mañana*, *Sin hora* (se la asigna si no tiene dueño)
+@btn 1 || 6
+@espera-texto ¿Qué hago?
+@btn Agendar visita || agendar
+@btn Mañana || mañana
+@btn Sin hora || sin hora
+@espera-texto 📅 Visita a
+#      una medida con varias llantas prioritarias: se elige de una lista
+match 12R22.5
+@espera-texto ¿Cuál?
+@btn 12R22.5 Fuerte 89 || match P0949
+@espera-texto (P0949)
+quitar prioridad P0428
+@espera-texto Quité la prioridad
+prioridad P0428
+@espera-texto es prioridad
+avance match
+@espera-texto *Avance Match Venta*
+@espera-texto 1 agendadas
+ayuda portal
+@espera-texto *avance match*

@@ -1,7 +1,7 @@
 /**
  * Corrida H, punto 2 — el bot de punta a punta (BotHandler.handle, el mismo del webhook) contra Postgres real: un
  * recorrido de vendedor con empresas inventadas (asignarme, contacto, cita y reprogramación, reporte escrito y por voz,
- * cotización numerada y enlazada, OC y pedido, estado, avance, mejores, hoy, vocabulario) con los stores JSON y con los
+ * cotización numerada y enlazada, OC y pedido, estado, avance, mejores, hoy, vocabulario, Match Venta) con los stores JSON y con los
  * de Postgres. Lo que el vendedor lee tiene que ser lo mismo en los dos; y nada termina en "Ocurrió un error".
  * Además: dos vendedores que se asignan la misma empresa a la vez.
  */
@@ -19,6 +19,8 @@ import { PgPortalStore } from "../lib/portal/store/pg-portal-store";
 import type { FleetVehicleInput, PortalStore } from "../lib/portal/store/types";
 import { configureReportBot } from "../lib/portal/bot/report";
 import { configureOrderBot } from "../lib/portal/bot/commands/oc";
+import { configureMatchBot } from "../lib/portal/bot/commands/match";
+import { recalcMatch } from "../lib/portal/match";
 import { recalcScores } from "../lib/portal/scoring/recalc";
 import { loadPortalConfig } from "../lib/portal/config";
 import { testDbUrl, truncateAll } from "./harness";
@@ -29,6 +31,7 @@ const OTRO = "51900000003";
 const RUC_ANDES = "20999000011";
 const RUC_ROCA = "20999000044";
 const RUC_NORTE = "20999000033";
+const RUC_SUR = "20999000055";
 const TODAY = new Date().toISOString().slice(0, 10);
 
 const settings: Settings = SettingsSchema.parse({
@@ -49,6 +52,8 @@ const ROWS: PriceRow[] = [
   row({ id: "own-valor87", provider: "360 Tyres", kind: "own", brand: "Fenixway", model: "Valor 87", size: "295/80R22.5", cost: 472 }),
   row({ id: "own-flama77", provider: "360 Tyres", kind: "own", brand: "Fenixway", model: "Flama 77", size: "295/80R22.5", cost: 460 }),
   row({ id: "prov-flama77", provider: "Llantas del Sur", kind: "provider", brand: "Fenixway", model: "Flama 77", size: "315/80R22.5", cost: 200 }),
+  // corrida K: stock propio con los dos almacenes (P0433 es prioritario en config/portal.json)
+  row({ id: "stk-P0433", provider: "Protyres", kind: "stock", code: "P0433", brand: "Fenixway", model: "FLAMA 66", size: "295/80R22.5", cost: null, stock: 70, stockByWarehouse: { "San Luis": 40, Callao: 30 }, source: "odoo", sourceRef: "stock de prueba.pdf" }),
 ];
 
 function vehicle(companyId: number, placa: string, medida: string): FleetVehicleInput {
@@ -63,10 +68,13 @@ async function seed(portal: PortalStore, prices: PriceStore): Promise<void> {
     { ruc: RUC_ANDES, razonSocial: "TRANSPORTES ANDES DEL PERU S.A.C.", sector: "pasajeros", departamento: "LIMA", unidades: 12, llantasPiso: 72 },
     { ruc: RUC_ROCA, razonSocial: "E.T. LA ROCA S.R.L.", sector: "carga", departamento: "LIMA", unidades: 15, llantasPiso: 150 },
     { ruc: RUC_NORTE, razonSocial: "EXPRESO NORTEÑO S.A.", sector: "mixto", departamento: "PIURA", unidades: 40, llantasPiso: 400 },
+    // corrida K: flota con 295/80R22.5, sin dueño (Match Venta la agenda)
+    { ruc: RUC_SUR, razonSocial: "TRANSPORTES SUR ANDINO S.A.C.", sector: "pasajeros", departamento: "CUSCO", unidades: 10, llantasPiso: 60 },
   ]);
-  await portal.upsertFleet([...Array.from({ length: 6 }, (_, i) => vehicle(r.ids[RUC_ANDES], `AAA-10${i}`, "295/80R22.5")), ...Array.from({ length: 4 }, (_, i) => vehicle(r.ids[RUC_NORTE], `NNN-10${i}`, "11R22.5"))]);
+  await portal.upsertFleet([...Array.from({ length: 6 }, (_, i) => vehicle(r.ids[RUC_ANDES], `AAA-10${i}`, "295/80R22.5")), ...Array.from({ length: 4 }, (_, i) => vehicle(r.ids[RUC_NORTE], `NNN-10${i}`, "11R22.5")), ...Array.from({ length: 10 }, (_, i) => vehicle(r.ids[RUC_SUR], `SSS-10${i}`, "295/80R22.5"))]);
   await portal.insertSales([{ fecha: TODAY, ruc: RUC_ROCA, cantidad: 8, origen: "excel", sourceRef: "xlsx:seed" }]);
   await recalcScores(portal, loadPortalConfig().scoring, { prices });
+  await recalcMatch({ store: portal, prices }, "prueba");
 }
 
 /**
@@ -145,11 +153,22 @@ const SCRIPT = [
   "hoy",
   "aprende flamita = Flama 77",
   "ayuda portal",
+  // corrida K: Match Venta (Andes ya es de Frank; Sur Andino no tiene dueño: se agenda y queda de Frank)
+  "match",
+  "@295/80R22.5 Flama 66 || match P0433",
+  "@TRANSPORTES SUR ANDINO || 1",
+  "@Agendar visita || agendar",
+  "@Mañana || mañana",
+  "@Sin hora || sin hora",
+  "quitar prioridad P0433",
+  "prioridad 295 flama 66",
+  "avance match",
 ];
 
 async function runScript(portal: PortalStore, prices: PriceStore): Promise<Run> {
   const client = new FakeWhatsAppClient();
   configureOrderBot({ priceStore: prices, settings });
+  configureMatchBot({ priceStore: prices });
   let transcript = "";
   const voiceFetch = (async () =>
     new Response(JSON.stringify({ metadata: { duration: 7 }, results: { channels: [{ alternatives: [{ transcript, confidence: 0.95 }] }] } }), { status: 200, headers: { "Content-Type": "application/json" } })) as unknown as typeof fetch;
@@ -188,6 +207,7 @@ async function runScript(portal: PortalStore, prices: PriceStore): Promise<Run> 
     trace[`${String(i).padStart(2, "0")} ${line.slice(0, 50)}`] = client.sent.slice(before).map(visible);
   }
   configureOrderBot(null);
+  configureMatchBot(null);
   configureReportBot(null);
   return { client, bot, trace };
 }
@@ -250,6 +270,12 @@ describe("bot completo: JSON y Postgres responden lo mismo", () => {
     expect((await pgPrices.usageSummary(new Date(Date.now() - 3600_000))).find((r) => r.phone === FRANK && r.purpose === "voz")?.audioSeconds).toBe(14);
     expect((await pgPrices.listMessages(FRANK, 500)).length).toBeGreaterThan(SCRIPT.length);
     expect((await pgPortal.listVocabulary()).map((v) => v.term)).toContain("flamita");
+    // Match Venta: la visita quedó ligada al producto y la empresa, asignada a Frank (una sola oportunidad abierta)
+    const sur = (await pgPortal.getCompanyByRuc(RUC_SUR))!;
+    expect(sur.ownerUserId).toBe(frank.id);
+    expect((await pgPortal.listMatchVisits({ companyId: sur.id })).map((v) => v.productCode)).toEqual(["P0433"]);
+    expect(await pgPortal.listOpportunities({ companyId: sur.id, open: true })).toHaveLength(1);
+    expect((await pgPortal.listMatchProducts()).find((p) => p.code === "P0433")?.prioridad).toBe(true);
     // Límite propio: el guion completo hace cientos de idas y vueltas al pooler remoto y, con los pasos de la corrida J
     // (placa, empresas, citas), tarda 90–110 s; con el límite global de 120 s fallaba por tiempo 3 de cada 30 veces.
     // Incluye la espera de notNearLimaMidnight (hasta 10 min).

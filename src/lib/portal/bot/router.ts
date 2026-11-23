@@ -119,7 +119,7 @@ export interface ClassifyInput {
 
 // ── comandos explícitos del portal ──
 
-export type PortalCommandName = "portal" | "cerrar_portal" | "ayuda_portal" | "hoy" | "empresa" | "asignarme" | "contacto" | "cita" | "oc" | "avance" | "prepropuesta" | "aprende" | "enlazar" | "reenviada" | "estado" | "mejores" | "anular" | "descuentos" | "ultima_venta" | "cliente_final" | "nueva_empresa";
+export type PortalCommandName = "portal" | "cerrar_portal" | "ayuda_portal" | "hoy" | "empresa" | "asignarme" | "contacto" | "cita" | "oc" | "avance" | "prepropuesta" | "aprende" | "enlazar" | "reenviada" | "estado" | "mejores" | "anular" | "descuentos" | "ultima_venta" | "cliente_final" | "nueva_empresa" | "match" | "prioridad" | "quitar_prioridad" | "avance_match";
 
 interface CommandSpec {
   name: PortalCommandName;
@@ -129,6 +129,8 @@ interface CommandSpec {
   acceptsMedia?: boolean;
   /** La medida de llanta es parte de los argumentos (`ultima venta ancro 295/80R22.5`): no lo vuelve un pedido. */
   allowsSize?: boolean;
+  /** Con cantidad ("x4", "8 llantas") es un pedido, no el comando (`match 295/80R22.5 x4`). */
+  noQty?: boolean;
 }
 
 /**
@@ -141,6 +143,20 @@ const MEJORES_RE =
 
 /** "nueva empresa …", "crear empresa …", "agregar empresa …", "registrar empresa …"; "empresa nueva" solo (sin más). */
 const NUEVA_EMPRESA_RE = /^(?:(?:nueva|crear(?:\s+una)?(?:\s+nueva)?|agregar(?:\s+una)?(?:\s+nueva)?|registrar(?:\s+una)?(?:\s+nueva)?)\s+empresa(?:\s+nueva)?(?:\s+\S.*)?|empresa\s+nueva)$/;
+
+/**
+ * Corrida K, Match Venta: `match`, `match 295/80R22.5`, `match P0433`, "match venta"; escrito o dictado "¿a quién le vendo mi
+ * stock?", "a quién le puedo ofrecer las Flama 66", "¿qué tengo que vender?". Siempre al inicio del mensaje: un reporte
+ * ("visité ZBUSS…") nunca empieza así.
+ */
+const MATCH_RE =
+  /^(?:match|mach|mash)(?:\s+\S.*)?$|^(?:y\s+)?(?:a\s+)?quien(?:es)?\s+(?:les?\s+)?(?:puedo\s+|podria\s+)?(?:vendo|vender|ofrezco|ofresco|ofrecer|ofrecerle|venderle)\s+\S.*$|^que\s+(?:tengo\s+que|debo|me\s+toca)\s+vender(?:\s+hoy)?$/;
+
+/** `prioridad P0428`, `prioridad 295 flama 66`; dictado "ponle prioridad a la Flama 66", "marca como prioridad la P0428". */
+const PRIORIDAD_RE = /^(?:(?:marcar|marca|marcale|poner|pon|ponle|dar|dale)\s+(?:como\s+|en\s+)?(?:la\s+)?)?prioridad\s+\S.*$/;
+
+/** `quitar prioridad P0428`; dictado "quítale la prioridad a la Flama 77", "saca de prioridad la P0428". */
+const QUITAR_PRIORIDAD_RE = /^(?:quitar|quita|quitale|quitarle|sacar|saca|sacale|desmarcar|desmarca)\s+(?:la\s+|de\s+)?prioridad\s+\S.*$/;
 
 const COMMANDS: CommandSpec[] = [
   { name: "portal", re: /^portal$/ },
@@ -156,6 +172,8 @@ const COMMANDS: CommandSpec[] = [
   { name: "contacto", re: /^contacto\s+\S/ },
   { name: "cita", re: /^cita\s+\S/ },
   { name: "oc", re: /^oc(?:\s+\S|$)/, acceptsMedia: true },
+  // corrida K: antes que `avance` (que se queda con todo lo que empieza así)
+  { name: "avance_match", re: /^(?:avance|como\s+voy)\s+(?:de\s+|del\s+|con\s+(?:el\s+)?)?match(?:\s+venta)?$/ },
   { name: "avance", re: /^avance(?:\s+\S.*)?$/ },
   { name: "prepropuesta", re: /^pre\s?propuesta(?:\s+\S|$)/ },
   { name: "aprende", re: /^aprende\s+\S/ },
@@ -169,6 +187,10 @@ const COMMANDS: CommandSpec[] = [
   // ventas-odoo: últimas ventas a un cliente (con medida o sin ella) y cliente final de una factura de leasing
   { name: "ultima_venta", re: /^ultimas?\s+ventas?(?:\s+\S.*)?$/, allowsSize: true },
   { name: "cliente_final", re: /^cliente\s+final(?:\s+\S.*)?$/ },
+  // corrida K: Match Venta (la medida o el producto son el argumento; con cantidad es un pedido)
+  { name: "match", re: MATCH_RE, allowsSize: true, noQty: true },
+  { name: "quitar_prioridad", re: QUITAR_PRIORIDAD_RE, allowsSize: true, noQty: true },
+  { name: "prioridad", re: PRIORIDAD_RE, allowsSize: true, noQty: true },
 ];
 
 /** La palabra del comando en el texto original ("Empresa", "asignarme", "pre-propuesta"...). */
@@ -196,6 +218,12 @@ const RAW_HEAD: Record<PortalCommandName, RegExp> = {
   descuentos: /^[\s\S]*$/,
   ultima_venta: /^[úu]ltimas?\s+ventas?(?![\p{L}\d])/iu,
   cliente_final: /^cliente\s+final(?![\p{L}\d])/iu,
+  // lo que sigue a la frase es el producto ("stock", "las flama 66", "P0433", "295/80R22.5")
+  match:
+    /^[¿¡\s]*(?:(?:match|mach|mash)(?:\s+venta)?(?![\p{L}\d])|(?:y\s+)?(?:a\s+)?qui[eé]n(?:es)?\s+(?:les?\s+)?(?:puedo\s+|podr[ií]a\s+)?(?:vendo|vender|ofrezco|ofresco|ofrecer|ofrecerle|venderle)(?![\p{L}\d])|qu[eé]\s+(?:tengo\s+que|debo|me\s+toca)\s+vender(?![\p{L}\d]))/iu,
+  prioridad: /^[¿¡\s]*(?:(?:marcar|marca|m[aá]rcale|poner|pon|p[oó]nle|dar|d[aá]le)\s+(?:como\s+|en\s+)?(?:la\s+)?)?prioridad(?![\p{L}\d])/iu,
+  quitar_prioridad: /^[¿¡\s]*(?:quitar|quita|qu[ií]tale|quitarle|sacar|saca|s[aá]cale|desmarcar|desmarca)\s+(?:la\s+|de\s+)?prioridad(?![\p{L}\d])/iu,
+  avance_match: /^[\s\S]*$/,
 };
 
 /** Lo que sigue a la palabra del comando cuando la línea es un campo del cotizador: ": …" o " de: …" (a/al/de/del). */
@@ -222,6 +250,7 @@ export function parsePortalCommand(text: string, opts: { withMedia?: boolean } =
   for (const c of COMMANDS) {
     if (hasSize && !c.allowsSize) continue;
     if (!c.re.test(folded)) continue;
+    if (c.noQty && QTY_RE.test(raw)) continue;
     if (opts.withMedia && !c.acceptsMedia) return null;
     const head = RAW_HEAD[c.name].exec(raw);
     const args = head ? raw.slice(head[0].length).trim() : raw.replace(/^\S+\s*/, "");
