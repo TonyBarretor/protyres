@@ -30,6 +30,12 @@ const FRANK = "51900000001";
 const RUC_ANDES = "20999000011";
 const RUC_ROCA = "20999000044";
 const TODAY = "2026-11-11";
+/**
+ * Fecha de entrega dictada en los flujos: dentro de 9 días (hora de Lima). Antes era "20/11" fijo y, leída con el reloj
+ * real, desde el 21/11/2026 pasaba al año siguiente y la prueba fallaba. Mismo comportamiento, fecha siempre futura.
+ */
+const ENTREGA_ISO = new Date(Date.now() - 5 * 3600_000 + 9 * 86_400_000).toISOString().slice(0, 10);
+const ENTREGA = `${ENTREGA_ISO.slice(8, 10)}/${ENTREGA_ISO.slice(5, 7)}`;
 
 function row(p: Partial<PriceRow> & Pick<PriceRow, "id" | "provider" | "kind" | "brand" | "model" | "size" | "cost">): PriceRow {
   return {
@@ -270,7 +276,7 @@ describe("oc: sin cotización previa", () => {
     expect(t).toContain("8 × 315/80R22.5 18PR FENIXWAY FLAMA 77 — US$ 299.72 c/u _(LLANTAS DEL SUR)_"); // 254 + IGV
     expect(t).toContain("4 × 295/80R22.5 18PR FENIXWAY VALOR 87 — US$ 472.00 c/u"); // lista propia
     expect(t).toContain("Dirección fiscal de *E.T. LA ROCA*?");
-    const answers = ["Av. Industrial 300, Lurín", "la misma", "Pedro Soto 999888777", "ninguna", "20/11", "sí", "no", "cliente", "contado", "contado, recoge en almacén del proveedor", "ninguna", "ninguna"];
+    const answers = ["Av. Industrial 300, Lurín", "la misma", "Pedro Soto 999888777", "ninguna", ENTREGA, "sí", "no", "cliente", "contado", "contado, recoge en almacén del proveedor", "ninguna", "ninguna"];
     for (const a of answers) out = await say(a);
     const doc = out.find((m) => m.kind === "document")!;
     const ws = await sheetOf(doc);
@@ -279,7 +285,7 @@ describe("oc: sin cotización previa", () => {
     expect(cell(ws, "I18")).toBe(299.72);
     expect(cell(ws, "F19")).toBe("295/80R22.5 18PR FENIXWAY VALOR 87");
     expect(cell(ws, "I19")).toBe(472);
-    expect(cell(ws, "G10")).toBe("2026-11-20");
+    expect(cell(ws, "G10")).toBe(ENTREGA_ISO);
     expect(cell(ws, "G11")).toBe("CONTADO");
     expect(cell(ws, "G29")).toBe("LLANTAS DEL SUR");
     expect(cell(ws, "G36")).toBe(236);
@@ -300,7 +306,7 @@ describe("oc: sin cotización previa", () => {
     const lines = Array.from({ length: 8 }, (_, i) => `${i + 1} x Fenixway Valor 87 295/80R22.5 precio ${200 + i}`).join("\n");
     let out = await say(lines);
     expect(lastText(out)).toContain("Entendí:");
-    for (const a of ["Av. Industrial 300, Lurín", "la misma", "Pedro Soto 999888777", "ninguna", "20/11", "sí", "no", "cliente", "contado", "ninguna", "ninguna"]) out = await say(a);
+    for (const a of ["Av. Industrial 300, Lurín", "la misma", "Pedro Soto 999888777", "ninguna", ENTREGA, "sí", "no", "cliente", "contado", "ninguna", "ninguna"]) out = await say(a);
     const ws = await sheetOf(out.find((m) => m.kind === "document")!);
     expect(cell(ws, "E25")).toBe(8); // octava línea, en una fila insertada
     expect(ws.getCell("E26").formula).toBe("SUM(E18:E25)");
@@ -350,7 +356,7 @@ describe("oc: preguntas con botones (corrida D)", () => {
     out = await say(press("Ninguna"));
     expect(lastText(out)).toContain("Fecha de entrega?");
     expect(titles(out)).toEqual([]); // sin defecto: respuesta libre
-    out = await say("20/11");
+    out = await say(ENTREGA);
     expect(titles(out)).toEqual(["Sí", "No"]);
     out = await say(press("Sí"));
     out = await say(press("No"));
@@ -629,7 +635,7 @@ describe("revisión B: el pedido de la OC no se queda con lo que no es suyo", ()
 
   it("Observaciones: un pedido no vale como observación (va al cotizador); una observación normal sí", async () => {
     await toQuestions();
-    for (const a of ["Av. Industrial 300, Lurín", "la misma", "Pedro Soto 999888777", "ninguna", "20/11", "sí", "no", "cliente", "contado"]) await say(a);
+    for (const a of ["Av. Industrial 300, Lurín", "la misma", "Pedro Soto 999888777", "ninguna", ENTREGA, "sí", "no", "cliente", "contado"]) await say(a);
     expect(((await getPending(portal, FRANK, new Date())) as OcStep).field).toBe("observaciones");
     let out = await say("cotízame 8 llantas Fenixway para Transportes Beta");
     expect(all(out)).toContain(NOTICE);
@@ -712,7 +718,7 @@ describe("revisión B: oc y el cotizador, permisos, plazo y cancelar", () => {
     await say("oc roca 7788");
     await say("4 x Fenixway Valor 87 295/80R22.5");
     let out: OutboundMessage[] = [];
-    for (const a of ["Av. Industrial 300, Lurín", "la misma", "Pedro Soto 999888777", "ninguna", "20/11", "sí", "no", "cliente", "60", "ninguna", "ninguna"]) out = await say(a);
+    for (const a of ["Av. Industrial 300, Lurín", "la misma", "Pedro Soto 999888777", "ninguna", ENTREGA, "sí", "no", "cliente", "60", "ninguna", "ninguna"]) out = await say(a);
     const ws = await sheetOf(out.find((m) => m.kind === "document")!);
     expect(cell(ws, "G11")).toBe("CREDITO 60 DÍAS"); // el pedido lleva lo que dijo el vendedor
     expect(lastText(out)).toContain("El plazo habitual sigue en 30 días; cámbialo en el portal si corresponde.");
