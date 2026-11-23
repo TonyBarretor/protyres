@@ -1492,6 +1492,8 @@ export interface MatchPurchase {
   facturas: number;
   /** Alguna línea fue de este mismo código de producto. */
   mismoProducto: boolean;
+  /** Neumáticos de este mismo código (de `cantidad`, que es toda la medida). Opcional en resultados guardados antes. */
+  cantidadMismoProducto?: number;
   /** Días promedio entre compras (con 2 o más fechas). */
   ritmoDias: number | null;
   /** "le tocaría reponer" según su ritmo (o sin ritmo, pasado match.reposicionDias). */

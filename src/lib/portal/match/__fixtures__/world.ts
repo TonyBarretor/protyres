@@ -120,7 +120,7 @@ export async function world(store: PortalStore): Promise<World> {
 export const sale = (o: Partial<SaleInput> & Pick<SaleInput, "ruc" | "fecha" | "cantidad">): SaleInput => ({ medida: null, marca: "Fenixway", diseno: null, precioUnitario: 250, total: 250 * o.cantidad, vendedor: "Frank", origen: "excel", ...o });
 
 /** Línea de Odoo (con detalle) para el leasing: el banco es el cliente del documento. */
-export function odooLine(ruc: string, documento: string, medida: string, cantidad: number, fecha: string): SaleInput {
+export function odooLine(ruc: string, documento: string, medida: string, cantidad: number, fecha: string, codigoProducto = "T0433"): SaleInput {
   return {
     fecha,
     ruc,
@@ -133,7 +133,7 @@ export function odooLine(ruc: string, documento: string, medida: string, cantida
     total: 900 * cantidad,
     vendedor: "Frank",
     origen: "odoo",
-    detalle: { lineKey: `F|${documento}|T0433|1`, tipoDoc: "factura", documento, descripcion: `NEUMATICO ${medida} FLAMA 66`, codigoProducto: "T0433", tipoLinea: "neumatico", docCliente: "ruc", cuentaUnidades: true, excluida: false, precioUnitarioUsd: 240, totalUsd: 240 * cantidad, margenPct: 20 },
+    detalle: { lineKey: `F|${documento}|${codigoProducto}|1`, tipoDoc: "factura", documento, descripcion: `NEUMATICO ${medida} FLAMA 66`, codigoProducto, tipoLinea: "neumatico", docCliente: "ruc", cuentaUnidades: true, excluida: false, precioUnitarioUsd: 240, totalUsd: 240 * cantidad, margenPct: 20 },
   };
 }
 

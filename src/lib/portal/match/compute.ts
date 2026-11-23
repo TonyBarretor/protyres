@@ -47,6 +47,12 @@ export interface MatchSaleLine {
   bancoSinClienteFinal: boolean;
 }
 
+/** La compra de la medida con cuántas fueron de este mismo código de producto. */
+function sameProduct(bought: { compra: MatchPurchase; lines: MatchSaleLine[] }, code: string): MatchPurchase {
+  const mine = bought.lines.filter((l) => l.codigoProducto === code);
+  return { ...bought.compra, mismoProducto: mine.length > 0, cantidadMismoProducto: mine.reduce((n, l) => n + l.cantidad, 0) };
+}
+
 export interface MatchProductInput extends MatchStockProduct {
   aplicacion: string | null;
 }
@@ -228,7 +234,7 @@ export function computeMatches(input: MatchComputeInput): MatchComputeOutput {
       const fits = rule ? aplicacionFits(rule, c) : false;
       const puntos = { encaje: w.encaje * encaje, volumen: w.volumen * volumen, historial: w.historial * historial, aplicacion: fits && rule ? rule.puntos : 0 };
       const pct = Math.min(100, Math.round(puntos.encaje + puntos.volumen + puntos.historial + puntos.aplicacion));
-      const compra = bought ? { ...bought.compra, mismoProducto: bought.lines.some((l) => l.codigoProducto === p.code) } : undefined;
+      const compra = bought ? sameProduct(bought, p.code) : undefined;
       const share = c.unidades > 0 ? unidadesMedida / c.unidades : 0;
       const detalle: MatchDetail = {
         encaje: round3(encaje),
@@ -266,7 +272,7 @@ export function computeMatches(input: MatchComputeInput): MatchComputeOutput {
       if (!bought || companyByRuc.has(ruc)) continue;
       const banco = bought.lines.every((l) => l.bancoSinClienteFinal);
       const name = saleName.get(ruc) ?? ruc;
-      const compra = { ...bought.compra, mismoProducto: bought.lines.some((l) => l.codigoProducto === p.code) };
+      const compra = sameProduct(bought, p.code);
       rows.push({
         productCode: p.code,
         medida: M,

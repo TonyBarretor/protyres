@@ -41,7 +41,14 @@ function money(n: number, moneda: MatchPurchase["moneda"]): string {
  * reponer (compra cada ~60 días)".
  */
 export function purchaseText(c: MatchPurchase, now: Date = new Date()): string {
-  const parts = [`Ya te compró ${int(c.cantidad)}${c.mismoProducto ? " (este mismo producto)" : ""}`, `última: ${monthText(c.ultimaFecha, now)} (${int(c.ultimaCantidad)})`];
+  // la cantidad es de toda la medida; si hubo de este mismo código, cuántas (antes "230 (este mismo producto)" con 30 de él)
+  const mismo = c.cantidadMismoProducto ?? null;
+  const first = !c.mismoProducto
+    ? `Ya te compró ${int(c.cantidad)}`
+    : mismo === null || mismo >= c.cantidad
+      ? `Ya te compró ${int(c.cantidad)} (este mismo producto)`
+      : `Ya te compró ${int(c.cantidad)} de esta medida (${int(mismo)} de este mismo producto)`;
+  const parts = [first, `última: ${monthText(c.ultimaFecha, now)} (${int(c.ultimaCantidad)})`];
   if (c.precioUnitario !== null) parts.push(`a ${money(c.precioUnitario, c.moneda)}`);
   if (c.margenPct !== null) parts.push(`margen ${c.margenPct.toLocaleString("es-PE")}%`);
   if (c.reponer) parts.push(c.ritmoDias ? `ya le tocaría reponer (compra cada ~${c.ritmoDias} días)` : "ya le tocaría reponer");

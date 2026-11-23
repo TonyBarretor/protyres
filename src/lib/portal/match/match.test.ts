@@ -227,6 +227,20 @@ describe("el cruce", () => {
     expect(mina.pct).toBe(100);
   });
 
+  it("«este mismo producto» dice cuántas fueron de ese código; otro producto de la misma medida no lo dice", async () => {
+    // dos códigos de 12R22.5 (T0949 y otro): la empresa compró 30 del T0949 y 200 del otro
+    const w = await world();
+    await w.store.upsertSaleLines([odooLine("20000000002", "F001-201", "12R22.5", 30, "2026-04-01", "T0949"), odooLine("20000000002", "F001-202", "12R22.5", 200, "2026-05-01", "T9999")]);
+    await load(w, { sales: false });
+    const mina = (await w.store.listMatchResults({ productCodes: ["T0949"] })).find((r) => r.companyId === w.ids["20000000002"])!;
+    expect(mina.detalle.compra).toMatchObject({ cantidad: 230, mismoProducto: true, cantidadMismoProducto: 30 });
+    expect(purchaseText(mina.detalle.compra!, NOW)).toMatch(/^Ya te compró 230 de esta medida \(30 de este mismo producto\)/);
+    // solo de este código: sin repetir la cantidad
+    expect(purchaseText({ ...mina.detalle.compra!, cantidad: 30, cantidadMismoProducto: 30 }, NOW)).toMatch(/^Ya te compró 30 \(este mismo producto\)/);
+    // otro código de la medida: solo el total de la medida
+    expect(purchaseText({ ...mina.detalle.compra!, mismoProducto: false, cantidadMismoProducto: 0 }, NOW)).toMatch(/^Ya te compró 230 · /);
+  });
+
   it("una empresa con varios matches aparece una vez en la vista general y sube", async () => {
     const w = await world();
     await load(w);
