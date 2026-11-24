@@ -120,6 +120,12 @@ const clean = (v: string | null | undefined): string | null => {
   return !t || /^-+$/.test(t) ? null : t;
 };
 
+/** Número, interior, Dpto., Mz., Lt. o Km: un 0 solo ("0", "00", "0.0") es relleno del padrón ("Int. 0"), no un dato. */
+const cleanNum = (v: string | null | undefined): string | null => {
+  const t = clean(v);
+  return t && /^0+(?:\.0+)?$/.test(t) ? null : t;
+};
+
 /** "S\N", "SN", "S/N" -> "S/N"; si no, tal cual (en mayúsculas: "271", "3-A"). */
 function numeroText(n: string): string {
   return /^S\s*[\\/]?\s*N\.?$/i.test(n) ? "S/N" : n.toUpperCase();
@@ -154,17 +160,17 @@ const typed = (map: Record<string, string>, tipo: string | null, nombre: string 
 export function streetLine(p: SunatPiezas): string | null {
   const parts: string[] = [];
   const via = typed(VIA, p.tipoVia, p.nombreVia);
-  const numero = clean(p.numero);
-  const km = clean(p.kilometro);
+  const numero = cleanNum(p.numero);
+  const km = cleanNum(p.kilometro);
   let head = [via, numero ? numeroText(numero) : null].filter(Boolean).join(" ");
   if (km) head = [head, kmText(km)].filter(Boolean).join(" ");
   if (head) parts.push(head);
-  const interior = clean(p.interior);
+  const interior = cleanNum(p.interior);
   if (interior) parts.push(`Int. ${interior.toUpperCase()}`);
-  const dpto = clean(p.dpto);
+  const dpto = cleanNum(p.dpto);
   if (dpto) parts.push(`Dpto. ${dpto.toUpperCase()}`);
-  const mz = clean(p.manzana);
-  const lt = clean(p.lote);
+  const mz = cleanNum(p.manzana);
+  const lt = cleanNum(p.lote);
   const mzlt = [mz ? `Mz. ${mz.toUpperCase()}` : null, lt ? `Lt. ${lt.toUpperCase()}` : null].filter(Boolean).join(" ");
   if (mzlt) parts.push(mzlt);
   const zona = typed(ZONA, p.tipoZona, p.nombreZona);

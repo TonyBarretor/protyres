@@ -204,6 +204,15 @@ describe("direcciones armadas (filas reales de empresas)", () => {
     expect(buildAddress(r.piezas, r.ubigeo)).toBeNull();
   });
 
+  it("un 0 de relleno en número, interior, Dpto., Mz., Lt. o Km se omite ('Int. 0'); las piezas se guardan tal cual", () => {
+    // en el archivo real hay miles: interior "0" en 186 anexos y 438 domicilios de empresas, número "0" en ~6 mil, Km "0"…
+    const p = (x: Partial<SunatPiezas>): SunatPiezas => ({ tipoVia: null, nombreVia: null, tipoZona: null, nombreZona: null, numero: null, interior: null, lote: null, dpto: null, manzana: null, kilometro: null, ...x });
+    expect(buildAddress(p({ tipoVia: "AV.", nombreVia: "ARGENTINA", numero: "2833", interior: "0" }), "070101")).toBe("Av. Argentina 2833, Callao");
+    expect(buildAddress(p({ tipoVia: "AV.", nombreVia: "PERU", numero: "0", manzana: "0", lote: "00", dpto: "0", kilometro: "0.0" }), "040103")).toBe("Av. Peru, Cayma, Arequipa");
+    // un 0 que es parte de un valor real se queda: "10", "B0", "0.5"
+    expect(buildAddress(p({ tipoVia: "AV.", nombreVia: "PERU", numero: "10", interior: "B0", kilometro: "0.5" }), "040103")).toContain("Av. Peru 10 Km 0.5, Int. B0");
+  });
+
   it("el tipo no se repite cuando el nombre ya lo trae ('Fundo Fundo', 'Calle Calle 7', 'Zona Industrial Industrial')", () => {
     const p = (x: Partial<SunatPiezas>): SunatPiezas => ({ tipoVia: null, nombreVia: null, tipoZona: null, nombreZona: null, numero: null, interior: null, lote: null, dpto: null, manzana: null, kilometro: null, ...x });
     expect(buildAddress(p({ tipoVia: "AV.", nombreVia: "LAS TORRES", lote: "20", tipoZona: "FND.", nombreZona: "FUNDO HUACHIPA" }), "150118")).toBe("Av. Las Torres, Lt. 20, Fundo Huachipa, Lurigancho, Lima");
