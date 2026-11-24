@@ -571,7 +571,8 @@ function inDistritoSql(sql: Sql, t: { departamento: string; provincia: string; d
 
 /** 1 si el estado o la condición de SUNAT empiezan con alguno de los prefijos (ya plegados), 0 si no. */
 function alertRankSql(sql: Sql, alerta: SunatAlertMatch | undefined): Fragment {
-  if (!alerta || (!alerta.estados.length && !alerta.condiciones.length)) return sql`0`;
+  // `0::int` y no `0`: en ORDER BY un entero suelto es una posición de columna ("ORDER BY position 0 is not in select list")
+  if (!alerta || (!alerta.estados.length && !alerta.condiciones.length)) return sql`0::int`;
   const est = alerta.estados.map(foldPlace).filter(Boolean);
   const con = alerta.condiciones.map(foldPlace).filter(Boolean);
   const any = (col: Fragment, list: string[]) => (list.length ? sql`exists (select 1 from unnest(${sql.array(list)}::text[]) as p(x) where ${foldSql(sql, col)} like p.x || '%')` : sql`false`);
