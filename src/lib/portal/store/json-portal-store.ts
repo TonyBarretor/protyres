@@ -707,7 +707,9 @@ export class JsonPortalStore implements PortalStore {
     const matches: Company[] = [];
     for (const c of this.companies.values()) {
       if (terms.compact && !(nameMatches(companyNameKey(c.razonSocial), terms) || (qDigits && c.ruc.startsWith(qDigits)))) continue;
-      if (deps && !(c.departamento && deps.has(c.departamento))) continue;
+      // con distrito elegido manda el distrito (más específico; lo ofrece listDistritos con Lima y Callao juntos y la
+      // ubicación de SUNAT para empresas sin departamento en el MTC): el departamento no vuelve a excluir
+      if (deps && !opts.distrito && !(c.departamento && deps.has(c.departamento))) continue;
       if (opts.distrito && !inDistrito(c, this.sunatOf(c.ruc), opts.distrito)) continue;
       if (sectors && !(c.sector && sectors.has(c.sector))) continue;
       if (opts.minUnits !== undefined && c.unidades < opts.minUnits) continue;

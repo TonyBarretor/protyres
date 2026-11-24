@@ -935,7 +935,8 @@ export class PgPortalStore implements PortalStore {
       const ruc = searchRucPrefix(opts.q);
       conds.push(ruc ? sql`(${byName} or c.ruc like ${`${ruc}%`})` : byName);
     }
-    if (opts.departamento?.length) conds.push(sql`c.departamento in ${sql(opts.departamento)}`);
+    // con distrito elegido manda el distrito (igual que el store JSON): el departamento no vuelve a excluir
+    if (opts.departamento?.length && !opts.distrito) conds.push(sql`c.departamento in ${sql(opts.departamento)}`);
     if (opts.distrito) {
       const t = lookupUbigeo(opts.distrito);
       conds.push(t ? inDistritoSql(sql, { departamento: foldPlace(t.departamento), provincia: foldPlace(t.provincia), distrito: foldPlace(t.distrito) }) : sql`false`);

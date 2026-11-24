@@ -91,6 +91,23 @@ describe("Match Venta con SUNAT", () => {
     expect(await w.store.listDistritos({ departamento: "AREQUIPA" })).toEqual([]);
   });
 
+  it("Prospectos: el número de cada distrito del desplegable es lo que lista al elegirlo (Lima y Callao; sin departamento en el MTC)", async () => {
+    // antes: con Lima elegido, "Bellavista (1)" listaba 0 (la empresa es CALLAO en el MTC) y "Ate" contaba empresas sin
+    // departamento en el MTC que la lista dejaba fuera (datos reales: Ate 413 en el desplegable, 406 en la lista)
+    for (const store of [JsonPortalStore.memory()]) {
+      const w = await world(store);
+      await seedSunat(w.store);
+      await w.store.upsertCompanies([{ ruc: "20000000099", razonSocial: "TURISMO SIN DEPARTAMENTO DEMO SAC", sector: "pasajeros", departamento: null, unidades: 12, llantasPiso: 60, antiguedadMedia: null }]);
+      await w.store.upsertSunat([rec("20000000099", "150103", "LIMA", "LIMA", "ATE")]);
+      const dists = await w.store.listDistritos({ departamento: "LIMA" });
+      expect(dists.find((d) => d.ubigeo === "150103")?.empresas).toBe(2);
+      for (const d of dists) {
+        const r = await w.store.searchCompanies({ departamento: ["LIMA"], distrito: d.ubigeo ?? undefined });
+        expect(r.total, d.distrito ?? d.ubigeo).toBe(d.empresas);
+      }
+    }
+  });
+
   it("reparto de visitas por el distrito real de SUNAT", async () => {
     const w = await world(JsonPortalStore.memory());
     await seedSunat(w.store);
