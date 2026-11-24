@@ -6,7 +6,7 @@
 import Link from "next/link";
 import { canSeeAll } from "@/lib/portal/auth/permissions";
 import { companyMatchBlock, directionsLink, loadMatchStock, productLabel, productName, type MatchCard } from "@/lib/portal/match";
-import type { Company, PortalStore, PortalUser } from "@/lib/portal/store/types";
+import type { Company, PortalStore, PortalUser, SunatBrief } from "@/lib/portal/store/types";
 import { canUseMatch } from "@/lib/portal/ui/match";
 import { MatchBadges, MatchPct, ScheduleForm } from "../../match/cards";
 import "../../match/match.css";
@@ -48,11 +48,12 @@ export async function loadMatchBlock(store: PortalStore, user: PortalUser, compa
   return { cards, labels: Object.fromEntries(stock.map((s) => [s.code, productLabel(s)])), refs };
 }
 
-export function MatchBlock({ data, user, company }: { data: MatchBlockData | null; user: PortalUser; company: Company }) {
+export function MatchBlock({ data, user, company, sunat }: { data: MatchBlockData | null; user: PortalUser; company: Company; sunat?: Pick<SunatBrief, "direccion"> | null }) {
   if (!data) return null;
   const { cards, refs } = data;
   const label = new Map(Object.entries(data.labels));
-  const d = directionsLink(company);
+  // corrida L: sin dirección de operación, el domicilio fiscal de SUNAT
+  const d = directionsLink(company, sunat ?? null);
   const canSchedule = user.rol !== "tecnico" && (company.ownerUserId === null || company.ownerUserId === user.id || canSeeAll(user));
   return (
     <section className="pt-card" aria-labelledby="match-title">

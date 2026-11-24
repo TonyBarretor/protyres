@@ -7,6 +7,9 @@
  *  - Vista 2 "¿A quién se la ofrezco?" (?p=<código>): tarjetas de empresa con estado, match % estimado, desglose,
  *    insignias, ubicación, RUC, contacto y acciones; filtros en chips que quedan en la dirección; "Ver más" por tandas;
  *    "Clientes que ya compraron esta medida" aparte y sin porcentaje; marcar varias y "Planificar visitas".
+ * Corrida L: filtro por distrito (aparece al elegir departamento; ?dist=<código INEI>), dirección en cada tarjeta (la de
+ * operación manda; si no, el domicilio fiscal de SUNAT) con Cómo llegar y copiar, aviso de SUNAT en rojo o ámbar, y la
+ * leyenda del domicilio fiscal una sola vez arriba de la lista.
  * Todo lee lo guardado por el cálculo por lotes (src/lib/portal/match): abrir la página no recalcula el cruce.
  * Vendedor, supervisor y admin (el técnico recibe "no encontrada").
  */
@@ -17,11 +20,13 @@ import { botWhatsapp } from "@/lib/portal/auth/access";
 import { loadPortalConfig } from "@/lib/portal/config";
 import { loadMatchStock, matchesByCompany, matchesForProduct, matchOverview, productLabel, type MatchCard, type MatchProductCard } from "@/lib/portal/match";
 import { getPortalStore } from "@/lib/portal/store";
-import type { Contact, PortalStore, PortalUser } from "@/lib/portal/store/types";
+import type { Contact, DistritoCount, PortalStore, PortalUser } from "@/lib/portal/store/types";
 import { fmtInt } from "@/lib/portal/ui/labels";
 import {
   canEditMatchProduct,
   canUseMatch,
+  departamentoSelectHidden,
+  distritoSelectHidden,
   filterChips,
   hasFilters,
   MATCH_DEPARTAMENTOS,
@@ -34,6 +39,7 @@ import {
   parseMatchParams,
   progressLine,
   splitNotes,
+  titleCase,
   type MatchParams,
 } from "@/lib/portal/ui/match";
 import { loadMatchProgress } from "@/lib/portal/ui/match-progress";
@@ -41,6 +47,7 @@ import { formatLimaDateTime } from "@/lib/portal/ui/time";
 import { ownStockSource } from "@/lib/store/own-stock";
 import type { MatchProgressRow } from "@/lib/portal/match";
 import { Flash } from "../_components/bits";
+import { DIRECCION_LEGEND } from "../_components/Direccion";
 import { saveAplicacion, togglePriority } from "./actions";
 import { CompanyGroupCard, CompanyMatchCard, PLAN_FORM, SalesOnlyCard } from "./cards";
 import { AutoSubmitSelect, PlanBar } from "./client";
@@ -88,11 +95,16 @@ function Head({ p, aviso, error, sub }: { p: MatchParams; aviso?: string; error?
   );
 }
 
-function Chips({ p, cortes }: { p: MatchParams; cortes: number[] }) {
+/** Corrida L: distritos del departamento elegido (con empresas), para el filtro; [] sin departamento. */
+async function distritosOf(store: PortalStore, p: MatchParams): Promise<DistritoCount[]> {
+  if (!p.filters.departamento) return [];
+  return store.listDistritos({ departamento: p.filters.departamento }).catch(() => []);
+}
+
+function Chips({ p, cortes, distritos }: { p: MatchParams; cortes: number[]; distritos: DistritoCount[] }) {
   const chips = filterChips(p, cortes);
-  const base = new URLSearchParams(matchHref(p, { filters: { ...p.filters, departamento: undefined, limaCallao: undefined } }).split("?")[1] ?? "");
-  const hidden = Object.fromEntries([...base].filter(([k]) => k !== "n"));
   const [first, rest] = [chips.slice(0, 5), chips.slice(5)];
+  const dists = distritos.filter((d): d is DistritoCount & { ubigeo: string } => !!d.ubigeo);
   const chip = (c: (typeof chips)[number]) => (
     <Link key={c.id} href={c.href} className={`mv-chip${c.active ? " mv-chip-on" : ""}`} aria-pressed={c.active} scroll={false}>
       {c.active ? "✓ " : ""}
@@ -106,9 +118,19 @@ function Chips({ p, cortes }: { p: MatchParams; cortes: number[] }) {
         name="dep"
         value={p.filters.departamento ?? ""}
         label="Departamento"
-        hidden={hidden}
+        hidden={departamentoSelectHidden(p)}
         options={[{ value: "", label: "Departamento: todos" }, ...MATCH_DEPARTAMENTOS.map((d) => ({ value: d, label: d.charAt(0) + d.slice(1).toLowerCase() }))]}
       />
+      {/* corrida L: el distrito depende del departamento (solo los que tienen empresas, con cuántas) */}
+      {p.filters.departamento && dists.length > 0 && (
+        <AutoSubmitSelect
+          name="dist"
+          value={p.filters.distrito ?? ""}
+          label="Distrito"
+          hidden={distritoSelectHidden(p)}
+          options={[{ value: "", label: "Distrito: todos" }, ...dists.map((d) => ({ value: d.ubigeo, label: `${titleCase(d.distrito)} (${fmtInt(d.empresas)})` }))]}
+        />
+      )}
       {rest.map(chip)}
       {hasFilters(p.filters) && (
         <Link href={matchHref(p, { filters: {} })} className="mv-chip mv-chip-clear" scroll={false}>
@@ -345,7 +367,12 @@ async function Overview({ p, store, user, flash }: { p: MatchParams; store: Port
 
 async function ByCompany({ p, store, user, flash, now }: { p: MatchParams; store: PortalStore; user: PortalUser; flash: { aviso?: string; error?: string }; now: Date }) {
   const cfg = loadPortalConfig().match;
-  const [ov, groups, owners] = await Promise.all([matchOverview(store, user, { cfg }), matchesByCompany(store, user, p.filters, { cfg, limit: p.n, now }), ownerNames(store, user)]);
+  const [ov, groups, owners, distritos] = await Promise.all([
+    matchOverview(store, user, { cfg }),
+    matchesByCompany(store, user, p.filters, { cfg, limit: p.n, now }),
+    ownerNames(store, user),
+    distritosOf(store, p),
+  ]);
   const contacts = await contactsOf(store, groups.map((g) => g.companyId));
   const products = new Map(ov.productos.map((x) => [x.code, x]));
   const total = groups.total ?? groups.length;
@@ -354,7 +381,7 @@ async function ByCompany({ p, store, user, flash, now }: { p: MatchParams; store
   return (
     <div className="pt-stack mv-page">
       <Head p={p} {...flash} sub="Cada empresa una sola vez, con todos los productos prioritarios que le sirven." />
-      <Chips p={p} cortes={cfg.cortesFlota} />
+      <Chips p={p} cortes={cfg.cortesFlota} distritos={distritos} />
       {ov.vacio ? (
         <p className="pt-notice">{ov.vacio}</p>
       ) : !groups.length ? (
@@ -366,6 +393,9 @@ async function ByCompany({ p, store, user, flash, now }: { p: MatchParams; store
         <>
           <p className="pt-small pt-muted" style={{ margin: 0 }}>
             <b>{fmtInt(total)}</b> empresas · primero las de mayor match (cada producto adicional las sube)
+          </p>
+          <p className="pt-legend" style={{ margin: 0 }}>
+            {DIRECCION_LEGEND}
           </p>
           <PlanForm back={back} />
           <ul className="mv-list">
@@ -396,7 +426,7 @@ async function ByCompany({ p, store, user, flash, now }: { p: MatchParams; store
 
 async function ProductView({ p, store, user, flash, now }: { p: MatchParams; store: PortalStore; user: PortalUser; flash: { aviso?: string; error?: string }; now: Date }) {
   const cfg = loadPortalConfig().match;
-  const [r, owners] = await Promise.all([matchesForProduct(store, user, p.code!, p.filters, { cfg, limit: p.n, now }), ownerNames(store, user)]);
+  const [r, owners, distritos] = await Promise.all([matchesForProduct(store, user, p.code!, p.filters, { cfg, limit: p.n, now }), ownerNames(store, user), distritosOf(store, p)]);
   const prod = r.product;
   if (!prod) {
     return (
@@ -446,7 +476,7 @@ async function ProductView({ p, store, user, flash, now }: { p: MatchParams; sto
           </p>
         ))}
       </section>
-      <Chips p={p} cortes={cfg.cortesFlota} />
+      <Chips p={p} cortes={cfg.cortesFlota} distritos={distritos} />
       {r.vacio ? (
         <div className="pt-notice">
           <p style={{ margin: 0 }}>{r.vacio}</p>
@@ -463,6 +493,9 @@ async function ProductView({ p, store, user, flash, now }: { p: MatchParams; sto
               <p className="pt-small pt-muted" style={{ margin: 0 }}>
                 <b>{fmtInt(r.total)}</b> {r.total === 1 ? "empresa" : "empresas"} · de mayor a menor match
                 {r.ocultasPorFiltro > 0 && ` · ${fmtInt(r.ocultasPorFiltro)} fuera por los filtros`}
+              </p>
+              <p className="pt-legend" style={{ margin: 0 }}>
+                {DIRECCION_LEGEND}
               </p>
               <PlanForm back={back} />
               <ul className="mv-list">

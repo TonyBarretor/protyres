@@ -3,9 +3,11 @@
  * filtros (paginación, accesos rápidos de marca). Puro: sin Next ni store.
  *
  * Parámetros: q, dep, sector, flota (rango), marca (repetible), nivel (A|B|C, repetible o con comas), tipo
- * (cliente|prospecto), orden (por defecto "atractivo", corrida G), p (página).
+ * (cliente|prospecto), orden (por defecto "atractivo", corrida G), p (página). Corrida L: dist (distrito, código INEI de 6
+ * dígitos), solo si hay departamento y el distrito es de ese departamento (Lima y Callao cuentan como uno).
  */
 import type { CompanyOrder, CompanySearch, Nivel, Sector } from "../store/types";
+import { lookupUbigeo, sameDepartamento } from "../sunat/ubigeo";
 
 export type SearchParamsLike = Record<string, string | string[] | undefined>;
 
@@ -62,6 +64,16 @@ export interface ProspectFilters {
   tipo: "cliente" | "prospecto" | null;
   orden: CompanyOrder;
   page: number;
+  /** Corrida L: distrito (código INEI) dentro del departamento elegido; sin departamento no hay distrito. */
+  distrito?: string;
+}
+
+/** El distrito (código INEI) si existe y es del departamento (Lima y Callao cuentan como uno); si no, undefined. */
+export function distritoDe(departamento: string | null | undefined, distrito: string | null | undefined): string | undefined {
+  const d = (distrito ?? "").trim();
+  if (!departamento || !/^\d{6}$/.test(d)) return undefined;
+  const u = lookupUbigeo(d);
+  return u && sameDepartamento(u.departamento, departamento) ? d : undefined;
 }
 
 function all(v: string | string[] | undefined): string[] {
@@ -97,9 +109,12 @@ export function parseProspectFilters(sp: SearchParamsLike): ProspectFilters {
   const tipo = one(sp.tipo);
   const orden = one(sp.orden);
   const page = Number.parseInt(one(sp.p), 10);
+  const departamento = one(sp.dep) || null;
+  const distrito = distritoDe(departamento, one(sp.dist));
   return {
     q: one(sp.q).slice(0, 100),
-    departamento: one(sp.dep) || null,
+    departamento,
+    ...(distrito ? { distrito } : {}),
     sector: SECTORS.some((s) => s.id === sector) ? (sector as Sector) : null,
     flota: FLEET_RANGES.some((r) => r.id === flota) ? (flota as FleetRangeId) : null,
     marcas: parseMarcas(sp.marca),
@@ -115,6 +130,8 @@ export function toCompanySearch(f: ProspectFilters, now?: Date): CompanySearch {
   const s: CompanySearch = { orderBy: f.orden, page: f.page, pageSize: PAGE_SIZE };
   if (f.q) s.q = f.q;
   if (f.departamento) s.departamento = [f.departamento];
+  const dist = distritoDe(f.departamento, f.distrito);
+  if (dist) s.distrito = dist;
   if (f.sector) s.sector = [f.sector];
   if (range) {
     s.minUnits = range.min;
@@ -130,9 +147,13 @@ export function toCompanySearch(f: ProspectFilters, now?: Date): CompanySearch {
 /** Query string ("?..." o "") de los filtros; `patch` cambia campos (cambiar filtros vuelve a la página 1 salvo que se pase `page`). */
 export function filtersQuery(f: ProspectFilters, patch: Partial<ProspectFilters> = {}): string {
   const g: ProspectFilters = { ...f, page: 1, ...patch };
+  // otro departamento: el distrito anterior ya no aplica
+  if ("departamento" in patch && patch.departamento !== f.departamento && !("distrito" in patch)) delete g.distrito;
   const p = new URLSearchParams();
   if (g.q) p.set("q", g.q);
   if (g.departamento) p.set("dep", g.departamento);
+  const dist = distritoDe(g.departamento, g.distrito);
+  if (dist) p.set("dist", dist);
   if (g.sector) p.set("sector", g.sector);
   if (g.flota) p.set("flota", g.flota);
   for (const m of g.marcas) p.append("marca", m);
@@ -150,7 +171,7 @@ export function isShortcutActive(f: ProspectFilters, marcas: string[]): boolean 
 }
 
 export function hasActiveFilters(f: ProspectFilters): boolean {
-  return !!(f.q || f.departamento || f.sector || f.flota || f.marcas.length || f.nivel.length || f.tipo);
+  return !!(f.q || f.departamento || f.distrito || f.sector || f.flota || f.marcas.length || f.nivel.length || f.tipo);
 }
 
 export function pageCount(total: number, pageSize = PAGE_SIZE): number {

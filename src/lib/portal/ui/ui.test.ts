@@ -46,6 +46,22 @@ describe("filtros de prospectos", () => {
     expect(toCompanySearch(parseProspectFilters({ flota: "300+" })).maxUnits).toBeUndefined();
   });
 
+  it("corrida L: distrito (?dist=, código INEI) solo con un departamento que lo contiene; va a CompanySearch y a los enlaces", () => {
+    const f = parseProspectFilters({ dep: "LIMA", dist: "150140" });
+    expect(f.distrito).toBe("150140");
+    expect(toCompanySearch(f)).toMatchObject({ departamento: ["LIMA"], distrito: "150140" });
+    expect(filtersQuery(f, { page: 2 })).toBe("?dep=LIMA&dist=150140&p=2");
+    expect(hasActiveFilters(parseProspectFilters({ dep: "LIMA", dist: "150140" }))).toBe(true);
+    // Callao entra con Lima; sin departamento, de otro o inventado: fuera (al cambiar de departamento el distrito viejo se cae)
+    expect(parseProspectFilters({ dep: "LIMA", dist: "070101" }).distrito).toBe("070101");
+    expect(parseProspectFilters({ dist: "150140" }).distrito).toBeUndefined();
+    expect(parseProspectFilters({ dep: "AREQUIPA", dist: "150140" }).distrito).toBeUndefined();
+    expect(parseProspectFilters({ dep: "LIMA", dist: "15014" }).distrito).toBeUndefined();
+    expect(toCompanySearch(parseProspectFilters({ dep: "AREQUIPA", dist: "150140" })).distrito).toBeUndefined();
+    // cambiar el departamento desde un enlace quita el distrito
+    expect(filtersQuery(f, { departamento: "CUSCO" })).toBe("?dep=CUSCO");
+  });
+
   it("los enlaces conservan filtros y cambiar un filtro vuelve a la página 1", () => {
     const f = parseProspectFilters({ q: "bus", marca: "SCANIA", p: "4", orden: "participacion" });
     expect(filtersQuery(f, { page: 5 })).toBe("?q=bus&marca=SCANIA&orden=participacion&p=5");
