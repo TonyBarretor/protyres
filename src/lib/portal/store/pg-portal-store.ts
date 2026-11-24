@@ -30,6 +30,9 @@ import {
   type FleetAggRow,
 } from "./shared";
 import type { SaleClientDoc, SaleDetail, SaleDocType, SaleLineType, SalesClientRow, SalesClientSort, SalesListClientRow, SalesListFilter, SalesListSummary, SalesQuery, SalesUpload, SalesUploadInput, ServiceType } from "./types";
+import type { DistritoCount, PortalRuc, SunatAlertMatch, SunatBrief, SunatLocal, SunatLocalInput, SunatPiezasRecord, SunatRecord, SunatRecordInput } from "./types";
+import { distritoCounts } from "./shared";
+import { foldPlace, lookupUbigeo } from "../sunat/ubigeo";
 import type { BestCompaniesQuery, BestCompany, Nivel, RankingValidation, RankingValidationInput, ScoreDetail, ScoreInput, ScoreInputQuery, ScoreRun, ScoreRunInput, ScoreUpdate, ValidationAnswer } from "./types";
 import type {
   MatchCompanyInput,
@@ -538,6 +541,101 @@ function where(sql: Sql, conds: Fragment[]): Fragment {
   return conds.slice(1).reduce((acc, c) => sql`${acc} and ${c}`, conds[0]);
 }
 
+// ── Corrida L: SUNAT en SQL (mismas reglas que sunat/ubicacion.ts; `c` = companies, `s` = sunat_padron) ──
+
+/** foldPlace() en SQL: sin tildes, mayúsculas, solo letras/dígitos/espacios simples; '' -> null. */
+function foldSql(sql: Sql, x: Fragment): Fragment {
+  return sql`nullif(btrim(regexp_replace(regexp_replace(upper(translate(${x}, 'áéíóúüñÁÉÍÓÚÜÑ', 'aeiouunAEIOUUN')), '[^A-Z0-9 ]+', ' ', 'g'), ' +', ' ', 'g')), '')`;
+}
+
+/** Lima y Callao cuentan como un departamento. */
+function sameDepSql(sql: Sql, a: Fragment, b: Fragment): Fragment {
+  return sql`(${a} = ${b} or (${a} in ('LIMA', 'CALLAO') and ${b} in ('LIMA', 'CALLAO')))`;
+}
+
+/** sunatUbicacionAplica: SUNAT tiene distrito y su departamento es el de la empresa (o la empresa no tiene). */
+function sunatAplicaSql(sql: Sql): Fragment {
+  const dep = foldSql(sql, sql`c.departamento`);
+  return sql`(s.distrito is not null and s.departamento is not null and (${dep} is null or ${sameDepSql(sql, dep, sql`s.departamento`)}))`;
+}
+
+/** enDistrito(ubicacionEfectiva(c, s), código) con los nombres plegados del código. */
+function inDistritoSql(sql: Sql, t: { departamento: string; provincia: string; distrito: string }): Fragment {
+  const aplica = sunatAplicaSql(sql);
+  const dep = foldSql(sql, sql`c.departamento`);
+  const effDist = sql`(case when ${aplica} then s.distrito else ${foldSql(sql, sql`c.distrito`)} end)`;
+  const effProv = sql`(case when ${aplica} then s.provincia else ${foldSql(sql, sql`c.provincia`)} end)`;
+  const effDep = sql`(case when ${aplica} then coalesce(${dep}, s.departamento) else ${dep} end)`;
+  return sql`(${effDist} = ${t.distrito} and (${effProv} is null or ${effProv} = ${t.provincia}) and (${effDep} is null or ${sameDepSql(sql, effDep, sql`${t.departamento}::text`)}))`;
+}
+
+/** 1 si el estado o la condición de SUNAT empiezan con alguno de los prefijos (ya plegados), 0 si no. */
+function alertRankSql(sql: Sql, alerta: SunatAlertMatch | undefined): Fragment {
+  if (!alerta || (!alerta.estados.length && !alerta.condiciones.length)) return sql`0`;
+  const est = alerta.estados.map(foldPlace).filter(Boolean);
+  const con = alerta.condiciones.map(foldPlace).filter(Boolean);
+  const any = (col: Fragment, list: string[]) => (list.length ? sql`exists (select 1 from unnest(${sql.array(list)}::text[]) as p(x) where ${foldSql(sql, col)} like p.x || '%')` : sql`false`);
+  return sql`(case when ${any(sql`s.estado`, est)} or ${any(sql`s.condicion`, con)} then 1 else 0 end)`;
+}
+
+/** Columnas de sunat_padron para las listas, con prefijo (no chocan con c.*). */
+function sunatCols(sql: Sql): Fragment {
+  return sql`s.ruc as s_ruc, s.encontrado as s_encontrado, s.estado as s_estado, s.condicion as s_condicion, s.ubigeo as s_ubigeo, s.departamento as s_departamento,
+    s.provincia as s_provincia, s.distrito as s_distrito, s.direccion as s_direccion, s.anexos as s_anexos, to_char(s.fecha, 'YYYY-MM-DD') as s_fecha`;
+}
+
+function toSunatBrief(r: Row): SunatBrief | null {
+  if (r.s_ruc === null || r.s_ruc === undefined) return null;
+  return {
+    encontrado: Boolean(r.s_encontrado),
+    estado: str(r.s_estado),
+    condicion: str(r.s_condicion),
+    ubigeo: str(r.s_ubigeo),
+    departamento: str(r.s_departamento),
+    provincia: str(r.s_provincia),
+    distrito: str(r.s_distrito),
+    direccion: str(r.s_direccion),
+    anexos: Number(r.s_anexos ?? 0),
+    fecha: String(r.s_fecha),
+  };
+}
+
+function toSunatRecord(r: Row): SunatRecord {
+  return {
+    ruc: String(r.ruc),
+    encontrado: Boolean(r.encontrado),
+    razonSocial: str(r.razon_social),
+    estado: str(r.estado),
+    condicion: str(r.condicion),
+    ubigeo: str(r.ubigeo),
+    departamento: str(r.departamento),
+    provincia: str(r.provincia),
+    distrito: str(r.distrito),
+    direccion: str(r.direccion),
+    piezas: jsonOf<SunatPiezasRecord>(r.piezas),
+    anexos: Number(r.anexos ?? 0),
+    fecha: String(r.fecha_text),
+    updatedAt: date(r.updated_at)!,
+  };
+}
+
+function toSunatLocal(r: Row): SunatLocal {
+  return {
+    id: Number(r.id),
+    ruc: String(r.ruc),
+    ubigeo: str(r.ubigeo),
+    departamento: str(r.departamento),
+    provincia: str(r.provincia),
+    distrito: str(r.distrito),
+    direccion: str(r.direccion),
+    piezas: jsonOf<SunatPiezasRecord>(r.piezas)!,
+    fecha: String(r.fecha_text),
+  };
+}
+
+/** Filas de sunat_padron / sunat_locales por sentencia. */
+const SUNAT_BATCH = 2000;
+
 
 export class PgPortalStore implements PortalStore {
   private constructor(private sql: Sql) {}
@@ -671,13 +769,16 @@ export class PgPortalStore implements PortalStore {
   }
 
   async bestCompanies(q: BestCompaniesQuery): Promise<{ rows: BestCompany[]; total: number }> {
-    const rows = await this.sql`
-      select c.*, count(*) over () as total_count from companies c
+    const sql = this.sql;
+    // corrida L: estado o condición de SUNAT en alerta, al final (sin ocultarse)
+    const rows = await sql`
+      select c.*, ${sunatCols(sql)}, count(*) over () as total_count from companies c
+      left join sunat_padron s on s.ruc = c.ruc
       where c.score is not null and (c.owner_user_id is null or (c.owner_user_id = ${q.userId}
         and not exists (select 1 from activities a where a.company_id = c.id and a.occurred_at >= ${q.activeSince})))
-      order by c.score desc, c.id asc
+      order by ${alertRankSql(sql, q.alerta)} asc, c.score desc, c.id asc
       limit ${Math.max(0, q.limit)} offset ${Math.max(0, q.offset ?? 0)}`;
-    return { rows: rows.map((r) => ({ ...toCompany(r), propia: num(r.owner_user_id) === q.userId })), total: rows.length ? Number(rows[0].total_count) : 0 };
+    return { rows: rows.map((r) => ({ ...toCompany(r), propia: num(r.owner_user_id) === q.userId, sunat: toSunatBrief(r) })), total: rows.length ? Number(rows[0].total_count) : 0 };
   }
 
   async addRankingValidations(rows: RankingValidationInput[]): Promise<RankingValidation[]> {
@@ -835,6 +936,10 @@ export class PgPortalStore implements PortalStore {
       conds.push(ruc ? sql`(${byName} or c.ruc like ${`${ruc}%`})` : byName);
     }
     if (opts.departamento?.length) conds.push(sql`c.departamento in ${sql(opts.departamento)}`);
+    if (opts.distrito) {
+      const t = lookupUbigeo(opts.distrito);
+      conds.push(t ? inDistritoSql(sql, { departamento: foldPlace(t.departamento), provincia: foldPlace(t.provincia), distrito: foldPlace(t.distrito) }) : sql`false`);
+    }
     if (opts.sector?.length) conds.push(sql`c.sector in ${sql(opts.sector)}`);
     if (opts.minUnits !== undefined) conds.push(sql`c.unidades >= ${opts.minUnits}`);
     if (opts.maxUnits !== undefined) conds.push(sql`c.unidades <= ${opts.maxUnits}`);
@@ -853,17 +958,17 @@ export class PgPortalStore implements PortalStore {
         select coalesce(cliente_final_ruc, ruc) as ruc, sum(cantidad)::float8 as cantidad, bool_or(is_demo) as demo from sales
         where cuenta_unidades and fecha >= ${since}::date group by 1
       )
-      select c.*, coalesce(p.cantidad, 0) as participacion, coalesce(p.demo, false) as participacion_demo, count(*) over () as total_count
-      from companies c left join p on p.ruc = c.ruc
+      select c.*, coalesce(p.cantidad, 0) as participacion, coalesce(p.demo, false) as participacion_demo, ${sunatCols(sql)}, count(*) over () as total_count
+      from companies c left join p on p.ruc = c.ruc left join sunat_padron s on s.ruc = c.ruc
       where ${where(sql, conds)}
       order by ${orderCol} desc, c.razon_social asc, c.id asc
       limit ${pageSize} offset ${offset}`;
     let total = rows.length ? Number(rows[0].total_count) : 0;
     if (!rows.length && offset > 0) {
-      const [{ n }] = await sql`select count(*)::int as n from companies c where ${where(sql, conds)}`;
+      const [{ n }] = await sql`select count(*)::int as n from companies c left join sunat_padron s on s.ruc = c.ruc where ${where(sql, conds)}`;
       total = Number(n);
     }
-    const out = rows.map((r): CompanyRow => ({ ...toCompany(r), participacion: Number(r.participacion), participacionDemo: Boolean(r.participacion_demo) }));
+    const out = rows.map((r): CompanyRow => ({ ...toCompany(r), participacion: Number(r.participacion), participacionDemo: Boolean(r.participacion_demo), sunat: toSunatBrief(r) }));
     if (opts.withMedidas && out.length) {
       // solo las empresas de la página, con el índice (company_id, medida_probable): no recorre la flota entera
       const med = await sql`
@@ -2072,9 +2177,11 @@ export class PgPortalStore implements PortalStore {
     const rows = await sql`
       select r.id, r.run_id, r.product_code, r.medida, r.company_id, r.ruc, r.razon_social, r.tipo, r.pct, r.llantas_medida, r.unidades_medida,
         r.podria_llevar, r.ya_compro, r.excluida, ${withDetail ? sql`r.detalle,` : sql``}
-        c.owner_user_id, c.es_cliente, c.sector, c.departamento, c.provincia, c.distrito, c.direccion, c.unidades, cc.estado as credito, a.last as last_activity_at
+        c.owner_user_id, c.es_cliente, c.sector, c.departamento, c.provincia, c.distrito, c.direccion, c.unidades, cc.estado as credito, a.last as last_activity_at,
+        ${sunatCols(sql)}
       from match_results r
       left join companies c on c.id = r.company_id
+      left join sunat_padron s on s.ruc = r.ruc
       left join company_credit cc on cc.company_id = r.company_id
       left join (select company_id, max(occurred_at) as last from activities group by company_id) a on a.company_id = r.company_id
       where ${where(sql, conds)} order by r.id`;
@@ -2103,6 +2210,7 @@ export class PgPortalStore implements PortalStore {
       direccion: str(r.direccion),
       unidades: Number(r.unidades ?? 0),
       lastActivityAt: date(r.last_activity_at),
+      sunat: toSunatBrief(r),
     }));
   }
 
@@ -2131,6 +2239,119 @@ export class PgPortalStore implements PortalStore {
   async markMatchVisitReported(id: number, activityId: number, at: Date = new Date()): Promise<MatchVisit | null> {
     const [r] = await this.sql`update match_visits set activity_id = ${activityId}, reported_at = ${at} where id = ${id} and activity_id is null returning *`;
     return r ? toMatchVisit(r) : null;
+  }
+
+  // ── Corrida L: SUNAT ──
+
+  async upsertSunat(rows: SunatRecordInput[]): Promise<{ inserted: number; updated: number }> {
+    const list = dedupeBy(
+      rows.map((r) => ({ ...r, ruc: digits(r.ruc) })).filter((r) => r.ruc),
+      (r) => r.ruc,
+    );
+    let inserted = 0;
+    let updated = 0;
+    for (let i = 0; i < list.length; i += SUNAT_BATCH) {
+      const b = list.slice(i, i + SUNAT_BATCH);
+      const sql = this.sql;
+      const out = await sql`
+        insert into sunat_padron (ruc, encontrado, razon_social, estado, condicion, ubigeo, departamento, provincia, distrito, direccion, piezas, anexos, fecha, updated_at)
+        select v.ruc, v.enc, v.razon, v.estado, v.cond, v.ubigeo, v.dep, v.prov, v.dist, v.dir, v.piezas::jsonb, v.anexos, v.fecha::date, now()
+        from unnest(${sql.array(b.map((x) => x.ruc))}::text[], ${sql.array(b.map((x) => x.encontrado))}::boolean[], ${sql.array(b.map((x) => x.razonSocial))}::text[],
+          ${sql.array(b.map((x) => x.estado))}::text[], ${sql.array(b.map((x) => x.condicion))}::text[], ${sql.array(b.map((x) => x.ubigeo))}::text[],
+          ${sql.array(b.map((x) => x.departamento))}::text[], ${sql.array(b.map((x) => x.provincia))}::text[], ${sql.array(b.map((x) => x.distrito))}::text[],
+          ${sql.array(b.map((x) => x.direccion))}::text[], ${sql.array(b.map((x) => (x.piezas ? JSON.stringify(x.piezas) : null)))}::text[],
+          ${sql.array(b.map((x) => x.anexos))}::int[], ${sql.array(b.map((x) => x.fecha))}::text[])
+          as v(ruc, enc, razon, estado, cond, ubigeo, dep, prov, dist, dir, piezas, anexos, fecha)
+        on conflict (ruc) do update set encontrado = excluded.encontrado, razon_social = excluded.razon_social, estado = excluded.estado,
+          condicion = excluded.condicion, ubigeo = excluded.ubigeo, departamento = excluded.departamento, provincia = excluded.provincia,
+          distrito = excluded.distrito, direccion = excluded.direccion, piezas = excluded.piezas, anexos = excluded.anexos, fecha = excluded.fecha,
+          updated_at = now()
+        returning (xmax = 0) as inserted`;
+      for (const r of out) if (r.inserted) inserted++;
+      updated += out.length - out.filter((r) => r.inserted).length;
+    }
+    return { inserted, updated };
+  }
+
+  async replaceSunatLocales(rucs: string[], rows: SunatLocalInput[]): Promise<{ removed: number; inserted: number }> {
+    const keys = [...new Set(rucs.map(digits).filter(Boolean))];
+    return this.sql.begin(async (tx) => {
+      let removed = 0;
+      for (let i = 0; i < keys.length; i += SUNAT_BATCH) {
+        const r = await tx`delete from sunat_locales where ruc in ${tx(keys.slice(i, i + SUNAT_BATCH))}`;
+        removed += r.count;
+      }
+      for (let i = 0; i < rows.length; i += SUNAT_BATCH) {
+        const b = rows.slice(i, i + SUNAT_BATCH);
+        await tx`
+          insert into sunat_locales (ruc, ubigeo, departamento, provincia, distrito, direccion, piezas, fecha)
+          select v.ruc, v.ubigeo, v.dep, v.prov, v.dist, v.dir, v.piezas::jsonb, v.fecha::date
+          from unnest(${tx.array(b.map((x) => digits(x.ruc)))}::text[], ${tx.array(b.map((x) => x.ubigeo))}::text[], ${tx.array(b.map((x) => x.departamento))}::text[],
+            ${tx.array(b.map((x) => x.provincia))}::text[], ${tx.array(b.map((x) => x.distrito))}::text[], ${tx.array(b.map((x) => x.direccion))}::text[],
+            ${tx.array(b.map((x) => JSON.stringify(x.piezas)))}::text[], ${tx.array(b.map((x) => x.fecha))}::text[])
+            as v(ruc, ubigeo, dep, prov, dist, dir, piezas, fecha)`;
+      }
+      return { removed, inserted: rows.length };
+    }) as Promise<{ removed: number; inserted: number }>;
+  }
+
+  async getSunat(ruc: string): Promise<SunatRecord | null> {
+    const [r] = await this.sql`select *, to_char(fecha, 'YYYY-MM-DD') as fecha_text from sunat_padron where ruc = ${digits(ruc)}`;
+    return r ? toSunatRecord(r) : null;
+  }
+
+  async getSunatByRucs(rucs: string[]): Promise<SunatRecord[]> {
+    const list = [...new Set(rucs.map(digits).filter(Boolean))];
+    const out: SunatRecord[] = [];
+    for (let i = 0; i < list.length; i += BATCH) {
+      const rows = await this.sql`select *, to_char(fecha, 'YYYY-MM-DD') as fecha_text from sunat_padron where ruc in ${this.sql(list.slice(i, i + BATCH))}`;
+      for (const r of rows) out.push(toSunatRecord(r));
+    }
+    return out;
+  }
+
+  async listSunatLocales(ruc: string): Promise<SunatLocal[]> {
+    // mismo orden que el store JSON (comparación por código de carácter, sin colación)
+    const rows = await this.sql`
+      select *, to_char(fecha, 'YYYY-MM-DD') as fecha_text from sunat_locales where ruc = ${digits(ruc)}
+      order by ubigeo collate "C" nulls last, direccion collate "C" nulls last, id`;
+    return rows.map(toSunatLocal);
+  }
+
+  async listPortalRucs(): Promise<PortalRuc[]> {
+    const companies = await this.sql`select ruc, razon_social, origen from companies`;
+    const out = new Map<string, PortalRuc>();
+    for (const c of companies) out.set(String(c.ruc), { ruc: String(c.ruc), razonSocial: String(c.razon_social ?? ""), fuente: c.origen === "manual" ? "manual" : "padron" });
+    // ventas reales (sin demo): el RUC de la línea y su cliente final; la razón social de la venta más reciente
+    const sales = await this.sql`
+      select distinct on (x.ruc) x.ruc, x.razon from (
+        select ruc, razon_social as razon, fecha, id, 0 as k from sales where not is_demo
+        union all
+        select cliente_final_ruc, null, fecha, id, 1 from sales where not is_demo and cliente_final_ruc is not null
+      ) x where x.ruc ~ '^[0-9]{11}$'
+      order by x.ruc, x.fecha desc, x.id desc, x.k`;
+    for (const s of sales) {
+      const ruc = String(s.ruc);
+      if (!out.has(ruc)) out.set(ruc, { ruc, razonSocial: String(s.razon ?? ""), fuente: "ventas" });
+    }
+    return [...out.values()].sort((a, b) => (a.ruc < b.ruc ? -1 : a.ruc > b.ruc ? 1 : 0));
+  }
+
+  async listDistritos(q: { departamento?: string } = {}): Promise<DistritoCount[]> {
+    const sql = this.sql;
+    // agrupado en la base (cientos de filas, no una por empresa); la regla de la ubicación efectiva queda en distritoCounts
+    const rows = await sql`
+      select c.departamento, c.provincia, c.distrito, s.ruc is not null as s_has, s.ubigeo as s_ubigeo, s.departamento as s_departamento,
+        s.provincia as s_provincia, s.distrito as s_distrito, count(*)::int as n
+      from companies c left join sunat_padron s on s.ruc = c.ruc
+      where c.distrito is not null or s.distrito is not null
+      group by 1, 2, 3, 4, 5, 6, 7, 8`;
+    const brief = (r: Row): SunatBrief | null =>
+      r.s_has ? { encontrado: true, estado: null, condicion: null, ubigeo: str(r.s_ubigeo), departamento: str(r.s_departamento), provincia: str(r.s_provincia), distrito: str(r.s_distrito), direccion: null, anexos: 0, fecha: "" } : null;
+    return distritoCounts(
+      rows.map((r) => ({ company: { departamento: str(r.departamento), provincia: str(r.provincia), distrito: str(r.distrito) }, sunat: brief(r), n: Number(r.n) })),
+      q.departamento,
+    );
   }
 }
 

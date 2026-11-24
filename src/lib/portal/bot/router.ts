@@ -119,7 +119,7 @@ export interface ClassifyInput {
 
 // ── comandos explícitos del portal ──
 
-export type PortalCommandName = "portal" | "cerrar_portal" | "ayuda_portal" | "hoy" | "empresa" | "asignarme" | "contacto" | "cita" | "oc" | "avance" | "prepropuesta" | "aprende" | "enlazar" | "reenviada" | "estado" | "mejores" | "anular" | "descuentos" | "ultima_venta" | "cliente_final" | "nueva_empresa" | "match" | "prioridad" | "quitar_prioridad" | "avance_match";
+export type PortalCommandName = "portal" | "cerrar_portal" | "ayuda_portal" | "hoy" | "empresa" | "asignarme" | "contacto" | "cita" | "oc" | "avance" | "prepropuesta" | "aprende" | "enlazar" | "reenviada" | "estado" | "mejores" | "anular" | "descuentos" | "ultima_venta" | "cliente_final" | "nueva_empresa" | "match" | "prioridad" | "quitar_prioridad" | "avance_match" | "direccion";
 
 interface CommandSpec {
   name: PortalCommandName;
@@ -158,6 +158,14 @@ const PRIORIDAD_RE = /^(?:(?:marcar|marca|marcale|poner|pon|ponle|dar|dale)\s+(?
 /** `quitar prioridad P0428`; dictado "quítale la prioridad a la Flama 77", "saca de prioridad la P0428". */
 const QUITAR_PRIORIDAD_RE = /^(?:quitar|quita|quitale|quitarle|sacar|saca|sacale|desmarcar|desmarca)\s+(?:la\s+|de\s+)?prioridad\s+\S.*$/;
 
+/**
+ * Corrida L: `direccion ZBUSS`, "dirección de ZBUSS", "¿dónde queda ZBUSS?", "cómo llego a ZBUSS". No se roba una respuesta
+ * del pedido ni una dirección escrita: "dirección de entrega …", "dirección fiscal …" y "dirección Av. …" no son el
+ * comando ("Dirección: …" tampoco: es un campo del cotizador, FIELD_TAIL).
+ */
+const DIRECCION_RE =
+  /^(?:(?:la\s+)?direccion(?:es)?(?:\s+(?:de|del))?(?:\s+(?:la\s+)?empresa)?\s+(?!(?:fiscal|entrega|de\s+entrega|envio|de\s+envio|despacho|de\s+despacho|operacion|de\s+operacion|av|avenida|jr|jiron|calle|ca|cal|psje|pasaje|pj|mz|manzana|carretera|car|km|prol|prolongacion|urb|lt|lote)\b)\S.*|(?:donde|adonde)\s+(?:queda|quedan|se\s+ubica|esta\s+ubicad[ao])\s+\S.*|como\s+llego\s+(?:a|al|donde)\s+\S.*|ubicacion\s+de(?:l)?\s+\S.*)$/;
+
 const COMMANDS: CommandSpec[] = [
   { name: "portal", re: /^portal$/ },
   // hotfix login 2: cierra las sesiones del portal en todos los teléfonos y anula los enlaces (teléfono perdido, enlace
@@ -191,6 +199,8 @@ const COMMANDS: CommandSpec[] = [
   { name: "match", re: MATCH_RE, allowsSize: true, noQty: true },
   { name: "quitar_prioridad", re: QUITAR_PRIORIDAD_RE, allowsSize: true, noQty: true },
   { name: "prioridad", re: PRIORIDAD_RE, allowsSize: true, noQty: true },
+  // corrida L: dirección fiscal (SUNAT) / de operación y locales anexos
+  { name: "direccion", re: DIRECCION_RE },
 ];
 
 /** La palabra del comando en el texto original ("Empresa", "asignarme", "pre-propuesta"...). */
@@ -224,6 +234,8 @@ const RAW_HEAD: Record<PortalCommandName, RegExp> = {
   prioridad: /^[¿¡\s]*(?:(?:marcar|marca|m[aá]rcale|poner|pon|p[oó]nle|dar|d[aá]le)\s+(?:como\s+|en\s+)?(?:la\s+)?)?prioridad(?![\p{L}\d])/iu,
   quitar_prioridad: /^[¿¡\s]*(?:quitar|quita|qu[ií]tale|quitarle|sacar|saca|s[aá]cale|desmarcar|desmarca)\s+(?:la\s+|de\s+)?prioridad(?![\p{L}\d])/iu,
   avance_match: /^[\s\S]*$/,
+  direccion:
+    /^[¿¡\s]*(?:(?:la\s+)?direcci[oó]n(?:es)?(?:\s+(?:de|del))?(?:\s+(?:la\s+)?empresa)?|(?:d[oó]nde|ad[oó]nde)\s+(?:queda|quedan|se\s+ubica|est[aá]\s+ubicad[ao])|c[oó]mo\s+llego\s+(?:a|al|donde)|ubicaci[oó]n\s+del?)(?![\p{L}\d])/iu,
 };
 
 /** Lo que sigue a la palabra del comando cuando la línea es un campo del cotizador: ": …" o " de: …" (a/al/de/del). */

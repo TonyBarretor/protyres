@@ -203,5 +203,15 @@
       { "codigo": "P1793", "aplicacion": "Súper mixta all position" },
       { "codigo": "P0336", "aplicacion": "Súper mixta all position" }
     ]
+  },
+  "sunat": {
+    "_comment": "Corrida L — padrón reducido del RUC de SUNAT (npm run portal:import-sunat). Las listas comparan por el INICIO del texto, sin tildes ni mayúsculas. Valores reales de los RUC del portal (archivo del 23/11/2026): estado ACTIVO, BAJA DE OFICIO, SUSPENSION TEMPORAL, BAJA DEFINITIVA, BAJA PROV. POR OFICI, BAJA PROVISIONAL; condición HABIDO, NO HABIDO, NO HALLADO, PENDIENTE. Alerta (rojo, al final de Match Venta y de mejores, sin ocultarse): toda BAJA, SUSPENSION TEMPORAL, INHABILITADO, ANULACION y NO HABIDO. Aviso (ámbar, sin cambiar el orden): NO HALLADO.",
+    "dir": "data/sunat",
+    "archivo": "padron_reducido_ruc.zip",
+    "anexos": "padron_reducido_local_anexo.zip",
+    "estadosAlerta": ["BAJA", "SUSPENSION TEMPORAL", "INHABILITADO", "ANULACION", "ANUL."],
+    "condicionesAlerta": ["NO HABIDO"],
+    "condicionesAviso": ["NO HALLADO"],
+    "anexosEnBot": 5
   }
 }

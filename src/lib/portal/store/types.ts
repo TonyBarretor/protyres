@@ -159,6 +159,11 @@ export interface CompanySearch {
    */
   q?: string;
   departamento?: string[];
+  /**
+   * Corrida L: distrito (código INEI de 6 dígitos) por la ubicación efectiva (SUNAT si su domicilio está en el
+   * departamento de la empresa, si no la del MTC). Con `departamento` va dentro de él.
+   */
+  distrito?: string;
   sector?: Sector[];
   minUnits?: number;
   maxUnits?: number;
@@ -193,6 +198,8 @@ export interface CompanyRow extends Company {
   participacionDemo: boolean;
   /** Con `withMedidas`: hasta 3 medidas probables de su flota, de más a menos unidades. */
   medidas?: MedidaCount[];
+  /** Corrida L: lo de SUNAT (null si su RUC no se importó). Ubicación efectiva: ubicacionEfectiva() de sunat/ubicacion.ts. */
+  sunat?: SunatBrief | null;
 }
 
 export interface CompanySearchResult {
@@ -1361,6 +1368,8 @@ export type ScoreRunInput = Omit<ScoreRun, "id" | "runAt"> & { runAt?: Date };
 export interface BestCompany extends Company {
   /** true = ya es del usuario (sin actividad reciente); false = sin dueño. */
   propia: boolean;
+  /** Corrida L: lo de SUNAT (null si su RUC no se importó). */
+  sunat?: SunatBrief | null;
 }
 
 export interface BestCompaniesQuery {
@@ -1369,6 +1378,17 @@ export interface BestCompaniesQuery {
   activeSince: Date;
   limit: number;
   offset?: number;
+  /**
+   * Corrida L: estados y condiciones de SUNAT en alerta (config/portal.json `sunat`, comparación por inicio del texto):
+   * esas empresas van al final (sin ocultarse). Sin esto, el orden de siempre.
+   */
+  alerta?: SunatAlertMatch;
+}
+
+/** Prefijos de estado / condición de SUNAT que son alerta ("BAJA" vale para "BAJA DE OFICIO", "BAJA DEFINITIVA"...). */
+export interface SunatAlertMatch {
+  estados: string[];
+  condiciones: string[];
 }
 
 export type ValidationAnswer = Nivel | "desconocida";
@@ -1559,6 +1579,11 @@ export interface MatchCompanyLive {
   direccion: string | null;
   unidades: number;
   lastActivityAt: Date | null;
+  /**
+   * Corrida L: lo de SUNAT del RUC de la fila (también las de "solo ventas", sin empresa); null si no se importó.
+   * departamento / provincia / distrito de arriba son los de la empresa (MTC); la ubicación efectiva la arma read.ts.
+   */
+  sunat?: SunatBrief | null;
 }
 
 export interface MatchResultQuery {
@@ -1641,7 +1666,116 @@ export interface MatchRepo {
   markMatchVisitReported(id: number, activityId: number, at?: Date): Promise<MatchVisit | null>;
 }
 
-export interface PortalStore extends ScoringRepo, CompanyRepo, FleetRepo, SalesRepo, UserRepo, ContactRepo, OpportunityRepo, ActivityRepo, AppointmentRepo, PortalConversationRepo, VocabularyRepo, VoiceTranscriptRepo, PurchaseOrderRepo, CreditRepo, SurveyRepo, RateLimitRepo, MatchRepo {
+// ── Corrida L: domicilio fiscal y locales anexos del padrón reducido del RUC de SUNAT ──
+
+/**
+ * Piezas de la dirección tal como vienen del padrón (sin los "-"). OJO: en las filas reales la columna "CÓDIGO DE ZONA"
+ * trae el tipo de zona ("URB.") y "TIPO DE ZONA" el nombre: aquí van por contenido. `dpto` = columna DEPARTAMENTO
+ * (departamento u oficina: "Dpto. 902"), no la región. Ver src/lib/portal/sunat/address.ts.
+ */
+export interface SunatPiezasRecord {
+  tipoVia: string | null;
+  nombreVia: string | null;
+  tipoZona: string | null;
+  nombreZona: string | null;
+  numero: string | null;
+  interior: string | null;
+  lote: string | null;
+  dpto: string | null;
+  manzana: string | null;
+  kilometro: string | null;
+}
+
+/**
+ * Lo que SUNAT dice de un RUC del portal (tabla sunat_padron, una fila por RUC). Lo escribe solo `npm run
+ * portal:import-sunat`; nunca toca companies (la dirección de operación escrita por el vendedor, companies.direccion,
+ * queda como está).
+ */
+export interface SunatRecordInput {
+  ruc: string;
+  /** false: el RUC no está en el padrón de esa fecha (el resto va en null). */
+  encontrado: boolean;
+  /** Razón social de SUNAT solo si difiere mucho de la del portal (no la reemplaza); null si es la misma. */
+  razonSocial: string | null;
+  /** "ACTIVO", "BAJA DE OFICIO", "SUSPENSION TEMPORAL"... tal cual (SUNAT corta a 20 caracteres). */
+  estado: string | null;
+  /** "HABIDO", "NO HABIDO", "NO HALLADO SE MUDO D"... tal cual. */
+  condicion: string | null;
+  /** 6 dígitos INEI, o null. */
+  ubigeo: string | null;
+  /** Del ubigeo, como el padrón del MTC (mayúsculas sin tildes: "LIMA", "SANTIAGO DE SURCO"); null si el código no está en la tabla. */
+  departamento: string | null;
+  provincia: string | null;
+  distrito: string | null;
+  /** Dirección armada en una línea ("Jr. Monterrosa 271, Dpto. 902, Santiago de Surco, Lima"); null sin dirección. */
+  direccion: string | null;
+  piezas: SunatPiezasRecord | null;
+  /** Locales anexos en sunat_locales. */
+  anexos: number;
+  /** Fecha del archivo de SUNAT (la de la entrada del zip): "según SUNAT al …". */
+  fecha: IsoDate;
+}
+
+export interface SunatRecord extends SunatRecordInput {
+  updatedAt: Date;
+}
+
+/** Lo de SUNAT que traen las listas (Prospectos, Match Venta, mejores): sin piezas ni razón social. */
+export type SunatBrief = Pick<SunatRecord, "encontrado" | "estado" | "condicion" | "ubigeo" | "departamento" | "provincia" | "distrito" | "direccion" | "anexos" | "fecha">;
+
+/** Local anexo de un RUC (tabla sunat_locales). */
+export interface SunatLocalInput {
+  ruc: string;
+  ubigeo: string | null;
+  departamento: string | null;
+  provincia: string | null;
+  distrito: string | null;
+  direccion: string | null;
+  piezas: SunatPiezasRecord;
+  fecha: IsoDate;
+}
+
+export interface SunatLocal extends SunatLocalInput {
+  id: number;
+}
+
+/** RUC del portal: empresas (padrón MTC y manuales) y clientes de ventas (RUC de la línea o su cliente final). */
+export interface PortalRuc {
+  ruc: string;
+  /** Razón social del portal (la de la empresa o la de la venta más reciente). */
+  razonSocial: string;
+  fuente: "padron" | "manual" | "ventas";
+}
+
+/**
+ * Distrito con empresas (opciones del filtro "Distrito" de Prospectos y Match Venta). Por la ubicación efectiva:
+ * SUNAT si su domicilio está en el departamento de la empresa (Lima y Callao cuentan como uno), si no la del MTC.
+ */
+export interface DistritoCount {
+  /** Código INEI si se encuentra en la tabla (null: nombre del MTC que no coincide con la tabla). */
+  ubigeo: string | null;
+  departamento: string;
+  provincia: string | null;
+  distrito: string;
+  empresas: number;
+}
+
+export interface SunatRepo {
+  /** Inserta o reemplaza por RUC (idempotente: reimportar con un archivo más nuevo actualiza sin duplicar). */
+  upsertSunat(rows: SunatRecordInput[]): Promise<{ inserted: number; updated: number }>;
+  /** Deja como locales anexos de esos RUC exactamente `rows` (borra los anteriores de esos RUC). */
+  replaceSunatLocales(rucs: string[], rows: SunatLocalInput[]): Promise<{ removed: number; inserted: number }>;
+  getSunat(ruc: string): Promise<SunatRecord | null>;
+  getSunatByRucs(rucs: string[]): Promise<SunatRecord[]>;
+  /** Locales anexos del RUC, por ubigeo y dirección. */
+  listSunatLocales(ruc: string): Promise<SunatLocal[]>;
+  /** Todos los RUC del portal (sin repetir; una empresa gana sobre la venta). Orden por RUC. */
+  listPortalRucs(): Promise<PortalRuc[]>;
+  /** Distritos con empresas del portal (ubicación efectiva), de más a menos empresas; con `departamento`, solo los de ese. */
+  listDistritos(q?: { departamento?: string }): Promise<DistritoCount[]>;
+}
+
+export interface PortalStore extends ScoringRepo, CompanyRepo, FleetRepo, SalesRepo, UserRepo, ContactRepo, OpportunityRepo, ActivityRepo, AppointmentRepo, PortalConversationRepo, VocabularyRepo, VoiceTranscriptRepo, PurchaseOrderRepo, CreditRepo, SurveyRepo, RateLimitRepo, MatchRepo, SunatRepo {
   /** Escribe lo pendiente (JSON); no-op en Postgres. Los CLI la llaman antes de salir. */
   flush(): Promise<void>;
   close(): Promise<void>;

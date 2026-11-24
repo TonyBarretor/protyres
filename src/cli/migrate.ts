@@ -661,6 +661,37 @@ export const STATEMENTS = [
     created_at timestamptz not null default now()
   )`,
   `create index if not exists match_visits_company_idx on match_visits (company_id)`,
+  // Corrida L: padrón reducido del RUC de SUNAT (`npm run portal:import-sunat`): una fila por RUC del portal (empresas y
+  // clientes de ventas) con estado, condición, ubigeo, piezas y dirección armada; locales anexos aparte. No toca companies:
+  // la dirección de operación escrita a mano (companies.direccion) nunca se pisa.
+  `create table if not exists sunat_padron (
+    ruc text primary key,
+    encontrado boolean not null default true,
+    razon_social text,
+    estado text,
+    condicion text,
+    ubigeo text,
+    departamento text,
+    provincia text,
+    distrito text,
+    direccion text,
+    piezas jsonb,
+    anexos integer not null default 0,
+    fecha date not null,
+    updated_at timestamptz not null default now()
+  )`,
+  `create table if not exists sunat_locales (
+    id serial primary key,
+    ruc text not null,
+    ubigeo text,
+    departamento text,
+    provincia text,
+    distrito text,
+    direccion text,
+    piezas jsonb not null,
+    fecha date not null
+  )`,
+  `create index if not exists sunat_locales_ruc_idx on sunat_locales (ruc)`,
 ];
 
 /** Desde aquí empiezan las sentencias del portal: antes de ejecutarlas se pasa la guardia (migrate-guard.ts). */

@@ -13,6 +13,11 @@ cancelar
 portal
 # 2. Buscar la empresa (ficha corta) con el botón *Asignarme*
 empresa zbuss
+# 2b. Corrida L: dirección (domicilio fiscal de SUNAT con su fecha y aviso, locales anexos y Cómo llegar; sin el padrón de
+#     SUNAT importado lo dice y ofrece la búsqueda aproximada)
+direccion zbuss
+@espera-texto Cómo llegar
+@no-texto Reporte de
 # 3. Tomarla con el botón (equivale a *asignarme 20602221505*): dueño, oportunidad en Prospecto y ficha completa
 @btn Asignarme || asignarme zbuss
 # 4. Primer contacto

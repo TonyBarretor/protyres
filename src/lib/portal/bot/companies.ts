@@ -2,9 +2,11 @@
  * Empresas en el bot: búsqueda (RUC exacto primero, luego razón social sin tildes ni S.A.C.), desambiguación con lista
  * numerada (paso pendiente choose_company) y la ficha que se responde por WhatsApp.
  */
+import { loadPortalConfig } from "../config";
+import { fichaDireccionLines } from "./commands/direccion";
 import { portalBaseUrl } from "../auth/tokens";
 import { stageLabel } from "../stages";
-import { defaultSince, foldText } from "../store/shared";
+import { defaultSince, foldText, sunatBrief } from "../store/shared";
 import type { Company, Confianza, FleetGroup, PortalStore } from "../store/types";
 import { groupByBrand } from "../ui/fleet";
 import { fold } from "../../tyre/brands";
@@ -382,6 +384,8 @@ export async function formatFicha(store: PortalStore, company: Company, opts: Fi
   const fuente = company.origen === "manual" ? "_(cargado a mano: no viene del MTC)_" : "_(dato MTC)_";
   lines.push(`Unidades: *${fmtInt(company.unidades)}* · Llantas en piso: *${fmtInt(company.llantasPiso)}* ${fuente}`);
   lines.push(`Dueño: ${owner ? owner.nombre : "sin asignar"}`);
+  // corrida L: dirección (la de operación manda; si no, el domicilio fiscal de SUNAT) y el aviso de SUNAT
+  lines.push(...fichaDireccionLines(company, sunatBrief(await store.getSunat(company.ruc)), loadPortalConfig().sunat));
   if (opts.full) {
     const groups = await store.fleetByBrand(company.id);
     const brands = groupByBrand(groups).slice(0, 4);
