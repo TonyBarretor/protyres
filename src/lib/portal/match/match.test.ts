@@ -121,6 +121,35 @@ describe("stock propio para Match Venta", () => {
   });
 });
 
+describe("recálculo sin trabajo de más (corrida K, guion contra Postgres)", () => {
+  it("lee solo el stock propio (stockRows) si la fuente lo tiene, no la tabla de precios entera", async () => {
+    const w = await world();
+    await w.store.seedMatchProducts([{ code: "T0433", aplicacion: null, prioridad: true }], NOW);
+    const src = { ...source(STOCK), allRows: async () => { throw new Error("no debía leer la tabla entera"); }, stockRows: async () => STOCK.filter((r) => r.kind === "stock") };
+    const r = await recalcMatch({ store: w.store, prices: src, cfg: cfg(), leasingRucs: [BANK], now: NOW }, "prueba");
+    expect(r.productos).toBe(1);
+  });
+
+  it("sin productos prioritarios activos no lee empresas ni ventas, y deja el resultado vacío", async () => {
+    const w = await world();
+    await load(w);
+    expect((await w.store.listMatchResults({})).length).toBeGreaterThan(0);
+    for (const p of await w.store.listMatchProducts()) await w.store.setMatchPriority(p.code, false, { userId: w.frank.id, accion: "quitar", at: NOW });
+    const calls: string[] = [];
+    const spy = new Proxy(w.store, {
+      get(t, k, r) {
+        const v = Reflect.get(t, k, r);
+        if (k === "matchInputs" || k === "querySales") return (...a: unknown[]) => (calls.push(String(k)), (v as (...x: unknown[]) => unknown).apply(t, a));
+        return typeof v === "function" ? v.bind(t) : v;
+      },
+    });
+    const r = await recalcMatch({ store: spy, prices: source(STOCK), cfg: cfg({ productos: [] }), leasingRucs: [BANK], now: NOW }, "sin prioridades");
+    expect(r).toMatchObject({ productos: 0, filas: 0 });
+    expect(calls).toEqual([]);
+    expect(await w.store.listMatchResults({})).toEqual([]);
+  });
+});
+
 describe("prioridad", () => {
   it("sobrevive a una carga nueva de stock (va por código) y se apaga sola al llegar a 0, con aviso al vendedor", async () => {
     const w = await world();

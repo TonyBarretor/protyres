@@ -146,6 +146,11 @@ export class JsonStore implements PriceStore {
     return this.run(() => Object.values(this.data.prices));
   }
 
+  /** Solo el stock propio (kind "stock"), como PgStore.stockRows. */
+  stockRows(): Promise<PriceRow[]> {
+    return this.run(() => Object.values(this.data.prices).filter((r) => r.kind === "stock"));
+  }
+
   findBySize(canonicals: string[]): Promise<PriceRow[]> {
     const set = new Set(canonicals);
     return this.run(() => Object.values(this.data.prices).filter((r) => set.has(r.size)));

@@ -40,6 +40,8 @@ export interface MatchStockProduct {
 export interface OwnStockSource {
   allRows(): Promise<PriceRow[]>;
   listStockDeductions(): Promise<StockDeduction[]>;
+  /** Solo las filas de stock propio (kind "stock"): si la fuente lo tiene, se usa en vez de allRows (PgStore: ~100 filas en vez de 9 mil). */
+  stockRows?(): Promise<PriceRow[]>;
 }
 
 /** false para aros, cámaras, servicios, etc. (config match.noNeumatico) y filas sin medida. */

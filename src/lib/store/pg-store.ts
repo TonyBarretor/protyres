@@ -93,6 +93,7 @@ export class PgStore implements PriceStore {
   }
 
   async upsertRows(rows: PriceRow[], opts?: { replace?: ReplaceScope }): Promise<{ inserted: number; removed: number }> {
+    this.priceCache = null;
     let removed = 0;
     await this.db.transaction(async (tx) => {
       if (opts?.replace) {
@@ -177,8 +178,28 @@ export class PgStore implements PriceStore {
     return { inserted: rows.length, removed };
   }
 
+  /**
+   * Corrida K: la tabla entera pesa ~5,7 MB (9.166 filas) y traerla tardaba 10–13 s por el pooler remoto en cada
+   * cotización, `oc`, `stock`, catálogo de voz, puntajes y Match. Se guarda en memoria y, antes de usarla, una consulta
+   * mínima (filas y última modificación con microsegundos) comprueba que nadie la cambió, tampoco otra instancia. Toda
+   * escritura en `prices` pasa por upsertRows (pone updated_at) o deleteProvider (cambia las filas); las dos además la
+   * sueltan aquí. Se devuelven copias: quien modifique lo recibido no contamina la siguiente lectura.
+   */
+  private priceCache: { key: string; rows: PriceRow[] } | null = null;
+
   async allRows(): Promise<PriceRow[]> {
-    return (await this.db.select().from(schema.prices)).map(toRow);
+    const [f] = await this.sqlClient<{ n: number; m: string | null }[]>`select count(*)::int as n, max(updated_at)::text as m from prices`;
+    const key = `${f.n}|${f.m ?? ""}`;
+    if (this.priceCache?.key !== key) {
+      // si la tabla cambia entre las dos consultas, la clave queda vieja y la próxima lectura vuelve a traerla
+      this.priceCache = { key, rows: (await this.db.select().from(schema.prices)).map(toRow) };
+    }
+    return structuredClone(this.priceCache.rows);
+  }
+
+  /** Solo el stock propio (kind "stock"): Match Venta no necesita la tabla entera. */
+  async stockRows(): Promise<PriceRow[]> {
+    return (await this.db.select().from(schema.prices).where(eq(schema.prices.kind, "stock"))).map(toRow);
   }
 
   async findBySize(canonicals: string[]): Promise<PriceRow[]> {
@@ -267,6 +288,7 @@ export class PgStore implements PriceStore {
   async deleteProvider(name: string): Promise<{ rows: number; syncMarks: number }> {
     const key = foldKey(name);
     if (!key) return { rows: 0, syncMarks: 0 };
+    this.priceCache = null;
     const del = await this.db.delete(schema.prices).where(sql`${FOLD(schema.prices.provider)} = ${key}`).returning({ id: schema.prices.id });
     let syncMarks = 0;
     try {

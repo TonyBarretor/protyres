@@ -85,7 +85,8 @@ export function saleLines(sales: Sale[], leasingRucs: string[]): MatchSaleLine[]
 export async function loadMatchStock(deps: MatchDeps): Promise<{ stock: MatchStockProduct[]; live: boolean }> {
   const cfg = deps.cfg ?? loadPortalConfig().match;
   if (deps.prices) {
-    const [rows, deductions] = [await deps.prices.allRows(), await deps.prices.listStockDeductions()];
+    const rows = deps.prices.stockRows ? await deps.prices.stockRows() : await deps.prices.allRows();
+    const deductions = await deps.prices.listStockDeductions();
     return { stock: ownStockProducts(rows, deductions, cfg), live: true };
   }
   const run = await deps.store.latestMatchRun();
@@ -106,8 +107,9 @@ export async function recalcMatch(deps: MatchDeps, motivo: string): Promise<Reca
   const products = await store.listMatchProducts();
   const priority = new Map(products.filter((p) => p.prioridad).map((p) => [p.code, p]));
   const active: MatchProductInput[] = stock.filter((s) => priority.has(s.code) && s.available > 0).map((s) => ({ ...s, aplicacion: priority.get(s.code)!.aplicacion }));
-  const companies = await store.matchInputs();
-  const sales = saleLines(await store.querySales({ tipoLinea: ["neumatico"] }), leasingRucs);
+  // sin productos prioritarios activos no hay nada que cruzar: no se leen empresas ni ventas (3–5 s contra la base)
+  const companies = active.length ? await store.matchInputs() : [];
+  const sales = active.length ? saleLines(await store.querySales({ tipoLinea: ["neumatico"] }), leasingRucs) : [];
   const t1 = Date.now();
 
   const computed = computeMatches({ companies, products: active, sales, cfg, leasingRucs, now });

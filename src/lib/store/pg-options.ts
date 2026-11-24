@@ -21,8 +21,19 @@ export interface ServerlessPgOptionsInput {
   max: number;
 }
 
+/** PG_CONTAR=1 (diagnóstico: simulador con SIM_TIEMPOS; pruebas): consultas enviadas por los stores de este proceso. */
+export const pgQueryCount = { n: 0, last: [] as string[] };
+
 export function serverlessPgOptions({ max }: ServerlessPgOptionsInput): postgres.Options<Record<string, postgres.PostgresType>> {
   const opts = {
+    ...(process.env.PG_CONTAR
+      ? {
+          debug: (_c: number, query: string) => {
+            pgQueryCount.n++;
+            pgQueryCount.last = [...pgQueryCount.last.slice(-19), query];
+          },
+        }
+      : {}),
     prepare: false,
     max,
     // no está en los tipos de la lib, pero sí en sus opciones (src/index.js: max_pipeline, por defecto 100)

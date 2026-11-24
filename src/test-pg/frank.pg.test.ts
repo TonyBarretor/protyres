@@ -33,8 +33,10 @@ describe.runIf(hasData)("guion de Frank contra Postgres", () => {
     const r = spawnSync("npx", ["tsx", "--tsconfig", "tsconfig.cli.json", "src/cli/portal-simulate.ts", "--as", "frank", "--pg-test", "--out", out, "--script", "scripts/guion-frank.txt"], {
       cwd: process.cwd(),
       encoding: "utf8",
-      // el guion creció con Match Venta (corrida K): 440–536 s contra el pooler remoto; margen amplio
-      timeout: 1_140_000,
+      // corrida K: el guion tardaba 440–536 s porque cada cotización/oc/stock traía la tabla de precios entera (5,7 MB);
+      // con la caché validada de PgStore.allRows y Match leyendo solo el stock propio, ~270 s. El límite queda en 540 s
+      // a propósito: si vuelve a acercarse, hay que buscar qué se volvió lento, no subirlo.
+      timeout: 540_000,
       // la base de pruebas también como DATABASE_URL: aunque algo leyera esa variable, no llega a la real
       env: { ...process.env, PGTEST_DB_URL: testDbUrl(), DATABASE_URL: testDbUrl(), LLM_DISABLED: "1", PHOTOS_DISABLED: "1" },
     });
@@ -45,5 +47,5 @@ describe.runIf(hasData)("guion de Frank contra Postgres", () => {
     expect(resumen).toMatch(/Verificaciones fallidas: 0/);
     expect(resumen).toMatch(/Errores: 0/);
     expect(r.status).toBe(0);
-  }, 1_200_000);
+  }, 600_000);
 });

@@ -375,11 +375,13 @@ async function main() {
   const { getStore } = await import("../lib/store");
   const { getPortalStore } = await import("../lib/portal/store");
   const { BotHandler } = await import("../lib/whatsapp/handler");
+  const { pgQueryCount } = await import("../lib/store/pg-options");
 
   const portal = await getPortalStore();
   const store = await getStore();
   // corrida G: puntajes en la copia si no los tiene (solo sobre la copia: nunca en data/ ni en la base)
   const onCopy = args.pgTest || (!args.db && !args.persist && process.env.PORTAL_STORE_PATH === path.join(outDir, "portal-store.sim.json"));
+  const tStart = Date.now();
   if (onCopy && !(await portal.latestScoreRun())) {
     const { recalcScores } = await import("../lib/portal/scoring/recalc");
     const { loadPortalConfig } = await import("../lib/portal/config");
@@ -397,6 +399,7 @@ async function main() {
     }
     await portal.flush();
   }
+  if (process.env.SIM_TIEMPOS) console.error(`[tiempo] ${String(Date.now() - tStart).padStart(6)} ms · preparación (puntajes y correos de la copia)`);
   let me = await resolvePhone(args.as, () => portal.listUsers());
   currentPhone = me.phone;
   const client = new ConsoleWhatsAppClient();
@@ -904,7 +907,12 @@ async function main() {
       // ¿pide @sin-cambios alguna verificación que sigue a este caso? entonces la instantánea va antes
       let wants = false;
       for (let j = i + 1; j < lines.length && isCheckLine(lines[j].t); j++) if (/^@sin-cambios\b/.test(lines[j].t)) wants = true;
+      const t0 = Date.now();
+      const q0 = pgQueryCount.n;
       await step(lines[i].t, lines[i].no, wants);
+      // SIM_TIEMPOS=1: cuánto tardó cada línea (para buscar lo lento del guion contra Postgres), en stderr; con
+      // PG_CONTAR=1, también cuántas consultas mandó
+      if (process.env.SIM_TIEMPOS) console.error(`[tiempo] ${String(Date.now() - t0).padStart(6)} ms · ${String(pgQueryCount.n - q0).padStart(5)} consultas · línea ${lines[i].no}: ${lines[i].t.slice(0, 80)}`);
     }
   } else {
     console.log('Modo interactivo: escribe un mensaje ("@doc <archivo> [leyenda]", "@audio <archivo>", "@voz <transcripción>", "@fwd <texto>", "@btn <botón>", "@como <número|alias>", "@rafaga <n> <texto>", "@cron [ventana]", "@encuesta <comentario>", "@espera modelo=0 …", "/quit").');
