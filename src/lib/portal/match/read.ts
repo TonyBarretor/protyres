@@ -9,6 +9,10 @@
  *    "Clientes que ya compraron esta medida" (sin padrón, sin porcentaje).
  *  - Vista por empresa: una sola vez cada empresa con todos sus matches; cada match adicional la sube (match.bonusPorMatchExtra).
  *  - Crédito observado o rechazado: aviso en la tarjeta, nunca se oculta.
+ *  - Corrida L: estado o condición de SUNAT en alerta (config/portal.json `sunat`): aviso en rojo y la empresa va al final
+ *    (lista del producto y vista por empresa), nunca se oculta. Filtro por distrito (código INEI) sobre la ubicación
+ *    efectiva (SUNAT si su domicilio está en el departamento de la empresa; si no, la del MTC: sunat/ubicacion.ts). La
+ *    tarjeta trae la ubicación efectiva, la dirección que se muestra (la de operación manda) y el aviso de SUNAT.
  */
 import { loadPortalConfig } from "../config";
 import type { CreditEstado, MatchResultSummary, MatchResultView, MatchRun, PortalStore, PortalUser } from "../store/types";
@@ -16,6 +20,9 @@ import type { MatchConfig } from "./config";
 import type { MatchRunData } from "./recalc";
 import { productLabel, productName, type MatchStockProduct } from "./stock";
 import { estadoLabel, podriaLlevarText, purchaseText, type MatchEstado } from "./text";
+import type { SunatConfig } from "../sunat/config";
+import { direccionVisible, enDistrito, sunatAviso, sunatEnAlerta, ubicacionEfectiva, type DireccionVisible, type SunatAviso, type UbicacionEfectiva } from "../sunat/ubicacion";
+import { sameDepartamento } from "../sunat/ubigeo";
 
 export type MatchViewer = Pick<PortalUser, "id" | "rol">;
 
@@ -30,6 +37,8 @@ export interface MatchFilters {
   /** Lima y Callao: provincia Lima o Callao si se conoce; si no, departamento Lima o Callao. */
   limaCallao?: boolean;
   departamento?: string;
+  /** Corrida L: distrito (código INEI de 6 dígitos) de la ubicación efectiva; la lista de opciones depende del departamento. */
+  distrito?: string;
   /** Índice del corte de tamaño de flota (0: 10 a 29, 1: 30 a 99, 2: 100 o más con los cortes por defecto). */
   tamano?: number;
   /** Incluir Estado y bancos de leasing. */
@@ -52,6 +61,14 @@ export interface MatchCard extends MatchResultView {
   /** "10 a 29 unidades" */
   tamanoTexto: string;
   limaCallao: boolean;
+  /** Corrida L: ubicación efectiva (SUNAT o MTC), para mostrar y agrupar. */
+  ubicacion: UbicacionEfectiva;
+  /** La dirección que se muestra (la de operación escrita a mano manda; si no, la fiscal de SUNAT con su fecha), o null. */
+  direccionVisible: DireccionVisible | null;
+  /** Estado / condición de SUNAT: "alerta" (rojo) o "aviso" (ámbar), o null. */
+  sunatAviso: SunatAviso | null;
+  /** En alerta: va al final. */
+  enAlerta: boolean;
 }
 
 export interface MatchProductCard {
@@ -109,9 +126,22 @@ export function sizeBucketOf(unidades: number, cortes: number[]): number | null 
   return null;
 }
 
-export function isLimaCallao(r: { departamento: string | null; provincia: string | null }): boolean {
-  if (r.provincia) return ["LIMA", "CALLAO"].includes(fold(r.provincia));
-  return !!r.departamento && ["LIMA", "CALLAO"].includes(fold(r.departamento));
+export function isLimaCallao(r: { departamento: string | null; provincia: string | null; distrito?: string | null; sunat?: MatchResultSummary["sunat"] }): boolean {
+  const u = ubicacionEfectiva(r, r.sunat);
+  if (u.provincia) return ["LIMA", "CALLAO"].includes(fold(u.provincia));
+  return !!u.departamento && ["LIMA", "CALLAO"].includes(fold(u.departamento));
+}
+
+/** Configuración de SUNAT de las vistas (la de config/portal.json si no se pasa). */
+function sunatCfg(c: SunatConfig | undefined): SunatConfig {
+  return c ?? loadPortalConfig().sunat;
+}
+
+const alertCfg = (c: SunatConfig) => ({ estados: c.estadosAlerta, condiciones: c.condicionesAlerta });
+
+/** 1 si la fila está en alerta de SUNAT (va al final), 0 si no. */
+function alertRank(r: Pick<MatchResultSummary, "sunat">, c: SunatConfig): number {
+  return sunatEnAlerta(r.sunat, alertCfg(c)) ? 1 : 0;
 }
 
 /** ¿Lo ve quien mira? (empresas de otro vendedor: no, para un vendedor). */
@@ -136,7 +166,13 @@ export function applyFilters<T extends MatchResultSummary>(rows: T[], f: MatchFi
     if (f.sinDueno && r.ownerUserId !== null) return false;
     if (f.mias && r.ownerUserId !== viewer.id) return false;
     if (f.limaCallao && !isLimaCallao(r)) return false;
-    if (f.departamento && fold(r.departamento ?? "") !== fold(f.departamento)) return false;
+    // la empresa sin departamento (manual, solo ventas) toma el de su domicilio de SUNAT
+    if (f.departamento && fold(r.departamento ?? r.sunat?.departamento ?? "") !== fold(f.departamento)) return false;
+    if (f.distrito) {
+      const u = ubicacionEfectiva(r, r.sunat);
+      if (!enDistrito(u, f.distrito)) return false;
+      if (f.departamento && u.departamento && !sameDepartamento(u.departamento, f.departamento)) return false;
+    }
     if (f.tamano !== undefined && sizeBucketOf(r.unidades, cfg.cortesFlota) !== f.tamano) return false;
     return true;
   });
@@ -147,7 +183,8 @@ export function byMatch(a: MatchResultSummary, b: MatchResultSummary): number {
   return (b.pct ?? -1) - (a.pct ?? -1) || b.llantasMedida - a.llantasMedida || (b.podriaLlevar ?? 0) - (a.podriaLlevar ?? 0) || a.razonSocial.localeCompare(b.razonSocial);
 }
 
-export function toCard(r: MatchResultView, viewer: MatchViewer, cfg: Pick<MatchConfig, "cortesFlota">, now: Date = new Date()): MatchCard {
+export function toCard(r: MatchResultView, viewer: MatchViewer, cfg: Pick<MatchConfig, "cortesFlota">, now: Date = new Date(), sunat?: SunatConfig): MatchCard {
+  const sc = sunatCfg(sunat);
   const b = sizeBucketOf(r.unidades, cfg.cortesFlota);
   const buckets = sizeBuckets(cfg.cortesFlota);
   return {
@@ -159,6 +196,10 @@ export function toCard(r: MatchResultView, viewer: MatchViewer, cfg: Pick<MatchC
     avisoCredito: creditWarning(r.credito),
     tamanoTexto: r.companyId === null ? "" : b === null ? `${r.unidades} unidades` : `${buckets[b].label} unidades`,
     limaCallao: isLimaCallao(r),
+    ubicacion: ubicacionEfectiva(r, r.sunat),
+    direccionVisible: direccionVisible(r, r.sunat),
+    sunatAviso: sunatAviso(r.sunat, { ...alertCfg(sc), condicionesAviso: sc.condicionesAviso }),
+    enAlerta: alertRank(r, sc) === 1,
   };
 }
 
@@ -243,9 +284,10 @@ export async function matchesForProduct(
   viewer: MatchViewer,
   code: string,
   filters: MatchFilters = {},
-  opts: { cfg?: MatchConfig; liveStock?: MatchStockProduct[] | null; now?: Date } & MatchPage = {},
+  opts: { cfg?: MatchConfig; liveStock?: MatchStockProduct[] | null; now?: Date; sunat?: SunatConfig } & MatchPage = {},
 ): Promise<ProductMatches> {
   const cfg = opts.cfg ?? loadPortalConfig().match;
+  const sc = sunatCfg(opts.sunat);
   const run = await store.latestMatchRun();
   const stock = await priorityStock(store, run, opts.liveStock);
   const want = code.replace(/\s+/g, "").toUpperCase();
@@ -257,13 +299,14 @@ export async function matchesForProduct(
   const all = await store.listMatchSummaries({ productCodes: [st.code], minPct: cfg.minPctLista });
   const product = productCard(st, applyFilters(all, {}, viewer, cfg), runData(run)?.notas ?? {});
   const base = applyFilters(all, { incluirExcluidas: filters.incluirExcluidas }, viewer, cfg);
-  const rows = applyFilters(all, filters, viewer, cfg).sort(byMatch);
+  // corrida L: las de SUNAT en alerta, al final (sin ocultarse)
+  const rows = applyFilters(all, filters, viewer, cfg).sort((a, b) => alertRank(a, sc) - alertRank(b, sc) || byMatch(a, b));
   const companies = rows.filter((r) => r.tipo !== "solo_ventas");
   const offset = Math.max(0, opts.offset ?? 0);
   const page = companies.slice(offset, offset + Math.max(1, opts.limit ?? 50));
   const [pageFull, soloFull] = [await withDetail(store, page), await withDetail(store, rows.filter((r) => r.tipo === "solo_ventas"))];
-  const empresas = pageFull.map((r) => toCard(r, viewer, cfg, opts.now));
-  const soloVentas = soloFull.map((r) => toCard(r, viewer, cfg, opts.now));
+  const empresas = pageFull.map((r) => toCard(r, viewer, cfg, opts.now, sc));
+  const soloVentas = soloFull.map((r) => toCard(r, viewer, cfg, opts.now, sc));
   const ocultas = base.length - rows.length;
   let vacio: string | null = null;
   if (!empresas.length && !soloVentas.length) {
@@ -291,9 +334,10 @@ export async function matchesByCompany(
   store: PortalStore,
   viewer: MatchViewer,
   filters: MatchFilters = {},
-  opts: { cfg?: MatchConfig; liveStock?: MatchStockProduct[] | null; now?: Date } & MatchPage = {},
+  opts: { cfg?: MatchConfig; liveStock?: MatchStockProduct[] | null; now?: Date; sunat?: SunatConfig } & MatchPage = {},
 ): Promise<CompanyMatches[] & { total?: number }> {
   const cfg = opts.cfg ?? loadPortalConfig().match;
+  const sc = sunatCfg(opts.sunat);
   const run = await store.latestMatchRun();
   const stock = await priorityStock(store, run, opts.liveStock);
   if (!stock.length) return Object.assign([], { total: 0 });
@@ -307,27 +351,28 @@ export async function matchesByCompany(
   }
   const groups = [...by].map(([companyId, list]) => {
     list.sort(byMatch);
-    return { companyId, list, orden: Math.min(100, (list[0].pct ?? 0) + cfg.bonusPorMatchExtra * (new Set(list.map((r) => r.productCode)).size - 1)) };
+    return { companyId, list, alerta: alertRank(list[0], sc), orden: Math.min(100, (list[0].pct ?? 0) + cfg.bonusPorMatchExtra * (new Set(list.map((r) => r.productCode)).size - 1)) };
   });
-  groups.sort((a, b) => b.orden - a.orden || b.list[0].llantasMedida - a.list[0].llantasMedida || a.list[0].razonSocial.localeCompare(b.list[0].razonSocial));
+  // corrida L: las de SUNAT en alerta, al final (sin ocultarse)
+  groups.sort((a, b) => a.alerta - b.alerta || b.orden - a.orden || b.list[0].llantasMedida - a.list[0].llantasMedida || a.list[0].razonSocial.localeCompare(b.list[0].razonSocial));
   const offset = Math.max(0, opts.offset ?? 0);
   const page = groups.slice(offset, offset + Math.max(1, opts.limit ?? 50));
   const full = new Map((await withDetail(store, page.flatMap((g) => g.list))).map((r) => [r.id, r]));
   const out = page.map((g) => {
-    const cards = g.list.map((r) => toCard(full.get(r.id)!, viewer, cfg, opts.now));
+    const cards = g.list.map((r) => toCard(full.get(r.id)!, viewer, cfg, opts.now, sc));
     return { companyId: g.companyId, ruc: g.list[0].ruc, razonSocial: g.list[0].razonSocial, orden: g.orden, matches: cards, estado: cards[0].estado, avisoCredito: cards[0].avisoCredito };
   });
   return Object.assign(out, { total: groups.length });
 }
 
 /** Ficha de empresa: bloque "Match con tu stock" (productos prioritarios que le sirven y por qué). */
-export async function companyMatchBlock(store: PortalStore, viewer: MatchViewer, companyId: number, opts: { cfg?: MatchConfig; now?: Date } = {}): Promise<MatchCard[]> {
+export async function companyMatchBlock(store: PortalStore, viewer: MatchViewer, companyId: number, opts: { cfg?: MatchConfig; now?: Date; sunat?: SunatConfig } = {}): Promise<MatchCard[]> {
   const cfg = opts.cfg ?? loadPortalConfig().match;
   const run = await store.latestMatchRun();
   const stock = await priorityStock(store, run);
   const codes = new Set(stock.map((s) => s.code));
   const rows = applyFilters(await store.listMatchResults({ companyIds: [companyId], minPct: cfg.minPctLista }), { incluirExcluidas: true }, viewer, cfg).filter((r) => codes.has(r.productCode));
-  return (rows as MatchResultView[]).sort(byMatch).map((r) => toCard(r, viewer, cfg, opts.now));
+  return (rows as MatchResultView[]).sort(byMatch).map((r) => toCard(r, viewer, cfg, opts.now, opts.sunat));
 }
 
 /** Hoy: "Tienes 636 llantas prioritarias: N empresas sin contactar hacen match" (null si no hay prioridades). */
@@ -353,7 +398,7 @@ const FLAG_KEYS: [keyof MatchFilters, string][] = [
   ["incluirExcluidas", "todas"],
 ];
 
-/** ?compraron=1&flota=1&sindueno=1&mias=1&lima=1&dep=AREQUIPA&tam=1&todas=1 -> filtros. */
+/** ?compraron=1&flota=1&sindueno=1&mias=1&lima=1&dep=AREQUIPA&dist=040103&tam=1&todas=1 -> filtros. */
 export function parseMatchFilters(params: URLSearchParams | Record<string, string | string[] | undefined>): MatchFilters {
   const get = (k: string): string | undefined => {
     if (params instanceof URLSearchParams) return params.get(k) ?? undefined;
@@ -364,6 +409,8 @@ export function parseMatchFilters(params: URLSearchParams | Record<string, strin
   for (const [key, q] of FLAG_KEYS) if (get(q) === "1") (f as Record<string, unknown>)[key] = true;
   const dep = get("dep");
   if (dep) f.departamento = dep;
+  const dist = get("dist");
+  if (dist && /^\d{6}$/.test(dist)) f.distrito = dist;
   const tam = get("tam");
   if (tam !== undefined && /^\d$/.test(tam)) f.tamano = Number(tam);
   return f;
@@ -373,6 +420,7 @@ export function matchFiltersQuery(f: MatchFilters): string {
   const p = new URLSearchParams();
   for (const [key, q] of FLAG_KEYS) if (f[key]) p.set(q, "1");
   if (f.departamento) p.set("dep", f.departamento);
+  if (f.distrito) p.set("dist", f.distrito);
   if (f.tamano !== undefined) p.set("tam", String(f.tamano));
   return p.toString();
 }

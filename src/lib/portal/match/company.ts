@@ -37,11 +37,23 @@ export function locationText(c: { distrito?: string | null; provincia?: string |
 }
 
 /**
- * "Cómo llegar": enlace de Google Maps. Con dirección, la dirección + distrito + departamento (exacta); sin ella, la razón
- * social + distrito/departamento (`aproximada: true`: la pantalla avisa que es una búsqueda).
+ * "Cómo llegar": enlace de Google Maps. Con la dirección de operación (escrita a mano), esa + distrito + departamento
+ * (exacta); corrida L: sin ella, el domicilio fiscal de SUNAT (`sunat.direccion`, que ya trae distrito y departamento;
+ * exacta); sin ninguna, la razón social + distrito/departamento (`aproximada: true`: la pantalla avisa que es una
+ * búsqueda). Las tarjetas de Match Venta y las filas de Prospectos ya traen `sunat`: basta pasarlas.
  */
-export function directionsLink(c: { razonSocial: string; direccion?: string | null; distrito?: string | null; provincia?: string | null; departamento: string | null }): { url: string; aproximada: boolean } {
+export function directionsLink(
+  c: { razonSocial: string; direccion?: string | null; distrito?: string | null; provincia?: string | null; departamento: string | null; sunat?: { direccion: string | null } | null },
+  sunat?: { direccion: string | null } | null,
+): { url: string; aproximada: boolean; fuente: "operacion" | "fiscal" | "aproximada" } {
   const place = [c.distrito, c.departamento, "Perú"].filter(Boolean).join(", ");
-  const q = c.direccion ? `${c.direccion}, ${place}` : `${c.razonSocial}, ${place}`;
-  return { url: `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(q)}`, aproximada: !c.direccion };
+  const fiscal = (sunat ?? c.sunat)?.direccion ?? null;
+  const fuente = c.direccion ? "operacion" : fiscal ? "fiscal" : "aproximada";
+  const q = c.direccion ? `${c.direccion}, ${place}` : fiscal ? `${fiscal}, Perú` : `${c.razonSocial}, ${place}`;
+  return { url: mapsUrl(q), aproximada: fuente === "aproximada", fuente };
+}
+
+/** Enlace de búsqueda de Google Maps para un texto. */
+export function mapsUrl(q: string): string {
+  return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(q)}`;
 }

@@ -17,7 +17,8 @@
  */
 import { limaDateKey, limaStartOfDay, addDays, formatLimaDateTime } from "../ui/time";
 import { stageIndex } from "../stages";
-import type { Appointment, Company, MatchVisit, Opportunity, PortalStore, PortalUser } from "../store/types";
+import type { Appointment, Company, MatchVisit, Opportunity, PortalStore, PortalUser, SunatBrief } from "../store/types";
+import { ubicacionEfectiva } from "../sunat/ubicacion";
 import { matchCode } from "../store/shared";
 import { productLabel, type MatchStockProduct } from "./stock";
 import { visitReason } from "./text";
@@ -150,6 +151,15 @@ export interface PlanDay {
   visitas: PlanCompany[];
   /** "LIMA / SAN ISIDRO", "AREQUIPA" (las zonas de ese día). */
   zonas: string[];
+}
+
+/**
+ * Corrida L: la empresa como PlanCompany con su ubicación efectiva (el distrito de SUNAT manda si su domicilio está en el
+ * departamento de la empresa; si no, el del MTC). Así el reparto agrupa por el distrito real.
+ */
+export function planCompanyFrom(c: Pick<Company, "id" | "razonSocial" | "departamento" | "provincia" | "distrito">, sunat: Pick<SunatBrief, "ubigeo" | "departamento" | "provincia" | "distrito"> | null | undefined, productCode?: string): PlanCompany {
+  const u = ubicacionEfectiva(c, sunat);
+  return { companyId: c.id, razonSocial: c.razonSocial, departamento: u.departamento, provincia: u.provincia, distrito: u.distrito, ...(productCode ? { productCode } : {}) };
 }
 
 const zoneKey = (c: PlanCompany) => [c.departamento ?? "~", c.provincia ?? "~", c.distrito ?? "~"].join("|");

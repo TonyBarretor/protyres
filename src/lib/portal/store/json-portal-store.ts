@@ -110,6 +110,8 @@ import { surveyCounts } from "./survey-shared";
 import type { Survey, SurveyAnswer, SurveyAnswerInput, SurveyAnswerResult, SurveyCanal, SurveyFilter, SurveyInput, SurveyResponse } from "./types";
 import { resolveCreditSave } from "../credit/changes";
 import type { CompanyCredit, CreditHistoryEntry, CreditPdf, CreditSaveInput } from "./types";
+import type { DistritoCount, PortalRuc, SunatBrief, SunatLocal, SunatLocalInput, SunatRecord, SunatRecordInput } from "./types";
+import { byCodeNullsLast, distritoCounts, inDistrito, sunatAlertRank, sunatBrief } from "./shared";
 import type { BestCompaniesQuery, BestCompany, RankingValidation, RankingValidationInput, ScoreInput, ScoreInputQuery, ScoreRun, ScoreRunInput, ScoreUpdate } from "./types";
 import type {
   MatchCompanyInput,
@@ -176,6 +178,9 @@ interface FileData {
   matchRuns?: MatchRun[];
   matchResults?: MatchResult[];
   matchVisits?: MatchVisit[];
+  /** Corrida L: padrón reducido del RUC de SUNAT (un registro por RUC del portal) y sus locales anexos. */
+  sunatPadron?: SunatRecord[];
+  sunatLocales?: SunatLocal[];
 }
 
 /** Campos Date por colección (JSON los guarda como texto ISO). */
@@ -207,6 +212,7 @@ const DATE_FIELDS: Record<string, string[]> = {
   matchPriorityLog: ["createdAt"],
   matchRuns: ["runAt"],
   matchVisits: ["reportedAt", "createdAt"],
+  sunatPadron: ["updatedAt"],
 };
 
 const DEBOUNCE_MS = 300;
@@ -313,6 +319,10 @@ export class JsonPortalStore implements PortalStore {
   private matchRuns: MatchRun[] = [];
   private matchResults: MatchResult[] = [];
   private matchVisits = new Map<number, MatchVisit>();
+  /** Corrida L: SUNAT por RUC y locales anexos por RUC. */
+  private sunat = new Map<string, SunatRecord>();
+  private sunatLocales = new Map<string, SunatLocal[]>();
+  private sunatLocalSeq = 0;
   /**
    * Límite de intentos (corrida E, punto 5): solo en memoria, no va al archivo (el store JSON es de un proceso; en
    * producción manda la tabla rate_limit_hits de Postgres). Clave `bucket|ventana`.
@@ -408,6 +418,13 @@ export class JsonPortalStore implements PortalStore {
     this.matchRuns = revive("matchRuns", raw.matchRuns);
     this.matchResults = raw.matchResults ?? [];
     for (const v of revive("matchVisits", raw.matchVisits)) this.matchVisits.set(v.id, v);
+    for (const r of revive("sunatPadron", raw.sunatPadron)) this.sunat.set(r.ruc, r);
+    for (const l of raw.sunatLocales ?? []) {
+      const list = this.sunatLocales.get(l.ruc);
+      if (list) list.push(l);
+      else this.sunatLocales.set(l.ruc, [l]);
+      this.sunatLocalSeq = Math.max(this.sunatLocalSeq, l.id);
+    }
   }
 
   private snapshot(): FileData {
@@ -443,6 +460,8 @@ export class JsonPortalStore implements PortalStore {
       matchRuns: this.matchRuns,
       matchResults: this.matchResults,
       matchVisits: [...this.matchVisits.values()],
+      sunatPadron: [...this.sunat.values()],
+      sunatLocales: [...this.sunatLocales.values()].flat(),
     };
   }
 
@@ -689,6 +708,7 @@ export class JsonPortalStore implements PortalStore {
     for (const c of this.companies.values()) {
       if (terms.compact && !(nameMatches(companyNameKey(c.razonSocial), terms) || (qDigits && c.ruc.startsWith(qDigits)))) continue;
       if (deps && !(c.departamento && deps.has(c.departamento))) continue;
+      if (opts.distrito && !inDistrito(c, this.sunatOf(c.ruc), opts.distrito)) continue;
       if (sectors && !(c.sector && sectors.has(c.sector))) continue;
       if (opts.minUnits !== undefined && c.unidades < opts.minUnits) continue;
       if (opts.maxUnits !== undefined && c.unidades > opts.maxUnits) continue;
@@ -705,7 +725,7 @@ export class JsonPortalStore implements PortalStore {
       matches.map((c) => c.ruc),
       since,
     );
-    const rows: CompanyRow[] = matches.map((c) => ({ ...c, participacion: part[c.ruc]?.cantidad ?? 0, participacionDemo: part[c.ruc]?.demo ?? false }));
+    const rows: CompanyRow[] = matches.map((c) => ({ ...c, participacion: part[c.ruc]?.cantidad ?? 0, participacionDemo: part[c.ruc]?.demo ?? false, sunat: this.sunatOf(c.ruc) }));
     const orderBy = opts.orderBy ?? "unidades";
     // atractivo: sin puntaje al final (como "nulls last" en Postgres)
     const val = (r: CompanyRow) => (orderBy === "atractivo" ? (r.score ?? -1) : orderBy === "llantas" ? r.llantasPiso : orderBy === "participacion" ? r.participacion : r.unidades);
@@ -1943,11 +1963,13 @@ export class JsonPortalStore implements PortalStore {
   async bestCompanies(q: BestCompaniesQuery): Promise<{ rows: BestCompany[]; total: number }> {
     const recent = new Set<number>();
     for (const a of this.activities) if (a.occurredAt >= q.activeSince) recent.add(a.companyId);
+    // corrida L: estado o condición de SUNAT en alerta, al final (sin ocultarse)
+    const alert = (c: Company) => sunatAlertRank(this.sunatOf(c.ruc), q.alerta);
     const eligible = [...this.companies.values()]
       .filter((c) => c.score !== null && (c.ownerUserId === null || (c.ownerUserId === q.userId && !recent.has(c.id))))
-      .sort((a, b) => (b.score ?? 0) - (a.score ?? 0) || a.id - b.id);
+      .sort((a, b) => alert(a) - alert(b) || (b.score ?? 0) - (a.score ?? 0) || a.id - b.id);
     const offset = Math.max(0, q.offset ?? 0);
-    const rows = eligible.slice(offset, offset + Math.max(0, q.limit)).map((c) => ({ ...structuredClone(c), propia: c.ownerUserId === q.userId }));
+    const rows = eligible.slice(offset, offset + Math.max(0, q.limit)).map((c) => ({ ...structuredClone(c), propia: c.ownerUserId === q.userId, sunat: this.sunatOf(c.ruc) }));
     return { rows, total: eligible.length };
   }
 
@@ -2134,6 +2156,7 @@ export class JsonPortalStore implements PortalStore {
         direccion: c?.direccion ?? null,
         unidades: c?.unidades ?? 0,
         lastActivityAt: c ? (lastAct.get(c.id) ?? null) : null,
+        sunat: this.sunatOf(r.ruc),
       });
     }
     return out;
@@ -2170,5 +2193,84 @@ export class JsonPortalStore implements PortalStore {
     v.reportedAt = at;
     this.changed();
     return { ...v };
+  }
+
+  // ── Corrida L: SUNAT ──
+
+  private sunatOf(ruc: string): SunatBrief | null {
+    return sunatBrief(this.sunat.get(ruc));
+  }
+
+  async upsertSunat(rows: SunatRecordInput[]): Promise<{ inserted: number; updated: number }> {
+    let inserted = 0;
+    let updated = 0;
+    const now = new Date();
+    for (const r of dedupeBy(rows, (x) => digits(x.ruc))) {
+      const ruc = digits(r.ruc);
+      if (!ruc) continue;
+      if (this.sunat.has(ruc)) updated++;
+      else inserted++;
+      this.sunat.set(ruc, { ...structuredClone(r), ruc, updatedAt: now });
+    }
+    if (inserted || updated) this.changed();
+    return { inserted, updated };
+  }
+
+  async replaceSunatLocales(rucs: string[], rows: SunatLocalInput[]): Promise<{ removed: number; inserted: number }> {
+    let removed = 0;
+    for (const ruc of new Set(rucs.map(digits))) {
+      removed += this.sunatLocales.get(ruc)?.length ?? 0;
+      this.sunatLocales.delete(ruc);
+    }
+    for (const r of rows) {
+      const ruc = digits(r.ruc);
+      const l: SunatLocal = { ...structuredClone(r), ruc, id: ++this.sunatLocalSeq };
+      const list = this.sunatLocales.get(ruc);
+      if (list) list.push(l);
+      else this.sunatLocales.set(ruc, [l]);
+    }
+    if (removed || rows.length) this.changed();
+    return { removed, inserted: rows.length };
+  }
+
+  async getSunat(ruc: string): Promise<SunatRecord | null> {
+    const r = this.sunat.get(digits(ruc));
+    return r ? structuredClone(r) : null;
+  }
+
+  async getSunatByRucs(rucs: string[]): Promise<SunatRecord[]> {
+    const out: SunatRecord[] = [];
+    for (const ruc of new Set(rucs.map(digits))) {
+      const r = this.sunat.get(ruc);
+      if (r) out.push(structuredClone(r));
+    }
+    return out;
+  }
+
+  async listSunatLocales(ruc: string): Promise<SunatLocal[]> {
+    return (this.sunatLocales.get(digits(ruc)) ?? [])
+      .map((l) => structuredClone(l))
+      .sort((a, b) => byCodeNullsLast(a.ubigeo, b.ubigeo) || byCodeNullsLast(a.direccion, b.direccion) || a.id - b.id);
+  }
+
+  async listPortalRucs(): Promise<PortalRuc[]> {
+    const out = new Map<string, PortalRuc>();
+    for (const c of this.companies.values()) out.set(c.ruc, { ruc: c.ruc, razonSocial: c.razonSocial, fuente: c.origen === "manual" ? "manual" : "padron" });
+    // ventas reales (sin demo): el RUC de la línea y su cliente final; la razón social de la venta más reciente
+    const sales = this.sales.filter((s) => !s.isDemo).sort((a, b) => b.fecha.localeCompare(a.fecha) || b.id - a.id);
+    for (const s of sales) {
+      for (const ruc of [s.ruc, s.detalle?.clienteFinalRuc]) {
+        if (!ruc || !/^\d{11}$/.test(ruc) || out.has(ruc)) continue;
+        out.set(ruc, { ruc, razonSocial: (ruc === s.ruc ? s.razonSocial : null) ?? "", fuente: "ventas" });
+      }
+    }
+    return [...out.values()].sort((a, b) => a.ruc.localeCompare(b.ruc));
+  }
+
+  async listDistritos(q: { departamento?: string } = {}): Promise<DistritoCount[]> {
+    return distritoCounts(
+      [...this.companies.values()].map((c) => ({ company: c, sunat: this.sunatOf(c.ruc) })),
+      q.departamento,
+    );
   }
 }

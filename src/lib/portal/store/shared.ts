@@ -1,7 +1,9 @@
 /**
  * Utilidades comunes a las dos implementaciones de PortalStore (mismo comportamiento en Postgres y JSON).
  */
-import type { Confianza, FleetGroup, IsoDate } from "./types";
+import type { Company, Confianza, DistritoCount, FleetGroup, IsoDate, SunatAlertMatch, SunatBrief, SunatRecord } from "./types";
+import { enDistrito, sunatEnAlerta, ubicacionEfectiva } from "../sunat/ubicacion";
+import { foldPlace, lookupUbigeo, sameDepartamento } from "../sunat/ubigeo";
 
 export const DEFAULT_PAGE_SIZE = 50;
 export const MAX_PAGE_SIZE = 500;
@@ -332,4 +334,49 @@ export function salesTotals(lines: SaleMoneyLike[]): { lineas: number; neumatico
 export function weightedMarginPct(venta: number, costo: number): number | null {
   if (venta <= 0) return null;
   return Math.round(((venta - costo) / venta) * 10_000) / 100;
+}
+
+// ── Corrida L: SUNAT (mismas reglas en los dos stores; Postgres las repite en SQL, ver pg-portal-store.ts) ──
+
+/** Orden por código de carácter (como `collate "C"` en Postgres), los null al final. */
+export function byCodeNullsLast(a: string | null, b: string | null): number {
+  if (a === b) return 0;
+  if (a === null) return 1;
+  if (b === null) return -1;
+  return a < b ? -1 : 1;
+}
+
+/** Lo de SUNAT que llevan las listas. */
+export function sunatBrief(r: SunatRecord | null | undefined): SunatBrief | null {
+  if (!r) return null;
+  return { encontrado: r.encontrado, estado: r.estado, condicion: r.condicion, ubigeo: r.ubigeo, departamento: r.departamento, provincia: r.provincia, distrito: r.distrito, direccion: r.direccion, anexos: r.anexos, fecha: r.fecha };
+}
+
+/** 1 si el estado o la condición son alerta (van al final), 0 si no. */
+export function sunatAlertRank(s: Pick<SunatBrief, "estado" | "condicion"> | null | undefined, alerta: SunatAlertMatch | undefined): number {
+  return alerta && sunatEnAlerta(s, alerta) ? 1 : 0;
+}
+
+/** ¿La empresa (ubicación efectiva) está en ese distrito (código INEI)? */
+export function inDistrito(c: Pick<Company, "departamento" | "provincia" | "distrito">, s: SunatBrief | null | undefined, ubigeo: string): boolean {
+  return enDistrito(ubicacionEfectiva(c, s), ubigeo);
+}
+
+/** Distritos con empresas por ubicación efectiva (listDistritos de los dos stores). `n`: empresas de la fila (Postgres agrupa antes). */
+export function distritoCounts(rows: { company: Pick<Company, "departamento" | "provincia" | "distrito">; sunat: SunatBrief | null; n?: number }[], departamento?: string): DistritoCount[] {
+  const m = new Map<string, DistritoCount>();
+  for (const { company, sunat, n = 1 } of rows) {
+    const u = ubicacionEfectiva(company, sunat);
+    if (!u.distrito || !u.departamento) continue;
+    const t = lookupUbigeo(u.ubigeo);
+    const dep = t ? foldPlace(t.departamento) : foldPlace(u.departamento);
+    if (departamento && !sameDepartamento(dep, departamento)) continue;
+    const prov = t ? foldPlace(t.provincia) : u.provincia ? foldPlace(u.provincia) : null;
+    const dist = t ? foldPlace(t.distrito) : foldPlace(u.distrito);
+    const key = `${dep}|${prov ?? ""}|${dist}`;
+    const prev = m.get(key);
+    if (prev) prev.empresas += n;
+    else m.set(key, { ubigeo: u.ubigeo, departamento: dep, provincia: prov, distrito: dist, empresas: n });
+  }
+  return [...m.values()].sort((a, b) => b.empresas - a.empresas || a.distrito.localeCompare(b.distrito) || (a.provincia ?? "").localeCompare(b.provincia ?? ""));
 }

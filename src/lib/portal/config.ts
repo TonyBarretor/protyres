@@ -3,6 +3,7 @@ import path from "node:path";
 import { z } from "zod";
 import { ScoringSchema } from "./scoring/config";
 import { MatchSchema } from "./match/config";
+import { SunatSchema } from "./sunat/config";
 
 /** Portal settings (config/portal.json). Other blocks add their own keys here; unknown keys are kept. */
 const ImportSchema = z.object({
@@ -212,6 +213,8 @@ export const PortalConfigSchema = z.looseObject({
   access: AccessSchema.prefault({}),
   /** Corrida K: Match Venta (src/lib/portal/match/config.ts). */
   match: MatchSchema.prefault({}),
+  /** Corrida L: padrón reducido del RUC de SUNAT (src/lib/portal/sunat/config.ts). */
+  sunat: SunatSchema.prefault({}),
 });
 
 export type PortalConfig = z.infer<typeof PortalConfigSchema>;
@@ -228,6 +231,7 @@ export type PortalScoringConfig = PortalConfig["scoring"];
 export type PortalOrdersConfig = PortalConfig["orders"];
 export type PortalAccessConfig = PortalConfig["access"];
 export type PortalMatchConfig = PortalConfig["match"];
+export type PortalSunatConfig = PortalConfig["sunat"];
 
 export function portalConfigPath(): string {
   return process.env.PORTAL_CONFIG || path.join(process.cwd(), "config", "portal.json");

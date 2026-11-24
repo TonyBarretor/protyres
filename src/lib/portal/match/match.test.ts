@@ -449,7 +449,7 @@ describe("ubicación: el padrón no trae dirección", () => {
     expect((await w.store.listActivities({ companyId: juanCo }))[0].texto).toBe("Dirección: Av. Prueba 123");
     const buses = (await w.store.getCompany(w.ids["20000000001"]))!;
     expect(locationText(buses)).toBe("Ate, Lima");
-    expect(directionsLink(buses)).toEqual({ url: "https://www.google.com/maps/search/?api=1&query=BUSES%20DEL%20SUR%20DEMO%20SAC%2C%20ATE%2C%20LIMA%2C%20Per%C3%BA", aproximada: true });
+    expect(directionsLink(buses)).toEqual({ url: "https://www.google.com/maps/search/?api=1&query=BUSES%20DEL%20SUR%20DEMO%20SAC%2C%20ATE%2C%20LIMA%2C%20Per%C3%BA", aproximada: true, fuente: "aproximada" });
     expect(directionsLink({ ...buses, direccion: "Av. Prueba 123" }).aproximada).toBe(false);
   });
 });

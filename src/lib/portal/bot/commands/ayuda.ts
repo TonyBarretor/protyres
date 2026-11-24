@@ -7,6 +7,7 @@ export const PORTAL_HELP = [
   "• *portal* — enlace para entrar al portal (sirve varias veces; después tu teléfono queda con la sesión abierta)",
   "• *cerrar portal* — cierra el portal en todos tus teléfonos y anula tus enlaces",
   "• *empresa ZBUSS* (o el RUC) — ficha corta",
+  "• *direccion ZBUSS* (o por voz: _¿dónde queda ZBUSS?_) — domicilio fiscal de SUNAT (o la dirección de operación que anotaste), locales anexos y Cómo llegar",
   "• *asignarme ZBUSS* (o el RUC; también por voz) — la empresa pasa a ti, con su ficha",
   "• *nueva empresa* (también por voz) — registra una empresa que no está en el padrón: RUC, razón social, sector y departamento",
   "• *contacto ZBUSS: Juan Pérez, jefe de flota, 987654321* — guarda un contacto",
