@@ -34,6 +34,7 @@ import { readSalesXlsx } from "../lib/portal/sales/xlsx";
 import { loadSalesSettings } from "../lib/portal/sales/config";
 import { commitOdooUpload, previewOdooUpload } from "../lib/portal/sales/import";
 import { loadPortalConfig } from "../lib/portal/config";
+import { importSunat } from "../lib/portal/sunat";
 import { testDbUrl, truncateAll } from "./harness";
 import { bothTraces, diffTraces } from "./parity";
 
@@ -150,6 +151,8 @@ const pick = (rel: string) => [path.resolve(process.cwd(), "data", rel), path.jo
 const PORTAL_REAL = pick("portal-store.json");
 const SALES_XLSX = pick("referencia-360tyres/Reporte_Ventas_01-2025_hasta_11-2026.xlsx");
 const STOCK_PDF = pick("referencia-360tyres/STOCK_PROTYRES_23112026.pdf");
+const RUC_ZIP = pick("sunat/padron_reducido_ruc.zip");
+const ANEXO_ZIP = pick("sunat/padron_reducido_local_anexo.zip");
 
 // la flota entera (150 mil vehículos) tarda minutos por el pooler: solo con MATCH_REAL=1
 describe.runIf(!!PORTAL_REAL && !!SALES_XLSX && !!STOCK_PDF && process.env.MATCH_REAL === "1")("datos reales: cálculo y vistas por debajo de 2 s", () => {
@@ -176,6 +179,8 @@ describe.runIf(!!PORTAL_REAL && !!SALES_XLSX && !!STOCK_PDF && process.env.MATCH
     const t1 = Date.now();
     const r = await recalcMatch({ store: pg, prices: source(stock.rows), cfg: c, now: NOW }, "datos reales");
     const recalcMs = Date.now() - t1;
+    // corrida L: con el padrón de SUNAT importado (las vistas leen la dirección y la alerta con un join), si están los zip
+    const sunat = RUC_ZIP && ANEXO_ZIP ? await importSunat({ store: pg, archivo: RUC_ZIP, anexos: ANEXO_ZIP }) : null;
     const times: Record<string, number> = {};
     const time = async <T>(label: string, f: () => Promise<T>): Promise<T> => {
       const t = Date.now();
@@ -189,6 +194,7 @@ describe.runIf(!!PORTAL_REAL && !!SALES_XLSX && !!STOCK_PDF && process.env.MATCH
     await time("hoy", () => todayMatchLine(pg, frank, { cfg: c }));
     const top = (await matchesForProduct(pg, frank, "P0433", {}, { cfg: c })).empresas[0];
     await time("ficha", () => companyMatchBlock(pg, frank, top.companyId!, { cfg: c }));
+    console.log(`[test:pg] SUNAT importado: ${sunat ? `${sunat.encontradas} empresas, ${sunat.anexos} locales` : "no (faltan los zip)"}`);
     console.log(`[test:pg] datos reales: carga ${loadMs} ms (${raw.companies.length} empresas, ${fleet.length} vehículos, ${sales.inserted} líneas de ventas); recalc ${recalcMs} ms (${r.filas} filas; leer ${r.phases.leer}, calcular ${r.phases.calcular}, guardar ${r.phases.guardar}); vistas ${JSON.stringify(times)}`);
     expect(ov.totalLlantas).toBe(636);
     for (const [k, ms] of Object.entries(times)) expect(ms, k).toBeLessThan(2000);
