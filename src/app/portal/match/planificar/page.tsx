@@ -3,12 +3,17 @@
  * día (proposeVisitPlan: agrupa por departamento, provincia y distrito, match.visitasPorDia por día, lunes a sábado sin
  * feriados; no calcula rutas). Cada visita se puede mover de día y ponerle hora antes de confirmar; al confirmar se
  * agenda cada una con scheduleMatchVisit (confirmPlan). Sin JavaScript.
+ * Corrida L: agrupa por el distrito real (planCompanyFrom: el de SUNAT si su domicilio está en el departamento de la
+ * empresa; si no, el del MTC) y cada visita lleva su dirección (la de operación manda) con Cómo llegar.
  */
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { requireUser } from "@/lib/portal/auth/session";
 import { loadPortalConfig } from "@/lib/portal/config";
-import { loadMatchStock, productLabel, proposeVisitPlan, zoneLabel, type PlanCompany } from "@/lib/portal/match";
+import { loadMatchStock, productLabel, proposeVisitPlan, zoneLabel } from "@/lib/portal/match";
+import { planCompanyFrom } from "@/lib/portal/match/schedule";
+import { directionsLink } from "@/lib/portal/match/company";
+import { direccionVisible } from "@/lib/portal/sunat/ubicacion";
 import { getPortalStore } from "@/lib/portal/store";
 import type { Company } from "@/lib/portal/store/types";
 import { canUseMatch, dayLabel, MATCH_PATH, MAX_PLAN, parsePlanPicks, planDayChoices, safeMatchBack, titleCase } from "@/lib/portal/ui/match";
@@ -39,10 +44,19 @@ export default async function PlanificarPage({ searchParams }: Props) {
   const codeOf = new Map(picks.map((p) => [p.companyId, p.code]));
   const { stock } = await loadMatchStock({ store, prices: null });
   const label = new Map(stock.map((s) => [s.code, productLabel(s)]));
+  const sunat = new Map((await store.getSunatByRucs(visible.map((c) => c.ruc))).map((s) => [s.ruc, s]));
+  const byId = new Map(visible.map((c) => [c.id, c]));
   const plan = proposeVisitPlan(
-    visible.map((c): PlanCompany => ({ companyId: c.id, razonSocial: c.razonSocial, departamento: c.departamento, provincia: c.provincia ?? null, distrito: c.distrito ?? null, productCode: codeOf.get(c.id) })),
+    visible.map((c) => planCompanyFrom(c, sunat.get(c.ruc), codeOf.get(c.id))),
     { start: addDays(now, 1), perDay: cfg.match.visitasPorDia, holidays: cfg.holidays },
   );
+  /** La dirección de la visita (operación > fiscal) y su Cómo llegar. */
+  const where = (companyId: number) => {
+    const c = byId.get(companyId);
+    if (!c) return null;
+    const s = sunat.get(c.ruc) ?? null;
+    return { dir: direccionVisible(c, s), link: directionsLink(c, s) };
+  };
   const days = planDayChoices(now, cfg.holidays, 14);
   const dayKeys = new Set(days.map((d) => d.key));
   const extra = plan.map((d) => d.fecha).filter((k) => !dayKeys.has(k));
@@ -84,6 +98,24 @@ export default async function PlanificarPage({ searchParams }: Props) {
                     <div className="pt-small pt-muted">
                       {titleCase(zoneLabel(v))} · ofrecer {label.get(v.productCode ?? "") ?? v.productCode}
                     </div>
+                    {(() => {
+                      const w = where(v.companyId);
+                      if (!w) return null;
+                      return (
+                        <div className="pt-small" style={{ overflowWrap: "anywhere" }}>
+                          {w.dir ? (
+                            <>
+                              📍 {w.dir.texto} <span className="pt-muted">({w.dir.fuente === "operacion" ? "de operación" : w.dir.segun?.replace(/^Según/, "según")})</span>{" "}
+                            </>
+                          ) : (
+                            <span className="pt-muted">Sin dirección · </span>
+                          )}
+                          <a className="pt-dir-editlink" href={w.link.url} target="_blank" rel="noopener noreferrer">
+                            Cómo llegar{w.link.aproximada ? " (aprox.)" : ""}
+                          </a>
+                        </div>
+                      );
+                    })()}
                   </div>
                   <div className="mv-plan-fields">
                     <label className="pt-field">

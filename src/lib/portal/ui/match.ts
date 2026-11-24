@@ -15,6 +15,7 @@ import { canSetPriority } from "../match/products";
 import type { MatchProgressRow } from "../match/progress";
 import type { PortalStore, PortalUser } from "../store/types";
 import { addDays, limaDateKey, parseLimaLocal } from "./time";
+import { distritoDe } from "./filters";
 import { formText, type FormLike } from "./labels";
 
 export const MATCH_PATH = "/portal/match";
@@ -68,6 +69,10 @@ export function parseMatchParams(sp: SP): MatchParams {
     if ((DEPARTAMENTOS as readonly string[]).includes(dep)) filters.departamento = dep;
     else delete filters.departamento;
   }
+  // corrida L: el distrito solo con un departamento que lo contiene (la lista de distritos depende del departamento)
+  const dist = distritoDe(filters.departamento, filters.distrito);
+  if (dist) filters.distrito = dist;
+  else delete filters.distrito;
   return {
     vista: one(sp.vista) === "empresas" ? "empresas" : "productos",
     code: normalizeCode(one(sp.p)),
@@ -108,7 +113,7 @@ const CHIPS: { key: FlagKey; label: string; off?: (keyof MatchFilters)[] }[] = [
   { key: "conFlota", label: "Flota con la medida" },
   { key: "sinDueno", label: "Sin dueño", off: ["mias"] },
   { key: "mias", label: "Mías", off: ["sinDueno"] },
-  { key: "limaCallao", label: "Lima y Callao", off: ["departamento"] },
+  { key: "limaCallao", label: "Lima y Callao", off: ["departamento", "distrito"] },
 ];
 
 /**
@@ -133,6 +138,18 @@ export function filterChips(p: MatchParams, cortesFlota: number[]): MatchChip[] 
   return chips;
 }
 
+/** Campos ocultos del selector de departamento: los filtros de la vista sin departamento, distrito ni Lima y Callao ni la tanda. */
+export function departamentoSelectHidden(p: MatchParams): Record<string, string> {
+  const href = matchHref(p, { filters: { ...p.filters, departamento: undefined, distrito: undefined, limaCallao: undefined } });
+  return Object.fromEntries([...new URLSearchParams(href.split("?")[1] ?? "")].filter(([k]) => k !== "n"));
+}
+
+/** Campos ocultos del selector de distrito: los filtros de la vista (con el departamento) sin el distrito ni la tanda. */
+export function distritoSelectHidden(p: MatchParams): Record<string, string> {
+  const href = matchHref(p, { filters: { ...p.filters, distrito: undefined } });
+  return Object.fromEntries([...new URLSearchParams(href.split("?")[1] ?? "")].filter(([k]) => k !== "n"));
+}
+
 export function hasFilters(f: MatchFilters): boolean {
   return Object.values(f).some((v) => v !== undefined && v !== false);
 }
@@ -142,12 +159,13 @@ export const MATCH_DEPARTAMENTOS = DEPARTAMENTOS;
 
 // ── acciones de la tarjeta ──
 
-export type MatchActionId = "asignar" | "agendar" | "cotizar" | "llegar" | "ficha" | "ventas";
+export type MatchActionId = "asignar" | "agendar" | "cotizar" | "ficha" | "ventas";
 
 /**
  * Acciones de una tarjeta en orden: máximo tres visibles y el resto en "más". Asignármela solo si no tiene dueño;
  * Agendar visita si es suya, sin dueño (se la asigna al agendar) o si quien mira es supervisor/admin. Sin ficha (solo
- * ventas, fuera del padrón): "Ver ventas" en lugar de la ficha y sin agendar.
+ * ventas, fuera del padrón): "Ver ventas" en lugar de la ficha y sin agendar. Corrida L: "Cómo llegar" ya no va aquí, sino
+ * junto a la dirección (con copiar), en todas las tarjetas.
  */
 export function cardActions(card: { companyId: number | null; ownerUserId: number | null }, viewer: UserLike): { visibles: MatchActionId[]; mas: MatchActionId[] } {
   const all: MatchActionId[] = [];
@@ -156,7 +174,7 @@ export function cardActions(card: { companyId: number | null; ownerUserId: numbe
     if (working && card.ownerUserId === null) all.push("asignar");
     if (working && (card.ownerUserId === null || card.ownerUserId === viewer.id || canSeeAll(viewer))) all.push("agendar");
   }
-  all.push("cotizar", "llegar");
+  all.push("cotizar");
   all.push(card.companyId !== null ? "ficha" : "ventas");
   return { visibles: all.slice(0, 3), mas: all.slice(3) };
 }

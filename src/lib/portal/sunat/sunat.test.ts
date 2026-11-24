@@ -208,6 +208,9 @@ describe("direcciones armadas (filas reales de empresas)", () => {
     const p = (x: Partial<SunatPiezas>): SunatPiezas => ({ tipoVia: null, nombreVia: null, tipoZona: null, nombreZona: null, numero: null, interior: null, lote: null, dpto: null, manzana: null, kilometro: null, ...x });
     expect(buildAddress(p({ tipoVia: "AV.", nombreVia: "LAS TORRES", lote: "20", tipoZona: "FND.", nombreZona: "FUNDO HUACHIPA" }), "150118")).toBe("Av. Las Torres, Lt. 20, Fundo Huachipa, Lurigancho, Lima");
     expect(buildAddress(p({ tipoVia: "CAL.", nombreVia: "CALLE 7", manzana: "K", lote: "22" }), "150103")).toBe("Calle 7, Mz. K Lt. 22, Ate, Lima");
+    // sunat-ui (navegador): el tipo de varias palabras que el nombre ya trae completo no se repite ("Zona Industrial Zona Industrial")
+    expect(buildAddress(p({ tipoVia: "AV.", nombreVia: "OSCAR R. BENAVIDES", numero: "956", tipoZona: "Z.I.", nombreZona: "ZONA INDUSTRIAL" }), "150101")).toBe("Av. Oscar R. Benavides 956, Zona Industrial, Lima");
+    expect(buildAddress(p({ tipoVia: "AV.", nombreVia: "ARGENTINA", numero: "2833", tipoZona: "Z.I.", nombreZona: "ZONA INDUSTRIAL CONCHUCOS" }), "150101")).toBe("Av. Argentina 2833, Zona Industrial Conchucos, Lima");
     expect(buildAddress(p({ tipoVia: "CAR.", nombreVia: "HUACHIPA", tipoZona: "Z.I.", nombreZona: "INDUSTRIAL HUACHIPA ESTE" }), "150118")).toBe("Carretera Huachipa, Zona Industrial Huachipa Este, Lurigancho, Lima");
     expect(buildAddress(p({ tipoVia: "AV.", nombreVia: "HUANACAURE", numero: "918", tipoZona: "URB.", nombreZona: "4TA. ZONA TAHUANTINSUYO" }), "150112")).toBe("Av. Huanacaure 918, Urb. 4ta. Zona Tahuantinsuyo, Independencia, Lima");
   });

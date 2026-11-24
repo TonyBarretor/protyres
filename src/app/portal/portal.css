@@ -479,3 +479,40 @@ ul.pt-cards { list-style: none; margin: 0; padding: 0; }
 @media (max-width: 720px) {
   .pt-table-wrap.pt-sales-table { display: none; }
 }
+
+/* Corrida L: dirección (ficha, tarjetas de Match Venta y Prospectos) y aviso de SUNAT */
+.pt-dir { display: flex; gap: 0.45rem; align-items: flex-start; font-size: 0.88rem; min-width: 0; }
+.pt-dir-pin { flex: 0 0 auto; line-height: 1.35; }
+.pt-dir-body { min-width: 0; flex: 1; display: grid; gap: 0.15rem; }
+.pt-dir-text { overflow-wrap: anywhere; line-height: 1.35; }
+.pt-dir-note { font-size: 0.76rem; color: var(--muted); }
+.pt-dir-acts { display: flex; flex-wrap: wrap; gap: 0.35rem; align-items: center; margin-top: 0.2rem; }
+.pt-dir-editlink { color: #1849a9; font-weight: 600; text-decoration: underline; text-underline-offset: 2px; cursor: pointer; font-size: 0.82rem; }
+.pt-dir-edit > summary { list-style: none; display: inline; }
+.pt-dir-edit > summary::-webkit-details-marker { display: none; }
+.pt-dir-edit { margin-top: 0.25rem; }
+.pt-dir-form { display: grid; gap: 0.5rem; margin-top: 0.45rem; padding: 0.7rem; background: #f8f9fb; border: 1px solid var(--line); border-radius: 8px; }
+.pt-dir-card { display: grid; gap: 0.6rem; }
+.pt-dir-sec { padding-top: 0.5rem; border-top: 1px dashed var(--line); }
+.pt-dir-warn { margin: 0; font-size: 0.78rem; color: var(--muted); font-style: italic; }
+.pt-dir-locales > summary { cursor: pointer; font-weight: 600; font-size: 0.9rem; }
+.pt-dir-list { list-style: none; margin: 0.5rem 0 0; padding: 0; display: grid; gap: 0.35rem; grid-template-columns: repeat(auto-fill, minmax(min(100%, 340px), 1fr)); }
+.pt-dir-list li { display: flex; gap: 0.5rem; align-items: center; justify-content: space-between; font-size: 0.85rem; padding: 0.35rem 0.5rem; border: 1px solid var(--line); border-radius: 8px; overflow-wrap: anywhere; }
+.pt-dir-list li.pt-dir-dest { background: #f6fef9; border-color: #abefc6; }
+.pt-dir-list li > a { flex: 0 0 auto; }
+.pt-sunat { display: inline-block; font-size: 0.72rem; font-weight: 700; padding: 0.1rem 0.45rem; border-radius: 6px; border: 1px solid transparent; overflow-wrap: anywhere; }
+.pt-sunat-alerta { background: #fef3f2; color: var(--danger); border-color: #fecdca; }
+.pt-sunat-aviso { background: #fffaeb; color: #93370d; border-color: #fedf89; }
+.pt-sunat-line { margin: 0; font-size: 0.85rem; padding: 0.45rem 0.6rem; border-radius: 8px; }
+.pt-sunat-line-alerta { background: #fef3f2; color: var(--danger); border: 1px solid #fecdca; }
+.pt-sunat-line-aviso { background: #fffaeb; color: #93370d; border: 1px solid #fedf89; }
+.pt-prospects .pt-dir { margin-top: 0.35rem; font-size: 0.8rem; }
+.pt-cards .pt-dir { margin-top: 0.1rem; }
+.pt-dir-group { font-family: inherit; margin: 0.7rem 0 0; font-size: 0.74rem; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: 0.03em; }
+@media (min-width: 861px) {
+  /* escritorio: la de operación y la fiscal lado a lado */
+  .pt-dir-card { grid-template-columns: 1fr 1fr; column-gap: 1.5rem; }
+  .pt-dir-card > * { grid-column: 1 / -1; }
+  .pt-dir-card > .pt-dir:not(.pt-dir-sec) { grid-column: 1; }
+  .pt-dir-card > .pt-dir-sec { grid-column: 2; grid-row: auto; padding-top: 0; border-top: 0; border-left: 1px dashed var(--line); padding-left: 1rem; }
+}

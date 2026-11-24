@@ -5,6 +5,8 @@
  * Corrida J: empresa creada a mano (no está en el padrón): lo dice, sus cifras no llevan la etiqueta MTC y tiene el bloque
  * "Vehículos cargados a mano" (marca, clase, ejes, llantas, medida y placa) para el dueño, supervisor o admin.
  * Corrida K: bloque "Match con tu stock" (MatchBlock).
+ * Corrida L: bloque "Dirección" arriba (operación > domicilio fiscal de SUNAT, Cómo llegar, copiar, aviso de SUNAT,
+ * "Agregar / Editar dirección de operación" y los locales anexos desplegables; ?locales=todos los lista todos).
  */
 import Link from "next/link";
 import { notFound } from "next/navigation";
@@ -26,6 +28,11 @@ import { loadSalesHistory, SalesHistory } from "./SalesHistory";
 import { SurveyBlock } from "./SurveyBlock";
 import { WhyLevel } from "./WhyLevel";
 import { loadMatchBlock, MatchBlock } from "./MatchBlock";
+import { loadPortalConfig } from "@/lib/portal/config";
+import { canEditDireccion } from "@/lib/portal/match/company";
+import { canUseMatch } from "@/lib/portal/ui/match";
+import { direccionAutor, direccionUi, localesUi } from "@/lib/portal/ui/direccion";
+import { DireccionFicha } from "../../_components/Direccion";
 import { addManualVehicleAction, removeManualVehicleAction } from "./vehicle-actions";
 
 type Props = { params: Promise<{ id: string }>; searchParams: Promise<Record<string, string | string[] | undefined>> };
@@ -74,15 +81,19 @@ export default async function EmpresaPage({ params, searchParams }: Props) {
   if (!company) notFound();
   const sp = await searchParams;
 
-  const [fleet, manualFleet, contacts, activities, opp, users, part] = await Promise.all([
+  const [fleet, manualFleet, contacts, recentActivities, opp, users, part, sunat, sunatLocales] = await Promise.all([
     store.fleetByBrand(id),
     store.listManualVehicles(id),
     store.listContacts(id),
-    store.listActivities({ companyId: id, limit: 30 }),
+    // corrida L: más que las 30 que se muestran, para saber quién escribió la dirección de operación
+    store.listActivities({ companyId: id, limit: company.direccion ? 200 : 30 }),
     store.getOpenOpportunity(id),
     store.listUsers(),
     store.participation([company.ruc], defaultSince()),
+    store.getSunat(company.ruc),
+    store.listSunatLocales(company.ruc),
   ]);
+  const activities = recentActivities.slice(0, 30);
   const history = opp ? await store.stageHistory(opp.id) : [];
   const sales = await loadSalesHistory(store, company, user, sp);
   const match = await loadMatchBlock(store, user, company);
@@ -99,6 +110,11 @@ export default async function EmpresaPage({ params, searchParams }: Props) {
   const manual = company.origen === "manual";
   const canFleet = canEditManualFleet(user, company);
   const sourceTag = manual ? <ManualTag /> : <MtcTag />;
+  // corrida L: dirección (operación > fiscal) y locales anexos (los del departamento de la flota primero)
+  const dir = direccionUi(company, sunat, loadPortalConfig().sunat, { autor: company.direccion ? direccionAutor(recentActivities, users) : null });
+  const todosLocales = str(sp.locales) === "todos";
+  const locales = sunatLocales.length ? localesUi(sunatLocales, company.departamento, { todos: todosLocales }) : null;
+  const canDir = canUseMatch(user) && canEditDireccion(user, company);
 
   return (
     <div className="pt-stack">
@@ -126,6 +142,14 @@ export default async function EmpresaPage({ params, searchParams }: Props) {
       </div>
 
       <Flash aviso={str(sp.aviso)} error={str(sp.error)} />
+
+      <DireccionFicha
+        d={dir}
+        locales={locales}
+        edit={canDir ? { companyId: company.id, actual: company.direccion ?? null, back: `${back}#direccion` } : null}
+        todosHref={`${back}?locales=todos#locales`}
+        abierto={todosLocales}
+      />
 
       <div className="pt-kpis">
         <div className="pt-kpi">
@@ -158,7 +182,7 @@ export default async function EmpresaPage({ params, searchParams }: Props) {
         <div className="pt-stack">
           <WhyLevel company={company} />
           {/* corrida K: productos prioritarios que le sirven (Match Venta) */}
-          <MatchBlock data={match} user={user} company={company} />
+          <MatchBlock data={match} user={user} company={company} sunat={sunat} />
 
           <section className="pt-card" aria-labelledby="flota-title">
             <div className="pt-section-head">

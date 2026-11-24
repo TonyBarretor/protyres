@@ -142,6 +142,8 @@ const typed = (map: Record<string, string>, tipo: string | null, nombre: string 
     const last = labelWords[labelWords.length - 1].replace(/\.$/, "").toLocaleLowerCase("es");
     const first = name.split(" ")[0].replace(/\.$/, "").toLocaleLowerCase("es");
     if (first === last) label = labelWords.slice(0, -1).join(" ");
+    // tipo de varias palabras que el nombre ya trae entero ("Zona Industrial" + "ZONA INDUSTRIAL CONCHUCOS")
+    else if (labelWords.length > 1 && (name.toLocaleLowerCase("es") + " ").startsWith(label.toLocaleLowerCase("es") + " ")) label = "";
     // tras el tipo, "de" / "del" van en minúscula ("Malecón de la Marina", "Av. del Ejército")
     if (label) name = name.replace(/^(De|Del)( |$)/, (_m, w: string, sp: string) => w.toLocaleLowerCase("es") + sp).replace(/^de (La|Las|Los|El) /, (_m, a: string) => `de ${a.toLocaleLowerCase("es")} `);
   }

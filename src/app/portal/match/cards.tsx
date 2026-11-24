@@ -5,12 +5,16 @@
  */
 import Link from "next/link";
 import type { MatchCard, MatchProductCard } from "@/lib/portal/match";
-import { directionsLink, locationText } from "@/lib/portal/match";
+import { locationText } from "@/lib/portal/match";
 import { canEditDireccion } from "@/lib/portal/match/company";
+import { loadPortalConfig } from "@/lib/portal/config";
+import { ubicacionTexto } from "@/lib/portal/sunat/ubicacion";
+import { direccionUi } from "@/lib/portal/ui/direccion";
+import { DireccionForm, DireccionLine, SunatAvisoTag } from "../_components/Direccion";
 import type { Contact, PortalUser } from "@/lib/portal/store/types";
 import { botTextUrl, cardActions, phoneLinks, quoteText, type MatchActionId } from "@/lib/portal/ui/match";
 import { limaDateKey } from "@/lib/portal/ui/time";
-import { assignMatch, saveDireccion, scheduleMatch } from "./actions";
+import { assignMatch, scheduleMatch } from "./actions";
 import { CopyButton } from "./client";
 
 type Viewer = Pick<PortalUser, "id" | "rol" | "activo" | "nombre">;
@@ -71,33 +75,18 @@ function Ruc({ ruc }: { ruc: string }) {
   );
 }
 
+/**
+ * Corrida L: la dirección en una línea (la de operación manda; si no, la fiscal de SUNAT) con Cómo llegar y copiar, y
+ * "Agregar / Editar dirección de operación". El aviso del domicilio fiscal va una vez arriba de la lista (DIRECCION_LEGEND).
+ */
 function Location({ c, viewer, back }: { c: MatchCard; viewer: Viewer; back: string }) {
-  const loc = locationText(c);
   const canAdd = c.companyId !== null && canEditDireccion(viewer, { ownerUserId: c.ownerUserId });
+  const d = direccionUi(c, c.sunat, loadPortalConfig().sunat);
+  const lugar = ubicacionTexto(c.ubicacion) || locationText(c) || "Ubicación no registrada";
   return (
-    <div className="mv-line">
-      <span aria-hidden="true">📍</span>
-      <div style={{ minWidth: 0 }}>
-        {loc || "Ubicación no registrada"}
-        {c.direccion ? <div className="pt-small">{c.direccion}</div> : null}
-        {canAdd && (
-          <details className="mv-inline">
-            <summary className="mv-link">{c.direccion ? "Cambiar dirección" : "Agregar dirección"}</summary>
-            <form action={saveDireccion} className="mv-panel">
-              <input type="hidden" name="companyId" value={c.companyId!} />
-              <input type="hidden" name="volver" value={back} />
-              <label className="pt-field">
-                Dirección (calle, número, referencia)
-                <input type="text" name="direccion" maxLength={200} defaultValue={c.direccion ?? ""} placeholder="Av. Nicolás Ayllón 1234, Ate" />
-              </label>
-              <button type="submit" className="pt-btn pt-btn-sm pt-btn-dark">
-                Guardar dirección
-              </button>
-            </form>
-          </details>
-        )}
-      </div>
-    </div>
+    <DireccionLine d={d} lugar={lugar} localesHref={c.companyId !== null ? `/portal/empresas/${c.companyId}#direccion` : null}>
+      {canAdd && <DireccionForm companyId={c.companyId!} actual={c.direccion ?? null} back={back} />}
+    </DireccionLine>
   );
 }
 
@@ -250,14 +239,6 @@ function Action({ id, ctx, menu }: { id: MatchActionId; ctx: ActionCtx; menu: bo
           <QuotePanel text={quoteText(products[0], c)} bot={bot} />
         </details>
       );
-    case "llegar": {
-      const d = directionsLink(c);
-      return (
-        <a className={btn()} href={d.url} target="_blank" rel="noopener noreferrer" title={d.aproximada ? "Sin dirección registrada: busca por razón social y distrito en el mapa (aproximado)." : "Abre el mapa con la dirección."}>
-          Cómo llegar{d.aproximada ? " (aprox.)" : ""}
-        </a>
-      );
-    }
     case "ficha":
       return (
         <Link className={btn()} href={`/portal/empresas/${c.companyId}`}>
@@ -334,6 +315,7 @@ export function CompanyMatchCard({
       <div className="mv-card-top">
         <EstadoTag estado={c.estado} owner={c.estado === "Prospecto" ? owner : null} />
         {c.excluida && <span className="pt-tag pt-tag-mtc">{c.excluida === "estado" ? "Estado" : "Leasing"}</span>}
+        <SunatAvisoTag aviso={c.sunatAviso} />
         <PlanCheck c={c} code={product.code} />
       </div>
       <h3 className="mv-name">{c.companyId !== null ? <Link href={`/portal/empresas/${c.companyId}`}>{c.razonSocial}</Link> : c.razonSocial}</h3>
@@ -400,6 +382,7 @@ export function CompanyGroupCard({
       <div className="mv-card-top">
         <EstadoTag estado={c.estado} owner={c.estado === "Prospecto" ? owner : null} />
         {c.excluida && <span className="pt-tag pt-tag-mtc">{c.excluida === "estado" ? "Estado" : "Leasing"}</span>}
+        <SunatAvisoTag aviso={c.sunatAviso} />
         {refs[0] && <PlanCheck c={c} code={refs[0].code} />}
       </div>
       <h3 className="mv-name">
@@ -443,11 +426,13 @@ export function SalesOnlyCard({ c, product, viewer, back, bot, now }: { c: Match
       <div className="mv-card-top">
         <EstadoTag estado={c.estado} />
         {c.detalle.bancoSinClienteFinal && <span className="pt-tag pt-tag-mtc">Leasing sin cliente final</span>}
+        <SunatAvisoTag aviso={c.sunatAviso} />
       </div>
       <h3 className="mv-name">{c.companyId !== null ? <Link href={`/portal/empresas/${c.companyId}`}>{c.razonSocial}</Link> : c.razonSocial}</h3>
       <Ruc ruc={c.ruc} />
       <MatchBadges c={c} />
       {c.podriaLlevarTexto && <p className="pt-small pt-muted mv-meta">{c.podriaLlevarTexto}</p>}
+      <Location c={c} viewer={viewer} back={`${back}#${id}`} />
       <Actions viewer={viewer} ctx={{ c, products: [product], back: `${back}#${id}`, bot, now }} />
     </li>
   );

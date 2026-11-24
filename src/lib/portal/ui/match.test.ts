@@ -9,6 +9,8 @@ import {
   assignFromMatch,
   canUseMatch,
   cardActions,
+  departamentoSelectHidden,
+  distritoSelectHidden,
   filterChips,
   MATCH_MAX_SHOWN,
   matchHref,
@@ -55,6 +57,22 @@ describe("parámetros y filtros en la dirección", () => {
     expect(matchHref(parseMatchParams({}), { vista: "empresas" })).toBe("/portal/match?vista=empresas");
   });
 
+  it("corrida L: distrito en la URL (?dist=) solo con un departamento que lo contiene; cambiar el departamento o Lima y Callao lo quita", () => {
+    const p = parseMatchParams({ p: "P0433", dep: "LIMA", dist: "150140" });
+    expect(p.filters).toMatchObject({ departamento: "LIMA", distrito: "150140" });
+    expect(matchHref(p)).toBe("/portal/match?p=P0433&dep=LIMA&dist=150140");
+    // Callao cuenta como Lima (lo mismo que el filtro)
+    expect(parseMatchParams({ p: "P0433", dep: "LIMA", dist: "070101" }).filters.distrito).toBe("070101");
+    // sin departamento, o de otro departamento: fuera
+    expect(parseMatchParams({ p: "P0433", dist: "150140" }).filters.distrito).toBeUndefined();
+    expect(parseMatchParams({ p: "P0433", dep: "AREQUIPA", dist: "150140" }).filters.distrito).toBeUndefined();
+    expect(parseMatchParams({ p: "P0433", dep: "LIMA", dist: "999999" }).filters.distrito).toBeUndefined();
+    const lima = filterChips(p, [10, 30, 100]).find((c) => c.id === "limaCallao")!;
+    expect(lima.href).toBe("/portal/match?p=P0433&lima=1");
+    expect(distritoSelectHidden(p)).toEqual({ p: "P0433", dep: "LIMA" });
+    expect(departamentoSelectHidden(p)).toEqual({ p: "P0433" });
+  });
+
   it("solo vuelve a rutas del portal permitidas", () => {
     expect(safeMatchBack("/portal/match?p=P0433#e-3")).toBe("/portal/match?p=P0433#e-3");
     expect(safeMatchBack("//evil.example.com")).toBe("/portal/match");
@@ -65,15 +83,16 @@ describe("parámetros y filtros en la dirección", () => {
 
 describe("tarjeta de empresa", () => {
   it("máximo tres acciones visibles y el resto en «más»; Asignármela solo sin dueño", () => {
-    expect(cardActions({ companyId: 3, ownerUserId: null }, vendedor)).toEqual({ visibles: ["asignar", "agendar", "cotizar"], mas: ["llegar", "ficha"] });
-    expect(cardActions({ companyId: 3, ownerUserId: 1 }, vendedor)).toEqual({ visibles: ["agendar", "cotizar", "llegar"], mas: ["ficha"] });
+    // corrida L: «Cómo llegar» salió de las acciones: va junto a la dirección (con copiar) en todas las tarjetas
+    expect(cardActions({ companyId: 3, ownerUserId: null }, vendedor)).toEqual({ visibles: ["asignar", "agendar", "cotizar"], mas: ["ficha"] });
+    expect(cardActions({ companyId: 3, ownerUserId: 1 }, vendedor)).toEqual({ visibles: ["agendar", "cotizar", "ficha"], mas: [] });
     // de otro vendedor (lo ve el supervisor): agenda, no se la asigna desde aquí
-    expect(cardActions({ companyId: 3, ownerUserId: 2 }, sup).visibles).toEqual(["agendar", "cotizar", "llegar"]);
-    expect(cardActions({ companyId: 3, ownerUserId: 2 }, vendedor).visibles).toEqual(["cotizar", "llegar", "ficha"]);
+    expect(cardActions({ companyId: 3, ownerUserId: 2 }, sup).visibles).toEqual(["agendar", "cotizar", "ficha"]);
+    expect(cardActions({ companyId: 3, ownerUserId: 2 }, vendedor).visibles).toEqual(["cotizar", "ficha"]);
     // fuera del padrón (solo ventas): sin ficha ni agenda
-    expect(cardActions({ companyId: null, ownerUserId: null }, vendedor)).toEqual({ visibles: ["cotizar", "llegar", "ventas"], mas: [] });
+    expect(cardActions({ companyId: null, ownerUserId: null }, vendedor)).toEqual({ visibles: ["cotizar", "ventas"], mas: [] });
     expect(canUseMatch(tecnico)).toBe(false);
-    expect(cardActions({ companyId: 3, ownerUserId: null }, tecnico).visibles).toEqual(["cotizar", "llegar", "ficha"]);
+    expect(cardActions({ companyId: 3, ownerUserId: null }, tecnico).visibles).toEqual(["cotizar", "ficha"]);
   });
 
   it("texto para cotizar con el bot: producto, medida, cantidad (con tope en el disponible), cliente y RUC", () => {

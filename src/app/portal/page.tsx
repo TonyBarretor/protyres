@@ -4,6 +4,8 @@
  * sus unidades (inferidas), participación y si es cliente, sin entrar a la ficha (corrida F, punto 2).
  * Corrida G: por defecto ordena por atractivo; filtro por nivel y, en cada empresa, su nivel (estimación) con la
  * explicación de una línea.
+ * Corrida L: filtro por distrito (aparece con un departamento elegido; ?dist=<código INEI>) y en cada empresa su dirección
+ * (la de operación manda; si no, el domicilio fiscal de SUNAT) con Cómo llegar y copiar, y el aviso de SUNAT.
  */
 import Link from "next/link";
 import { requireUser } from "@/lib/portal/auth/session";
@@ -28,6 +30,11 @@ import { loadProspectos, type ProspectosData } from "@/lib/portal/ui/prospectos"
 import { fmtInt, sectorLabel } from "@/lib/portal/ui/labels";
 import { DemoTag, ExplainLine, InferidaTag, ManualTag, MTC_LEGEND, MtcTag, NivelBadge, TempChip } from "./_components/bits";
 import { canCreateCompany } from "@/lib/portal/ui/empresa-nueva";
+import { loadPortalConfig } from "@/lib/portal/config";
+import { ubicacionEfectiva, ubicacionTexto } from "@/lib/portal/sunat/ubicacion";
+import { direccionUi } from "@/lib/portal/ui/direccion";
+import { titleCase } from "@/lib/portal/ui/match";
+import { DIRECCION_LEGEND, DireccionLine, SunatAvisoTag } from "./_components/Direccion";
 
 export const metadata = { title: "Prospectos · Portal 360 Tyres" };
 
@@ -50,6 +57,16 @@ function Medidas({ medidas }: { medidas: MedidaCount[] | undefined }) {
       ))}
     </ul>
   );
+}
+
+/** Corrida L: la dirección de la fila (operación > fiscal) con Cómo llegar y copiar. */
+function RowDireccion({ row }: { row: CompanyRow }) {
+  const d = direccionUi(row, row.sunat, loadPortalConfig().sunat);
+  return <DireccionLine d={d} lugar={ubicacionTexto(ubicacionEfectiva(row, row.sunat)) || undefined} localesHref={`/portal/empresas/${row.id}#direccion`} />;
+}
+
+function rowAviso(row: CompanyRow) {
+  return direccionUi(row, row.sunat, loadPortalConfig().sunat).aviso;
 }
 
 function Participacion({ row }: { row: CompanyRow }) {
@@ -85,7 +102,8 @@ export default async function ProspectosPage({ searchParams }: { searchParams: P
       </div>
     );
   }
-  const { result, marcas, departamentos, users } = data;
+  const { result, marcas, departamentos, users, distritos } = data;
+  const dists = distritos.filter((d): d is typeof d & { ubigeo: string } => !!d.ubigeo);
   const userName = new Map<number, string>(users.map((u: PortalUser) => [u.id, u.nombre.split(" ")[0]]));
   const pages = pageCount(result.total);
   const from = result.total ? (filters.page - 1) * PAGE_SIZE + 1 : 0;
@@ -128,6 +146,20 @@ export default async function ProspectosPage({ searchParams }: { searchParams: P
               ))}
             </select>
           </label>
+          {/* corrida L: el distrito depende del departamento (aparece al filtrar por uno) */}
+          {filters.departamento && dists.length > 0 && (
+            <label className="pt-field">
+              Distrito
+              <select name="dist" defaultValue={filters.distrito ?? ""}>
+                <option value="">Todos</option>
+                {dists.map((d) => (
+                  <option key={d.ubigeo} value={d.ubigeo}>
+                    {titleCase(d.distrito)} ({fmtInt(d.empresas)})
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
           <label className="pt-field">
             Sector
             <select name="sector" defaultValue={filters.sector ?? ""}>
@@ -225,6 +257,8 @@ export default async function ProspectosPage({ searchParams }: { searchParams: P
 
       <p className="pt-legend">
         <strong>Nivel A, B, C:</strong> {ESTIMATE_NOTE} {MTC_LEGEND} Participación = neumáticos vendidos en los últimos 12 meses (al lado, llantas en piso).
+        <br />
+        {DIRECCION_LEGEND}
       </p>
 
       {result.rows.length === 0 ? (
@@ -256,12 +290,13 @@ export default async function ProspectosPage({ searchParams }: { searchParams: P
                       <Link className="pt-company-link" href={`/portal/empresas/${r.id}`}>
                         {r.razonSocial}
                       </Link>{" "}
-                      <ClienteTag row={r} /> {r.origen === "manual" && <ManualTag />}
+                      <ClienteTag row={r} /> {r.origen === "manual" && <ManualTag />} <SunatAvisoTag aviso={rowAviso(r)} />
                       <div className="pt-muted pt-small pt-mono">RUC {r.ruc}</div>
                       <div className="pt-nivel-line">
                         <NivelBadge nivel={r.nivel} />
                       </div>
                       <ExplainLine text={explainLine(r.scoreDetalle)} />
+                      <RowDireccion row={r} />
                     </td>
                     <td>
                       {sectorLabel(r.sector)}
@@ -297,10 +332,12 @@ export default async function ProspectosPage({ searchParams }: { searchParams: P
                 <div className="pt-muted pt-small pt-mono">
                   RUC {r.ruc} · {sectorLabel(r.sector)} · {r.departamento ?? "—"} <ClienteTag row={r} /> {r.origen === "manual" && <ManualTag />}
                 </div>
+                <SunatAvisoTag aviso={rowAviso(r)} />
                 <div>
                   <NivelBadge nivel={r.nivel} />
                   <ExplainLine text={explainLine(r.scoreDetalle)} />
                 </div>
+                <RowDireccion row={r} />
                 <dl className="pt-kv">
                   <div>
                     <dt>Unidades</dt>
